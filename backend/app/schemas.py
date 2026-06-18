@@ -31,8 +31,9 @@ class GenerationInfo(BaseModel):
     negative_prompt: str = ""
     seed: int = Field(default=1, ge=0)
     workflow_id: str | None = None
+    prompt_id: str | None = None
     model_notes: str = ""
-    status: Literal["pending", "queued", "done", "fallback", "skipped", "error"] = "pending"
+    status: Literal["pending", "running", "queued", "done", "fallback", "skipped", "error"] = "pending"
     message: str = ""
 
 
@@ -120,6 +121,27 @@ class GenerateNameRequest(BaseModel):
 class RenderResponse(BaseModel):
     project_id: str
     page_assets: list[str]
+    manga_json: MangaProject
+
+
+class RenderRequest(BaseModel):
+    force: bool = False
+
+
+class ComfyUIStatusResponse(BaseModel):
+    backend: str
+    base_url: str
+    workflow_path: str
+    connected: bool
+    workflow_exists: bool
+    workflow_valid: bool
+    missing_nodes: list[str] = Field(default_factory=list)
+    message: str
+
+
+class PanelImageGenerationResponse(BaseModel):
+    project_id: str
+    panel_id: str
     manga_json: MangaProject
 
 

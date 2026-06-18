@@ -5,7 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
@@ -13,15 +13,18 @@ from pydantic import ValidationError
 from .config import Settings
 from .database import ProjectRecord, create_session_factory, now_utc
 from .generator import generate_four_page_name
-from .image_backends import build_image_backend
+from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
 from .renderer import export_cbz, render_project_pages
 from .schemas import (
     ExportResponse,
+    ComfyUIStatusResponse,
     GenerateNameRequest,
     MangaProject,
+    PanelImageGenerationResponse,
     ProjectCreate,
     ProjectDetail,
     ProjectSummary,
+    RenderRequest,
     RenderResponse,
 )
 
@@ -49,6 +52,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/comfyui/status", response_model=ComfyUIStatusResponse)
+    async def comfyui_status(request: Request) -> ComfyUIStatusResponse:
+        status = await get_comfyui_status(request.app.state.settings)
+        return ComfyUIStatusResponse(**status.__dict__)
 
     @app.post("/api/projects", response_model=ProjectDetail)
     def create_project(payload: ProjectCreate, request: Request) -> ProjectDetail:
@@ -116,33 +124,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return to_detail(record)
 
     @app.post("/api/projects/{project_id}/render", response_model=RenderResponse)
-    async def render_project(project_id: str, request: Request) -> RenderResponse:
+    async def render_project(
+        project_id: str,
+        request: Request,
+        payload: RenderRequest | None = Body(default=None),
+    ) -> RenderResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
-        backend = build_image_backend(settings.image_backend, settings.comfyui_base_url)
+        backend = build_image_backend(settings)
+        force = payload.force if payload else False
 
         for page in manga.pages:
             for panel in page.panels:
-                result = await backend.generate_panel(project_id, panel, settings.export_dir)
-                panel.image_asset = str(result.asset_path) if result.asset_path else None
-                panel.generation.backend = result.backend  # type: ignore[assignment]
-                panel.generation.status = result.status  # type: ignore[assignment]
-                panel.generation.message = result.message
+                if force or not panel.image_asset:
+                    apply_generation_result(panel, await backend.generate_panel(project_id, panel, settings.export_dir))
 
         page_assets = render_project_pages(project_id, manga, settings.export_dir)
-        with request.app.state.SessionLocal() as session:
-            writable = session.get(ProjectRecord, project_id)
-            if writable is None:
-                raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
-            writable.manga_json = manga.model_dump_json()
-            writable.updated_at = now_utc()
-            session.commit()
+        save_manga_json(request, project_id, manga)
         return RenderResponse(
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
             manga_json=manga,
         )
+
+    @app.post("/api/projects/{project_id}/panels/{panel_id}/generate-image", response_model=PanelImageGenerationResponse)
+    async def generate_panel_image(
+        project_id: str,
+        panel_id: str,
+        request: Request,
+    ) -> PanelImageGenerationResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        settings = request.app.state.settings
+        backend = build_image_backend(settings)
+        apply_generation_result(panel, await backend.generate_panel(project_id, panel, settings.export_dir))
+        save_manga_json(request, project_id, manga)
+        return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
+
+    @app.post("/api/projects/{project_id}/panels/{panel_id}/use-stub", response_model=PanelImageGenerationResponse)
+    async def use_stub_panel_image(
+        project_id: str,
+        panel_id: str,
+        request: Request,
+    ) -> PanelImageGenerationResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        settings = request.app.state.settings
+        apply_generation_result(panel, await StubImageBackend().generate_panel(project_id, panel, settings.export_dir))
+        save_manga_json(request, project_id, manga)
+        return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
 
     @app.post("/api/projects/{project_id}/export/cbz", response_model=ExportResponse)
     def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
@@ -178,6 +211,32 @@ def parse_manga_json(raw: str) -> MangaProject:
         return MangaProject.model_validate(json.loads(raw))
     except (json.JSONDecodeError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=f"Manga JSONが不正です: {exc}") from exc
+
+
+def find_panel(manga: MangaProject, panel_id: str):
+    for page in manga.pages:
+        for panel in page.panels:
+            if panel.panel_id == panel_id:
+                return panel
+    raise HTTPException(status_code=404, detail="コマが見つかりません")
+
+
+def apply_generation_result(panel, result) -> None:
+    panel.image_asset = str(result.asset_path) if result.asset_path else None
+    panel.generation.backend = result.backend
+    panel.generation.status = result.status
+    panel.generation.message = result.message
+    panel.generation.prompt_id = result.prompt_id
+
+
+def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> None:
+    with request.app.state.SessionLocal() as session:
+        writable = session.get(ProjectRecord, project_id)
+        if writable is None:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        writable.manga_json = manga.model_dump_json()
+        writable.updated_at = now_utc()
+        session.commit()
 
 
 def to_summary(record: ProjectRecord) -> ProjectSummary:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -9,6 +11,7 @@ from typing import Protocol
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
+from .config import Settings
 from .schemas import Panel
 
 
@@ -17,6 +20,30 @@ class ImageResult:
     backend: str
     status: str
     asset_path: Path | None
+    message: str
+    prompt_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ComfyUIWorkflowConfig:
+    workflow_path: Path
+    positive_node_id: str
+    negative_node_id: str
+    seed_node_id: str
+    width_node_id: str
+    height_node_id: str
+    save_prefix_node_id: str
+
+
+@dataclass(frozen=True)
+class ComfyUIStatus:
+    backend: str
+    base_url: str
+    workflow_path: str
+    connected: bool
+    workflow_exists: bool
+    workflow_valid: bool
+    missing_nodes: list[str]
     message: str
 
 
@@ -60,36 +87,201 @@ class StubImageBackend:
 
 
 class ComfyUIImageBackend:
-    def __init__(self, base_url: str, fallback: StubImageBackend | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        workflow_config: ComfyUIWorkflowConfig,
+        timeout_seconds: float,
+        fallback: StubImageBackend | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.workflow_config = workflow_config
+        self.timeout_seconds = timeout_seconds
         self.fallback = fallback or StubImageBackend()
 
     async def generate_panel(self, project_id: str, panel: Panel, export_dir: Path) -> ImageResult:
-        payload = {
-            "prompt": {},
-            "client_id": f"local-doujin-studio-{project_id}",
-            "extra_data": {
-                "panel_id": panel.panel_id,
-                "positive_prompt": panel.generation.prompt or panel.prompt,
-                "negative_prompt": panel.generation.negative_prompt,
-                "seed": panel.generation.seed,
-            },
-        }
+        target = export_dir / project_id / "panels" / f"{panel.panel_id}.png"
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.post(f"{self.base_url}/prompt", content=json.dumps(payload))
+            workflow = load_workflow(self.workflow_config)
+            workflow = apply_panel_to_workflow(
+                workflow=workflow,
+                config=self.workflow_config,
+                panel=panel,
+                filename_prefix=f"local-doujin-studio/{project_id}/{panel.panel_id}",
+            )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/prompt",
+                    json={"prompt": workflow, "client_id": f"local-doujin-studio-{project_id}"},
+                )
                 response.raise_for_status()
+                prompt_id = response.json().get("prompt_id")
+                if not prompt_id:
+                    raise RuntimeError("ComfyUIからprompt_idが返りませんでした")
+                history = await wait_for_history(client, self.base_url, prompt_id, self.timeout_seconds)
+                image_ref = find_first_image(history, prompt_id)
+                image_response = await client.get(f"{self.base_url}/view", params=image_ref)
+                image_response.raise_for_status()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(image_response.content)
+                return ImageResult("comfyui", "done", target, "ComfyUI画像を取得しました", prompt_id=prompt_id)
         except Exception as exc:
             fallback = await self.fallback.generate_panel(project_id, panel, export_dir)
-            return ImageResult("comfyui", "fallback", fallback.asset_path, f"ComfyUIへ接続できないためstubに戻しました: {exc}")
-        fallback = await self.fallback.generate_panel(project_id, panel, export_dir)
-        return ImageResult("comfyui", "queued", fallback.asset_path, "ComfyUIへキュー投入し、MVP表示用stubも生成しました")
+            return ImageResult("comfyui", "fallback", fallback.asset_path, f"ComfyUI生成に失敗したためstubに戻しました: {exc}")
+
+    async def get_status(self) -> ComfyUIStatus:
+        workflow_exists = self.workflow_config.workflow_path.exists()
+        workflow_valid = False
+        missing_nodes = validate_workflow_nodes(self.workflow_config)
+        if workflow_exists and not missing_nodes:
+            workflow_valid = True
+
+        connected = False
+        connect_message = ""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{self.base_url}/system_stats")
+                response.raise_for_status()
+                connected = True
+                connect_message = "ComfyUIへ接続できました"
+        except Exception as exc:
+            connect_message = f"ComfyUIへ接続できません: {exc}"
+
+        if not workflow_exists:
+            message = "workflow_api.jsonが見つかりません"
+        elif missing_nodes:
+            message = f"workflow設定ノードが不足しています: {', '.join(missing_nodes)}"
+        else:
+            message = connect_message
+
+        return ComfyUIStatus(
+            backend="comfyui",
+            base_url=self.base_url,
+            workflow_path=str(self.workflow_config.workflow_path),
+            connected=connected,
+            workflow_exists=workflow_exists,
+            workflow_valid=workflow_valid,
+            missing_nodes=missing_nodes,
+            message=message,
+        )
 
 
-def build_image_backend(name: str, comfyui_base_url: str) -> ImageBackend:
-    if name.lower() == "comfyui":
-        return ComfyUIImageBackend(comfyui_base_url)
+def build_image_backend(settings: Settings) -> ImageBackend:
+    if settings.image_backend.lower() == "comfyui":
+        return ComfyUIImageBackend(
+            settings.comfyui_base_url,
+            workflow_config=ComfyUIWorkflowConfig(
+                workflow_path=settings.comfyui_workflow_path,
+                positive_node_id=settings.comfyui_positive_node_id,
+                negative_node_id=settings.comfyui_negative_node_id,
+                seed_node_id=settings.comfyui_seed_node_id,
+                width_node_id=settings.comfyui_width_node_id,
+                height_node_id=settings.comfyui_height_node_id,
+                save_prefix_node_id=settings.comfyui_save_prefix_node_id,
+            ),
+            timeout_seconds=settings.comfyui_timeout_seconds,
+        )
     return StubImageBackend()
+
+
+async def get_comfyui_status(settings: Settings) -> ComfyUIStatus:
+    if settings.image_backend.lower() != "comfyui":
+        return ComfyUIStatus(
+            backend=settings.image_backend,
+            base_url=settings.comfyui_base_url,
+            workflow_path=str(settings.comfyui_workflow_path),
+            connected=False,
+            workflow_exists=settings.comfyui_workflow_path.exists(),
+            workflow_valid=False,
+            missing_nodes=[],
+            message="IMAGE_BACKENDがstubのためComfyUIは使用しません",
+        )
+    backend = build_image_backend(settings)
+    if isinstance(backend, ComfyUIImageBackend):
+        return await backend.get_status()
+    raise RuntimeError("ComfyUI backendを初期化できませんでした")
+
+
+def load_workflow(config: ComfyUIWorkflowConfig) -> dict:
+    if not config.workflow_path.exists():
+        raise FileNotFoundError(f"workflow_api.jsonが見つかりません: {config.workflow_path}")
+    with config.workflow_path.open("r", encoding="utf-8") as file:
+        workflow = json.load(file)
+    missing = validate_workflow_nodes(config, workflow)
+    if missing:
+        raise ValueError(f"workflow設定ノードが不足しています: {', '.join(missing)}")
+    return workflow
+
+
+def validate_workflow_nodes(config: ComfyUIWorkflowConfig, workflow: dict | None = None) -> list[str]:
+    if workflow is None:
+        if not config.workflow_path.exists():
+            return []
+        try:
+            with config.workflow_path.open("r", encoding="utf-8") as file:
+                workflow = json.load(file)
+        except Exception:
+            return [
+                config.positive_node_id,
+                config.negative_node_id,
+                config.seed_node_id,
+                config.width_node_id,
+                config.height_node_id,
+                config.save_prefix_node_id,
+            ]
+    required = [
+        config.positive_node_id,
+        config.negative_node_id,
+        config.seed_node_id,
+        config.width_node_id,
+        config.height_node_id,
+        config.save_prefix_node_id,
+    ]
+    return [node_id for node_id in required if node_id not in workflow or "inputs" not in workflow[node_id]]
+
+
+def apply_panel_to_workflow(
+    workflow: dict,
+    config: ComfyUIWorkflowConfig,
+    panel: Panel,
+    filename_prefix: str,
+) -> dict:
+    patched = copy.deepcopy(workflow)
+    positive_prompt = panel.generation.prompt or panel.prompt
+    patched[config.positive_node_id]["inputs"]["text"] = positive_prompt
+    patched[config.negative_node_id]["inputs"]["text"] = panel.generation.negative_prompt
+    patched[config.seed_node_id]["inputs"]["seed"] = panel.generation.seed
+    patched[config.width_node_id]["inputs"]["width"] = 768
+    patched[config.height_node_id]["inputs"]["height"] = 512
+    patched[config.save_prefix_node_id]["inputs"]["filename_prefix"] = filename_prefix
+    return patched
+
+
+async def wait_for_history(client: httpx.AsyncClient, base_url: str, prompt_id: str, timeout_seconds: float) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        response = await client.get(f"{base_url}/history/{prompt_id}")
+        if response.status_code == 200:
+            history = response.json()
+            if prompt_id in history:
+                return history
+        await asyncio.sleep(1.0)
+    raise TimeoutError(f"ComfyUI生成がタイムアウトしました: {prompt_id}")
+
+
+def find_first_image(history: dict, prompt_id: str) -> dict[str, str]:
+    prompt_history = history.get(prompt_id, {})
+    outputs = prompt_history.get("outputs", {})
+    for node_output in outputs.values():
+        images = node_output.get("images", [])
+        if images:
+            image = images[0]
+            return {
+                "filename": image["filename"],
+                "subfolder": image.get("subfolder", ""),
+                "type": image.get("type", "output"),
+            }
+    raise RuntimeError("ComfyUI履歴に画像出力がありません")
 
 
 def wrap_text(text: str, width: int) -> list[str]:

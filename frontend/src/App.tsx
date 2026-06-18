@@ -24,6 +24,7 @@ type Panel = {
     negative_prompt: string;
     seed: number;
     workflow_id: string | null;
+    prompt_id: string | null;
     model_notes: string;
     status: string;
     message: string;
@@ -51,6 +52,17 @@ type ProjectSummary = {
   title: string;
   work_name: string;
   updated_at: string;
+};
+
+type ComfyUIStatus = {
+  backend: string;
+  base_url: string;
+  workflow_path: string;
+  connected: boolean;
+  workflow_exists: boolean;
+  workflow_valid: boolean;
+  missing_nodes: string[];
+  message: string;
 };
 
 const api = {
@@ -85,6 +97,8 @@ export function App() {
   const [selectedPage, setSelectedPage] = useState(1);
   const [jsonText, setJsonText] = useState("");
   const [pageAssets, setPageAssets] = useState<string[]>([]);
+  const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
+  const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
   const [message, setMessage] = useState("準備完了");
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
@@ -100,13 +114,30 @@ export function App() {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
 
+  const currentPanel = useMemo(() => {
+    if (!currentPage) return null;
+    return currentPage.panels.find((panel) => panel.panel_id === selectedPanelId) ?? currentPage.panels[0] ?? null;
+  }, [currentPage, selectedPanelId]);
+
   useEffect(() => {
     void refreshProjects();
+    void refreshComfyStatus();
   }, []);
+
+  useEffect(() => {
+    if (currentPage?.panels.length && !currentPage.panels.some((panel) => panel.panel_id === selectedPanelId)) {
+      setSelectedPanelId(currentPage.panels[0].panel_id);
+    }
+  }, [currentPage, selectedPanelId]);
 
   async function refreshProjects() {
     const list = await api.get<ProjectSummary[]>("/api/projects");
     setProjects(list);
+  }
+
+  async function refreshComfyStatus() {
+    const status = await api.get<ComfyUIStatus>("/api/comfyui/status");
+    setComfyStatus(status);
   }
 
   async function runTask(task: () => Promise<void>) {
@@ -129,6 +160,7 @@ export function App() {
       });
       setSelected(project);
       setSelectedPage(1);
+      setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets([]);
       await refreshProjects();
@@ -141,6 +173,7 @@ export function App() {
       const project = await api.get<Project>(`/api/projects/${id}`);
       setSelected(project);
       setSelectedPage(1);
+      setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets([]);
       setMessage("プロジェクトを読み込みました");
@@ -159,6 +192,7 @@ export function App() {
       });
       setSelected(project);
       setSelectedPage(1);
+      setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setMessage("4ページネームを生成しました");
       await refreshProjects();
@@ -168,23 +202,55 @@ export function App() {
   async function saveJson() {
     if (!selected) return;
     await runTask(async () => {
-      const parsed = JSON.parse(jsonText) as MangaProject;
-      const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, parsed);
-      setSelected(project);
-      setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setMessage("Manga JSONを保存しました");
+      await saveJsonDraft("Manga JSONを保存しました");
     });
+  }
+
+  async function saveJsonDraft(successMessage: string): Promise<Project | null> {
+    if (!selected) return null;
+    const parsed = JSON.parse(jsonText) as MangaProject;
+    const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, parsed);
+    setSelected(project);
+    setJsonText(JSON.stringify(project.manga_json, null, 2));
+    setMessage(successMessage);
+    return project;
   }
 
   async function renderPages() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ page_assets: string[]; manga_json: MangaProject }>(`/api/projects/${selected.id}/render`);
+      const response = await api.post<{ page_assets: string[]; manga_json: MangaProject }>(`/api/projects/${selected.id}/render`, { force: false });
       setPageAssets(response.page_assets);
       const project = { ...selected, manga_json: response.manga_json };
       setSelected(project);
       setJsonText(JSON.stringify(response.manga_json, null, 2));
       setMessage("ページをレンダリングしました");
+    });
+  }
+
+  async function generateCurrentPanelImage() {
+    if (!selected || !currentPanel) return;
+    await runTask(async () => {
+      const saved = await saveJsonDraft("生成前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/generate-image`);
+      const project = { ...(saved ?? selected), manga_json: response.manga_json };
+      setSelected(project);
+      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setMessage(`${currentPanel.panel_id}の画像を生成しました`);
+    });
+  }
+
+  async function useStubForCurrentPanel() {
+    if (!selected || !currentPanel) return;
+    await runTask(async () => {
+      const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`);
+      const project = { ...(saved ?? selected), manga_json: response.manga_json };
+      setSelected(project);
+      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
     });
   }
 
@@ -194,6 +260,26 @@ export function App() {
       const response = await api.post<{ cbz_asset: string }>(`/api/projects/${selected.id}/export/cbz`);
       setMessage(`CBZを書き出しました: /api/assets/${response.cbz_asset}`);
     });
+  }
+
+  function updateCurrentPanel(mutator: (panel: Panel) => void) {
+    if (!selected || !currentPanel) return;
+    const nextManga = structuredClone(selected.manga_json);
+    for (const page of nextManga.pages) {
+      const panel = page.panels.find((item) => item.panel_id === currentPanel.panel_id);
+      if (panel) {
+        mutator(panel);
+        break;
+      }
+    }
+    const nextProject = { ...selected, manga_json: nextManga };
+    setSelected(nextProject);
+    setJsonText(JSON.stringify(nextManga, null, 2));
+  }
+
+  function assetUrl(asset: string): string {
+    const normalized = asset.replaceAll("\\", "/").replace(/^exports\//, "");
+    return `/api/assets/${normalized}`;
   }
 
   return (
@@ -229,12 +315,21 @@ export function App() {
             <span>{message}</span>
           </div>
           <div className="actions">
+            <button onClick={() => void refreshComfyStatus()} disabled={busy}>接続確認</button>
             <button onClick={generateName} disabled={!selected || busy}>ネーム生成</button>
             <button onClick={saveJson} disabled={!selected || busy}>JSON保存</button>
             <button onClick={renderPages} disabled={!selected || busy}>レンダリング</button>
             <button onClick={exportCbz} disabled={!selected || busy}>CBZ出力</button>
           </div>
         </header>
+
+        <section className="status-band">
+          <strong>{comfyStatus?.backend === "comfyui" ? "ComfyUI" : "stub"}</strong>
+          <span>{comfyStatus?.message ?? "接続状態を確認中"}</span>
+          <small>
+            workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node: {comfyStatus?.workflow_valid ? "OK" : "未検証"}
+          </small>
+        </section>
 
         <section className="generator">
           <label>
@@ -276,13 +371,64 @@ export function App() {
             </div>
             <div className="panel-list">
               {currentPage?.panels.map((panel) => (
-                <article key={panel.panel_id}>
+                <article
+                  key={panel.panel_id}
+                  className={currentPanel?.panel_id === panel.panel_id ? "active-panel" : ""}
+                  onClick={() => setSelectedPanelId(panel.panel_id)}
+                >
                   <strong>{panel.panel_id}</strong>
                   <span>{panel.shot}</span>
-                  <small>{panel.generation.status}</small>
+                  <small>{panel.generation.backend} / {panel.generation.status}</small>
                 </article>
               ))}
             </div>
+            {currentPanel && (
+              <div className="panel-editor">
+                <h2>選択中のコマ</h2>
+                <div className="panel-meta">
+                  <strong>{currentPanel.panel_id}</strong>
+                  <span>{currentPanel.generation.message || "生成メッセージなし"}</span>
+                  {currentPanel.generation.prompt_id && <small>prompt_id: {currentPanel.generation.prompt_id}</small>}
+                </div>
+                <label>
+                  positive prompt
+                  <textarea
+                    value={currentPanel.generation.prompt || currentPanel.prompt}
+                    onChange={(event) => updateCurrentPanel((panel) => {
+                      panel.generation.prompt = event.target.value;
+                    })}
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  negative prompt
+                  <input
+                    value={currentPanel.generation.negative_prompt}
+                    onChange={(event) => updateCurrentPanel((panel) => {
+                      panel.generation.negative_prompt = event.target.value;
+                    })}
+                  />
+                </label>
+                <label>
+                  seed
+                  <input
+                    type="number"
+                    value={currentPanel.generation.seed}
+                    onChange={(event) => updateCurrentPanel((panel) => {
+                      panel.generation.seed = Number(event.target.value);
+                    })}
+                  />
+                </label>
+                {currentPanel.image_asset && (
+                  <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
+                )}
+                <div className="actions">
+                  <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>
+                  <button onClick={generateCurrentPanelImage} disabled={busy}>再生成</button>
+                  <button onClick={useStubForCurrentPanel} disabled={busy}>stubへ戻す</button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="json-pane">

@@ -12,6 +12,8 @@ data/*
 !data/.gitkeep
 exports/
 tmp-*.err
+workflows/*.workflow_api.json
+!workflows/*.example.json
 
 .env
 .env.*

@@ -11,6 +11,14 @@ class Settings:
     export_dir: Path = Path("exports")
     image_backend: str = "stub"
     comfyui_base_url: str = "http://127.0.0.1:8188"
+    comfyui_workflow_path: Path = Path("workflows/default.workflow_api.json")
+    comfyui_timeout_seconds: float = 120.0
+    comfyui_positive_node_id: str = "6"
+    comfyui_negative_node_id: str = "7"
+    comfyui_seed_node_id: str = "3"
+    comfyui_width_node_id: str = "5"
+    comfyui_height_node_id: str = "5"
+    comfyui_save_prefix_node_id: str = "9"
     llm_provider: str = "stub"
     llm_base_url: str = ""
 
@@ -21,6 +29,14 @@ class Settings:
             export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
             image_backend=os.getenv("IMAGE_BACKEND", "stub"),
             comfyui_base_url=os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188"),
+            comfyui_workflow_path=Path(os.getenv("COMFYUI_WORKFLOW_PATH", "workflows/default.workflow_api.json")),
+            comfyui_timeout_seconds=float(os.getenv("COMFYUI_TIMEOUT_SECONDS", "120")),
+            comfyui_positive_node_id=os.getenv("COMFYUI_POSITIVE_NODE_ID", "6"),
+            comfyui_negative_node_id=os.getenv("COMFYUI_NEGATIVE_NODE_ID", "7"),
+            comfyui_seed_node_id=os.getenv("COMFYUI_SEED_NODE_ID", "3"),
+            comfyui_width_node_id=os.getenv("COMFYUI_WIDTH_NODE_ID", "5"),
+            comfyui_height_node_id=os.getenv("COMFYUI_HEIGHT_NODE_ID", "5"),
+            comfyui_save_prefix_node_id=os.getenv("COMFYUI_SAVE_PREFIX_NODE_ID", "9"),
             llm_provider=os.getenv("LLM_PROVIDER", "stub"),
             llm_base_url=os.getenv("LLM_BASE_URL", ""),
         )

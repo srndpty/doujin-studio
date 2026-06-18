@@ -13,3 +13,10 @@
 - 既存同人誌のOCR解析。
 - LLMまたは画像生成モデルのfine-tuning。
 - 16ページ構成、見開き、表紙、奥付。
+
+## 次ステップ: ComfyUI実連携
+
+- ComfyUIの`File -> Export (API)`で書き出したworkflow JSONを`workflows/default.workflow_api.json`として読む。
+- アプリ側はpositive prompt、negative prompt、seed、width、height、filename prefixだけを書き換える。
+- `/prompt`で生成を投入し、`/history/{prompt_id}`と`/view`で先頭画像を取得する。
+- ComfyUIが利用できない場合はstub画像へ戻し、編集とレンダリングを継続できる状態にする。
