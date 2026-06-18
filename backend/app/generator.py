@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+from .schemas import Character, Dialogue, GenerationInfo, MangaProject, Page, Panel, Sfx
+
+
+LAYOUTS = {
+    "vertical_3_start": [
+        (0.06, 0.05, 0.88, 0.28),
+        (0.06, 0.36, 0.42, 0.27),
+        (0.52, 0.36, 0.42, 0.27),
+        (0.06, 0.67, 0.88, 0.27),
+    ],
+    "conversation_4": [
+        (0.06, 0.05, 0.42, 0.28),
+        (0.52, 0.05, 0.42, 0.28),
+        (0.06, 0.37, 0.88, 0.25),
+        (0.06, 0.67, 0.88, 0.27),
+    ],
+    "reaction_3": [
+        (0.06, 0.05, 0.88, 0.30),
+        (0.06, 0.40, 0.88, 0.22),
+        (0.06, 0.67, 0.88, 0.27),
+    ],
+    "punchline_3": [
+        (0.06, 0.05, 0.42, 0.30),
+        (0.52, 0.05, 0.42, 0.30),
+        (0.06, 0.40, 0.88, 0.54),
+    ],
+}
+
+
+def generate_four_page_name(
+    title: str,
+    work_name: str,
+    character_a: str,
+    character_b: str,
+    situation: str,
+    ending_direction: str,
+) -> MangaProject:
+    char_a = Character(
+        id="char_a",
+        display_name=character_a,
+        role="主役",
+        speech_style="短めで反応が分かりやすい口調",
+        visual_notes="表情差分を重視",
+    )
+    char_b = Character(
+        id="char_b",
+        display_name=character_b,
+        role="相方",
+        speech_style="状況を動かす台詞を担当",
+        visual_notes="立ち位置が分かる構図を重視",
+    )
+
+    page_specs = [
+        (
+            1,
+            "導入。状況と二人の目的を見せる",
+            "vertical_3_start",
+            [
+                ("状況提示のロングショット", "少し高い視点", [character_a, character_b], f"{situation}。二人が並んで状況を確認している。", [(character_a, "これ、思ったより大ごとじゃない？")]),
+                ("バストアップ", "正面", [character_b], "相方が妙に自信ありげに話す。", [(character_b, "大丈夫。段取りは完璧だから。")]),
+                ("顔アップ", "寄り", [character_a], "主役が不安そうに目を細める。", [(character_a, "その言い方が一番こわいんだけど。")]),
+                ("二人のリアクション", "水平", [character_a, character_b], "小さな違和感に気づく。", []),
+            ],
+        ),
+        (
+            2,
+            "展開。誤解やすれ違いが大きくなる",
+            "conversation_4",
+            [
+                ("会話コマ", "左寄り", [character_a], "主役が確認する。", [(character_a, "念のため聞くけど、何を準備したの？")]),
+                ("会話コマ", "右寄り", [character_b], "相方がさらっと答える。", [(character_b, "勢いで乗り切るための勢い。")]),
+                ("沈黙コマ", "固定", [character_a, character_b], "二人の間に長い沈黙が落ちる。", []),
+                ("ツッコミ", "寄り", [character_a, character_b], "主役が一気にツッコむ。", [(character_a, "それ準備って言わない！")]),
+            ],
+        ),
+        (
+            3,
+            "転換。失敗しかけた状況から別の意味が出る",
+            "reaction_3",
+            [
+                ("動きのあるコマ", "斜め", [character_a, character_b], "二人が慌てて立て直す。", [(character_b, "でも、今なら逆にいけるかも。")]),
+                ("顔アップ", "寄り", [character_a], "主役が意図に気づく。", [(character_a, "逆にって何をどう逆に？")]),
+                ("大きめリアクション", "低め", [character_a, character_b], "場の空気が少しだけ好転する。", [(character_b, "ほら、結果的に注目された。")]),
+            ],
+        ),
+        (
+            4,
+            "オチ。指定された方向で短く締める",
+            "punchline_3",
+            [
+                ("確認", "正面", [character_a], "主役が最後の確認をする。", [(character_a, "つまり成功ってことでいいの？")]),
+                ("自信満々", "正面", [character_b], "相方が胸を張る。", [(character_b, "もちろん。予定通りだよ。")]),
+                ("オチの大ゴマ", "引き", [character_a, character_b], f"{ending_direction}。二人の温度差で締める。", [(character_a, "絶対いま予定って言葉を作ったでしょ。")]),
+            ],
+        ),
+    ]
+
+    pages: list[Page] = []
+    for page_number, theme, template_id, panels in page_specs:
+        page_panels: list[Panel] = []
+        for index, (shot, camera, names, prompt, dialogue_specs) in enumerate(panels, start=1):
+            panel_id = f"p{page_number:02d}_{index:02d}"
+            character_ids = ["char_a" if name == character_a else "char_b" for name in names]
+            dialogues = [
+                Dialogue(
+                    speaker="char_a" if speaker == character_a else "char_b",
+                    text=text,
+                    position="upper_right" if i % 2 == 0 else "upper_left",
+                )
+                for i, (speaker, text) in enumerate(dialogue_specs)
+            ]
+            page_panels.append(
+                Panel(
+                    panel_id=panel_id,
+                    bbox=LAYOUTS[template_id][index - 1],
+                    shot=shot,
+                    camera=camera,
+                    location_id="default_room",
+                    characters=character_ids,
+                    prompt=f"{work_name}, {situation}, {prompt}",
+                    dialogue=dialogues,
+                    sfx=[Sfx(text="しーん", position="center")] if "沈黙" in shot else [],
+                    generation=GenerationInfo(
+                        backend="stub",
+                        prompt=f"{work_name}, {situation}, {prompt}",
+                        seed=page_number * 100 + index,
+                        status="pending",
+                    ),
+                )
+            )
+        pages.append(Page(page=page_number, theme=theme, layout_template=template_id, panels=page_panels))
+
+    return MangaProject(
+        title=title,
+        work_name=work_name,
+        premise=f"{situation}から始まり、{ending_direction}で締める4ページ短編。",
+        target_pages=4,
+        characters=[char_a, char_b],
+        pages=pages,
+    )
