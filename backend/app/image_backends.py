@@ -15,6 +15,9 @@ from .config import Settings
 from .schemas import Panel
 
 
+NO_TEXT_PROMPT_SUFFIX = "no text, no speech bubble, no watermark, no manga panel text"
+
+
 @dataclass(frozen=True)
 class ImageResult:
     backend: str
@@ -247,14 +250,27 @@ def apply_panel_to_workflow(
     filename_prefix: str,
 ) -> dict:
     patched = copy.deepcopy(workflow)
-    positive_prompt = panel.generation.prompt or panel.prompt
+    positive_prompt = apply_text_policy(panel.generation.prompt or panel.prompt, panel.generation.text_policy)
     patched[config.positive_node_id]["inputs"]["text"] = positive_prompt
     patched[config.negative_node_id]["inputs"]["text"] = panel.generation.negative_prompt
     patched[config.seed_node_id]["inputs"]["seed"] = panel.generation.seed
-    patched[config.width_node_id]["inputs"]["width"] = 768
-    patched[config.height_node_id]["inputs"]["height"] = 512
+    if panel.generation.width is not None:
+        patched[config.width_node_id]["inputs"]["width"] = panel.generation.width
+    if panel.generation.height is not None:
+        patched[config.height_node_id]["inputs"]["height"] = panel.generation.height
     patched[config.save_prefix_node_id]["inputs"]["filename_prefix"] = filename_prefix
     return patched
+
+
+def apply_text_policy(prompt: str, text_policy: str) -> str:
+    if text_policy != "no_text":
+        return prompt
+    prompt_lower = prompt.lower()
+    if NO_TEXT_PROMPT_SUFFIX in prompt_lower:
+        return prompt
+    if not prompt.strip():
+        return NO_TEXT_PROMPT_SUFFIX
+    return f"{prompt}, {NO_TEXT_PROMPT_SUFFIX}"
 
 
 async def wait_for_history(client: httpx.AsyncClient, base_url: str, prompt_id: str, timeout_seconds: float) -> dict:

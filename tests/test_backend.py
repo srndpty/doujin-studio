@@ -12,7 +12,8 @@ from PIL import Image
 from backend.app.config import Settings
 from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow
 from backend.app.main import create_app
-from backend.app.schemas import GenerationInfo, Panel
+from backend.app.renderer import fit_image_to_box
+from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
 
 
 def make_client(tmp_path: Path, image_backend: str = "stub", workflow_path: Path | None = None) -> TestClient:
@@ -106,15 +107,44 @@ def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
         bbox=(0.0, 0.0, 1.0, 1.0),
         shot="テスト",
         prompt="元prompt",
-        generation=GenerationInfo(prompt="差し替えprompt", negative_prompt="bad", seed=42),
+        generation=GenerationInfo(prompt="差し替えprompt", negative_prompt="bad", seed=42, width=960, height=540),
     )
     patched = apply_panel_to_workflow(workflow, config, panel, "prefix/test")
-    assert patched["6"]["inputs"]["text"] == "差し替えprompt"
+    assert patched["6"]["inputs"]["text"] == "差し替えprompt, no text, no speech bubble, no watermark, no manga panel text"
     assert patched["7"]["inputs"]["text"] == "bad"
     assert patched["3"]["inputs"]["seed"] == 42
-    assert patched["5"]["inputs"]["width"] == 768
-    assert patched["5"]["inputs"]["height"] == 512
+    assert patched["5"]["inputs"]["width"] == 960
+    assert patched["5"]["inputs"]["height"] == 540
     assert patched["9"]["inputs"]["filename_prefix"] == "prefix/test"
+
+
+def test_existing_manga_json_gets_new_defaults() -> None:
+    manga = MangaProject.model_validate(
+        {
+            "title": "旧形式",
+            "target_pages": 4,
+            "pages": [
+                {
+                    "page": 1,
+                    "theme": "旧形式テスト",
+                    "layout_template": "one",
+                    "panels": [
+                        {
+                            "panel_id": "p01_01",
+                            "bbox": [0.0, 0.0, 1.0, 1.0],
+                            "shot": "テスト",
+                            "dialogue": [{"speaker": "char_a", "text": "長い台詞"}],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    panel = manga.pages[0].panels[0]
+    assert panel.generation.fit_mode == "cover"
+    assert panel.generation.text_policy == "no_text"
+    assert panel.dialogue[0].font_size == 24
+    assert panel.dialogue[0].box is None
 
 
 def test_comfyui_status_reports_missing_workflow(tmp_path: Path) -> None:
@@ -154,6 +184,64 @@ def test_single_panel_stub_endpoint_updates_panel(tmp_path: Path) -> None:
         assert first_panel["generation"]["backend"] == "stub"
         assert first_panel["generation"]["status"] == "done"
         assert first_panel["image_asset"]
+
+
+def test_single_panel_render_page_endpoint_updates_page_png(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        assert response.status_code == 200
+        response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
+        assert response.status_code == 200
+        page_asset = response.json()["page_asset"]
+        assert page_asset == f"{project_id}/pages/page_001.png"
+        assert (tmp_path / "exports" / page_asset).exists()
+
+
+def test_fit_image_cover_and_contain_modes() -> None:
+    source = Image.new("RGB", (100, 50), (255, 0, 0))
+    cover = fit_image_to_box(source, (40, 40), "cover", "center")
+    contain = fit_image_to_box(source, (40, 40), "contain", "center")
+    assert cover.size == (40, 40)
+    assert contain.size == (40, 40)
+    assert contain.getpixel((20, 2)) == (245, 245, 242)
+
+
+def test_long_dialogue_renders_with_auto_font_shrink(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post("/api/projects", json={"title": "写植テスト", "work_name": ""})
+        project_id = response.json()["id"]
+        manga = MangaProject(
+            title="写植テスト",
+            target_pages=4,
+            pages=[
+                Page(
+                    page=1,
+                    theme="長文",
+                    layout_template="one",
+                    panels=[
+                        Panel(
+                            panel_id="p01_01",
+                            bbox=(0.05, 0.05, 0.9, 0.4),
+                            shot="テスト",
+                            dialogue=[
+                                Dialogue(
+                                    speaker="char_a",
+                                    text="これはかなり長い台詞なので吹き出しの中に収まるように自動で小さくなる必要があります。",
+                                    box=(0.05, 0.05, 0.5, 0.22),
+                                    font_size=36,
+                                    max_lines=3,
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga.model_dump())
+        assert response.status_code == 200
+        response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
+        assert response.status_code == 200
 
 
 def sample_workflow() -> dict:

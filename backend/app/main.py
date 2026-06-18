@@ -14,13 +14,14 @@ from .config import Settings
 from .database import ProjectRecord, create_session_factory, now_utc
 from .generator import generate_four_page_name
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
-from .renderer import export_cbz, render_project_pages
+from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
     ExportResponse,
     ComfyUIStatusResponse,
     GenerateNameRequest,
     MangaProject,
     PanelImageGenerationResponse,
+    PanelPageRenderResponse,
     ProjectCreate,
     ProjectDetail,
     ProjectSummary,
@@ -177,6 +178,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
 
+    @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
+    def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        page_number = find_panel_page_number(manga, panel_id)
+        settings = request.app.state.settings
+        page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        return PanelPageRenderResponse(
+            project_id=project_id,
+            panel_id=panel_id,
+            page_asset=asset_to_id(page_asset, settings.export_dir),
+            manga_json=manga,
+        )
+
     @app.post("/api/projects/{project_id}/export/cbz", response_model=ExportResponse)
     def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
         record = load_project_record(request, project_id)
@@ -218,6 +233,14 @@ def find_panel(manga: MangaProject, panel_id: str):
         for panel in page.panels:
             if panel.panel_id == panel_id:
                 return panel
+    raise HTTPException(status_code=404, detail="コマが見つかりません")
+
+
+def find_panel_page_number(manga: MangaProject, panel_id: str) -> int:
+    for page in manga.pages:
+        for panel in page.panels:
+            if panel.panel_id == panel_id:
+                return page.page
     raise HTTPException(status_code=404, detail="コマが見つかりません")
 
 

@@ -5,6 +5,9 @@ type Dialogue = {
   text: string;
   balloon: string;
   position: string;
+  box: [number, number, number, number] | null;
+  font_size: number;
+  max_lines: number;
 };
 
 type Panel = {
@@ -25,6 +28,11 @@ type Panel = {
     seed: number;
     workflow_id: string | null;
     prompt_id: string | null;
+    width: number | null;
+    height: number | null;
+    fit_mode: "cover" | "contain";
+    crop_anchor: "center" | "top" | "bottom" | "left" | "right";
+    text_policy: "no_text";
     model_notes: string;
     status: string;
     message: string;
@@ -118,6 +126,8 @@ export function App() {
     if (!currentPage) return null;
     return currentPage.panels.find((panel) => panel.panel_id === selectedPanelId) ?? currentPage.panels[0] ?? null;
   }, [currentPage, selectedPanelId]);
+
+  const currentDialogue = currentPanel?.dialogue[0] ?? null;
 
   useEffect(() => {
     void refreshProjects();
@@ -254,6 +264,24 @@ export function App() {
     });
   }
 
+  async function renderCurrentPanelPage() {
+    if (!selected || !currentPanel) return;
+    await runTask(async () => {
+      const saved = await saveJsonDraft("写植更新前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const project = { ...(saved ?? selected), manga_json: response.manga_json };
+      setSelected(project);
+      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setPageAssets((assets) => {
+        const next = [...assets];
+        next[selectedPage - 1] = response.page_asset;
+        return next;
+      });
+      setMessage(`${selectedPage}ページを更新しました`);
+    });
+  }
+
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
@@ -277,9 +305,44 @@ export function App() {
     setJsonText(JSON.stringify(nextManga, null, 2));
   }
 
+  function updateCurrentDialogue(mutator: (dialogue: Dialogue) => void) {
+    updateCurrentPanel((panel) => {
+      if (panel.dialogue.length === 0) {
+        panel.dialogue.push({
+          speaker: panel.characters[0] ?? "char_a",
+          text: "台詞",
+          balloon: "round",
+          position: "upper_right",
+          box: [0.48, 0.06, 0.46, 0.22],
+          font_size: 24,
+          max_lines: 3
+        });
+      }
+      mutator(panel.dialogue[0]);
+    });
+  }
+
+  function updateDialogueBox(index: number, value: number) {
+    updateCurrentDialogue((dialogue) => {
+      const box = dialogue.box ?? [0.48, 0.06, 0.46, 0.22];
+      const next = [...box] as [number, number, number, number];
+      next[index] = clamp(value, 0, 1);
+      if (index === 0) next[0] = Math.min(next[0], 1 - next[2]);
+      if (index === 1) next[1] = Math.min(next[1], 1 - next[3]);
+      if (index === 2) next[2] = Math.min(Math.max(next[2], 0.05), 1 - next[0]);
+      if (index === 3) next[3] = Math.min(Math.max(next[3], 0.05), 1 - next[1]);
+      dialogue.box = next;
+    });
+  }
+
   function assetUrl(asset: string): string {
     const normalized = asset.replaceAll("\\", "/").replace(/^exports\//, "");
     return `/api/assets/${normalized}`;
+  }
+
+  function clamp(value: number, min: number, max: number): number {
+    if (Number.isNaN(value)) return min;
+    return Math.max(min, Math.min(max, value));
   }
 
   return (
@@ -419,12 +482,151 @@ export function App() {
                     })}
                   />
                 </label>
+                <div className="settings-grid">
+                  <label>
+                    生成幅
+                    <input
+                      type="number"
+                      min={64}
+                      max={4096}
+                      value={currentPanel.generation.width ?? ""}
+                      placeholder="workflow既定"
+                      onChange={(event) => updateCurrentPanel((panel) => {
+                        panel.generation.width = event.target.value ? Number(event.target.value) : null;
+                      })}
+                    />
+                  </label>
+                  <label>
+                    生成高さ
+                    <input
+                      type="number"
+                      min={64}
+                      max={4096}
+                      value={currentPanel.generation.height ?? ""}
+                      placeholder="workflow既定"
+                      onChange={(event) => updateCurrentPanel((panel) => {
+                        panel.generation.height = event.target.value ? Number(event.target.value) : null;
+                      })}
+                    />
+                  </label>
+                  <label>
+                    配置
+                    <select
+                      value={currentPanel.generation.fit_mode}
+                      onChange={(event) => updateCurrentPanel((panel) => {
+                        panel.generation.fit_mode = event.target.value as "cover" | "contain";
+                      })}
+                    >
+                      <option value="cover">cover</option>
+                      <option value="contain">contain</option>
+                    </select>
+                  </label>
+                  <label>
+                    crop基準
+                    <select
+                      value={currentPanel.generation.crop_anchor}
+                      onChange={(event) => updateCurrentPanel((panel) => {
+                        panel.generation.crop_anchor = event.target.value as "center" | "top" | "bottom" | "left" | "right";
+                      })}
+                    >
+                      <option value="center">center</option>
+                      <option value="top">top</option>
+                      <option value="bottom">bottom</option>
+                      <option value="left">left</option>
+                      <option value="right">right</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="dialogue-editor">
+                  <h3>写植</h3>
+                  <label>
+                    台詞
+                    <textarea
+                      value={currentDialogue?.text ?? ""}
+                      onChange={(event) => updateCurrentDialogue((dialogue) => {
+                        dialogue.text = event.target.value;
+                      })}
+                    />
+                  </label>
+                  <div className="settings-grid">
+                    <label>
+                      x
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={currentDialogue?.box?.[0] ?? 0.48}
+                        onChange={(event) => updateDialogueBox(0, Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      y
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={currentDialogue?.box?.[1] ?? 0.06}
+                        onChange={(event) => updateDialogueBox(1, Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      幅
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.05"
+                        max="1"
+                        value={currentDialogue?.box?.[2] ?? 0.46}
+                        onChange={(event) => updateDialogueBox(2, Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      高さ
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.05"
+                        max="1"
+                        value={currentDialogue?.box?.[3] ?? 0.22}
+                        onChange={(event) => updateDialogueBox(3, Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      フォント
+                      <input
+                        type="number"
+                        min="10"
+                        max="72"
+                        value={currentDialogue?.font_size ?? 24}
+                        onChange={(event) => updateCurrentDialogue((dialogue) => {
+                          dialogue.font_size = Number(event.target.value);
+                        })}
+                      />
+                    </label>
+                    <label>
+                      最大行
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={currentDialogue?.max_lines ?? 3}
+                        onChange={(event) => updateCurrentDialogue((dialogue) => {
+                          dialogue.max_lines = Number(event.target.value);
+                        })}
+                      />
+                    </label>
+                  </div>
+                </div>
                 {currentPanel.image_asset && (
                   <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
                 )}
                 <div className="actions">
                   <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>
                   <button onClick={generateCurrentPanelImage} disabled={busy}>再生成</button>
+                  <button onClick={renderCurrentPanelPage} disabled={busy}>写植更新</button>
+                  <button onClick={renderCurrentPanelPage} disabled={busy}>ページ更新</button>
                   <button onClick={useStubForCurrentPanel} disabled={busy}>stubへ戻す</button>
                 </div>
               </div>
