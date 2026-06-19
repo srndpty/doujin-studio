@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app.config import Settings
+from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow
 from backend.app.main import create_app
 from backend.app.renderer import fit_image_to_box
@@ -54,6 +55,12 @@ def test_project_crud_and_generate_name(tmp_path: Path) -> None:
         assert payload["manga_json"]["target_pages"] == 4
         assert len(payload["manga_json"]["pages"]) == 4
         assert payload["manga_json"]["characters"][0]["display_name"] == "春香"
+        assert payload["manga_json"]["common_positive_prompt"] == DEFAULT_COMMON_POSITIVE_PROMPT
+        assert payload["manga_json"]["common_negative_prompt"] == DEFAULT_COMMON_NEGATIVE_PROMPT
+        first_panel = payload["manga_json"]["pages"][0]["panels"][0]
+        assert first_panel["generation"]["width"] == 1024
+        assert first_panel["generation"]["height"] == 640
+        assert "establishing shot" in first_panel["generation"]["prompt"]
 
 
 def test_render_and_export_cbz(tmp_path: Path) -> None:
@@ -145,6 +152,8 @@ def test_existing_manga_json_gets_new_defaults() -> None:
     assert panel.generation.text_policy == "no_text"
     assert panel.dialogue[0].font_size == 24
     assert panel.dialogue[0].box is None
+    assert manga.common_positive_prompt == ""
+    assert manga.common_negative_prompt == ""
 
 
 def test_comfyui_status_reports_missing_workflow(tmp_path: Path) -> None:

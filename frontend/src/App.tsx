@@ -44,6 +44,8 @@ type MangaProject = {
   work_name: string;
   premise: string;
   target_pages: number;
+  common_positive_prompt: string;
+  common_negative_prompt: string;
   characters: { id: string; display_name: string; role: string; speech_style: string; visual_notes: string }[];
   pages: { page: number; theme: string; layout_template: string; panels: Panel[] }[];
 };
@@ -72,6 +74,16 @@ type ComfyUIStatus = {
   missing_nodes: string[];
   message: string;
 };
+
+type TaskProgress = {
+  label: string;
+  current: number;
+  total: number;
+  indeterminate?: boolean;
+};
+
+const ANIME_PREVIEW_POSITIVE = "masterpiece, best quality, anime style, anime illustration, clean line art, vibrant colors";
+const ANIME_PREVIEW_NEGATIVE = "low quality, worst quality, bad hands, bad anatomy, text, watermark, speech bubble, logo, extra fingers, missing fingers, distorted face";
 
 const api = {
   async get<T>(path: string): Promise<T> {
@@ -109,6 +121,8 @@ export function App() {
   const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
   const [message, setMessage] = useState("準備完了");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<TaskProgress | null>(null);
+  const [assetVersion, setAssetVersion] = useState(0);
   const [form, setForm] = useState({
     title: "テスト本",
     work_name: "サンプル作品",
@@ -158,6 +172,7 @@ export function App() {
       setMessage(error instanceof Error ? error.message : "処理に失敗しました");
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -229,11 +244,24 @@ export function App() {
   async function renderPages() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ page_assets: string[]; manga_json: MangaProject }>(`/api/projects/${selected.id}/render`, { force: false });
-      setPageAssets(response.page_assets);
-      const project = { ...selected, manga_json: response.manga_json };
+      const saved = await saveJsonDraft("レンダリング前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      const manga = saved?.manga_json ?? selected.manga_json;
+      const nextAssets = [...pageAssets];
+      let latestManga = manga;
+      for (const page of manga.pages) {
+        const firstPanel = page.panels[0];
+        if (!firstPanel) continue;
+        setProgress({ label: `${page.page}ページをレンダリング中`, current: page.page, total: manga.pages.length });
+        const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
+        latestManga = response.manga_json;
+        nextAssets[page.page - 1] = response.page_asset;
+        setPageAssets([...nextAssets]);
+        setAssetVersion((value) => value + 1);
+      }
+      const project = { ...(saved ?? selected), manga_json: latestManga };
       setSelected(project);
-      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setJsonText(JSON.stringify(latestManga, null, 2));
       setMessage("ページをレンダリングしました");
     });
   }
@@ -241,13 +269,57 @@ export function App() {
   async function generateCurrentPanelImage() {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
+      setProgress({ label: "Manga JSONを保存中", current: 1, total: 4 });
       const saved = await saveJsonDraft("生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
+      setProgress({ label: `${currentPanel.panel_id}を画像生成中`, current: 2, total: 4, indeterminate: true });
       const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/generate-image`);
-      const project = { ...(saved ?? selected), manga_json: response.manga_json };
+      setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
+      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json ?? response.manga_json };
       setSelected(project);
-      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setJsonText(JSON.stringify(project.manga_json, null, 2));
+      setPageAssets((assets) => {
+        const next = [...assets];
+        next[selectedPage - 1] = pageResponse.page_asset;
+        return next;
+      });
+      setAssetVersion((value) => value + 1);
+      setProgress({ label: "プレビューを更新しました", current: 4, total: 4 });
       setMessage(`${currentPanel.panel_id}の画像を生成しました`);
+    });
+  }
+
+  async function generateCurrentPageImages() {
+    if (!selected || !currentPage) return;
+    await runTask(async () => {
+      const saved = await saveJsonDraft("一括生成前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      let latestManga = saved?.manga_json ?? selected.manga_json;
+      const panelIds = currentPage.panels.map((panel) => panel.panel_id);
+      for (const [index, panelId] of panelIds.entries()) {
+        setProgress({ label: `${panelId}を画像生成中`, current: index + 1, total: panelIds.length + 1, indeterminate: true });
+        const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${panelId}/generate-image`);
+        latestManga = response.manga_json;
+        setSelected({ ...(saved ?? selected), manga_json: latestManga });
+        setJsonText(JSON.stringify(latestManga, null, 2));
+        setAssetVersion((value) => value + 1);
+      }
+      const firstPanelId = panelIds[0];
+      if (firstPanelId) {
+        setProgress({ label: `${selectedPage}ページを更新中`, current: panelIds.length + 1, total: panelIds.length + 1 });
+        const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanelId}/render-page`);
+        latestManga = pageResponse.manga_json;
+        setPageAssets((assets) => {
+          const next = [...assets];
+          next[selectedPage - 1] = pageResponse.page_asset;
+          return next;
+        });
+      }
+      setSelected({ ...(saved ?? selected), manga_json: latestManga });
+      setJsonText(JSON.stringify(latestManga, null, 2));
+      setAssetVersion((value) => value + 1);
+      setMessage(`${selectedPage}ページの全コマを生成しました`);
     });
   }
 
@@ -257,9 +329,16 @@ export function App() {
       const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
       const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`);
-      const project = { ...(saved ?? selected), manga_json: response.manga_json };
+      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json ?? response.manga_json };
       setSelected(project);
-      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setJsonText(JSON.stringify(project.manga_json, null, 2));
+      setPageAssets((assets) => {
+        const next = [...assets];
+        next[selectedPage - 1] = pageResponse.page_asset;
+        return next;
+      });
+      setAssetVersion((value) => value + 1);
       setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
     });
   }
@@ -278,6 +357,7 @@ export function App() {
         next[selectedPage - 1] = response.page_asset;
         return next;
       });
+      setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページを更新しました`);
     });
   }
@@ -303,6 +383,58 @@ export function App() {
     const nextProject = { ...selected, manga_json: nextManga };
     setSelected(nextProject);
     setJsonText(JSON.stringify(nextManga, null, 2));
+  }
+
+  function updateManga(mutator: (manga: MangaProject) => void) {
+    if (!selected) return;
+    const nextManga = structuredClone(selected.manga_json);
+    mutator(nextManga);
+    const nextProject = { ...selected, manga_json: nextManga };
+    setSelected(nextProject);
+    setJsonText(JSON.stringify(nextManga, null, 2));
+  }
+
+  function applyAnimePreviewDefaults() {
+    updateManga((manga) => {
+      manga.common_positive_prompt = ANIME_PREVIEW_POSITIVE;
+      manga.common_negative_prompt = ANIME_PREVIEW_NEGATIVE;
+    });
+  }
+
+  function applyCommonPromptsToPanels() {
+    updateManga((manga) => {
+      for (const page of manga.pages) {
+        for (const panel of page.panels) {
+          panel.generation.prompt = mergePrompt(manga.common_positive_prompt, panel.generation.prompt || panel.prompt);
+          panel.generation.negative_prompt = manga.common_negative_prompt;
+        }
+      }
+    });
+    setMessage("全コマへ共通promptを反映しました");
+  }
+
+  function applyFourPageDraftSettings() {
+    const pageConfigs: Record<number, { prompt: string; width: number; height: number; fit: "cover" | "contain"; anchor: "center" | "top" | "bottom" | "left" | "right" }> = {
+      1: { prompt: "establishing shot, after school room, soft daylight, calm mood", width: 1024, height: 640, fit: "cover", anchor: "center" },
+      2: { prompt: "two character conversation, expressive faces, medium shot, clean background", width: 896, height: 640, fit: "cover", anchor: "center" },
+      3: { prompt: "dynamic reaction, comedic timing, energetic pose, manga composition", width: 896, height: 672, fit: "cover", anchor: "top" },
+      4: { prompt: "punchline scene, comedic contrast, clear silhouettes, final panel emphasis", width: 1024, height: 768, fit: "cover", anchor: "center" }
+    };
+    updateManga((manga) => {
+      for (const page of manga.pages) {
+        const config = pageConfigs[page.page];
+        if (!config) continue;
+        for (const panel of page.panels) {
+          panel.generation.prompt = mergePrompt(config.prompt, panel.generation.prompt || panel.prompt);
+          panel.generation.negative_prompt = manga.common_negative_prompt || ANIME_PREVIEW_NEGATIVE;
+          panel.generation.width = config.width;
+          panel.generation.height = config.height;
+          panel.generation.fit_mode = config.fit;
+          panel.generation.crop_anchor = config.anchor;
+        }
+      }
+    });
+    setMessage("4ページ分の仮設定を反映しました");
   }
 
   function updateCurrentDialogue(mutator: (dialogue: Dialogue) => void) {
@@ -337,13 +469,24 @@ export function App() {
 
   function assetUrl(asset: string): string {
     const normalized = asset.replaceAll("\\", "/").replace(/^exports\//, "");
-    return `/api/assets/${normalized}`;
+    return `/api/assets/${normalized}?v=${assetVersion}`;
   }
 
   function clamp(value: number, min: number, max: number): number {
     if (Number.isNaN(value)) return min;
     return Math.max(min, Math.min(max, value));
   }
+
+  function mergePrompt(prefix: string, prompt: string): string {
+    const cleanPrefix = prefix.trim();
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrefix) return cleanPrompt;
+    if (!cleanPrompt) return cleanPrefix;
+    if (cleanPrompt.toLowerCase().includes(cleanPrefix.toLowerCase())) return cleanPrompt;
+    return `${cleanPrefix}, ${cleanPrompt}`;
+  }
+
+  const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
 
   return (
     <div className="app-shell">
@@ -386,6 +529,16 @@ export function App() {
           </div>
         </header>
 
+        {progress && (
+          <section className="progress-band">
+            <div>
+              <strong>{progress.label}</strong>
+              <span>{progress.current} / {progress.total}</span>
+            </div>
+            <progress className={progress.indeterminate ? "indeterminate" : ""} value={progress.indeterminate ? undefined : progressPercent} max="100" />
+          </section>
+        )}
+
         <section className="status-band">
           <strong>{comfyStatus?.backend === "comfyui" ? "ComfyUI" : "stub"}</strong>
           <span>{comfyStatus?.message ?? "接続状態を確認中"}</span>
@@ -413,6 +566,36 @@ export function App() {
           </label>
         </section>
 
+        {selected && (
+          <section className="common-prompts">
+            <label>
+              全コマ共通positive
+              <textarea
+                value={selected.manga_json.common_positive_prompt}
+                onChange={(event) => updateManga((manga) => {
+                  manga.common_positive_prompt = event.target.value;
+                })}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              全コマ共通negative
+              <textarea
+                value={selected.manga_json.common_negative_prompt}
+                onChange={(event) => updateManga((manga) => {
+                  manga.common_negative_prompt = event.target.value;
+                })}
+                spellCheck={false}
+              />
+            </label>
+            <div className="actions">
+              <button onClick={applyAnimePreviewDefaults} disabled={busy}>anime-preview3-base向け初期値</button>
+              <button onClick={applyCommonPromptsToPanels} disabled={busy}>全コマに反映</button>
+              <button onClick={applyFourPageDraftSettings} disabled={busy}>4ページ仮設定</button>
+            </div>
+          </section>
+        )}
+
         <section className="content-grid">
           <div className="preview">
             <div className="tabs">
@@ -424,7 +607,7 @@ export function App() {
             </div>
             <div className="page-frame">
               {pageAssets[selectedPage - 1] ? (
-                <img src={`/api/assets/${pageAssets[selectedPage - 1]}`} alt={`${selectedPage}ページ`} />
+                <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
               ) : (
                 <div className="page-placeholder">
                   <strong>{currentPage ? `${currentPage.page}ページ` : "未生成"}</strong>
@@ -625,6 +808,7 @@ export function App() {
                 <div className="actions">
                   <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>
                   <button onClick={generateCurrentPanelImage} disabled={busy}>再生成</button>
+                  <button onClick={generateCurrentPageImages} disabled={busy}>ページ内全コマ生成</button>
                   <button onClick={renderCurrentPanelPage} disabled={busy}>写植更新</button>
                   <button onClick={renderCurrentPanelPage} disabled={busy}>ページ更新</button>
                   <button onClick={useStubForCurrentPanel} disabled={busy}>stubへ戻す</button>

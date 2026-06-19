@@ -3,6 +3,9 @@ from __future__ import annotations
 from .schemas import Character, Dialogue, GenerationInfo, MangaProject, Page, Panel, Sfx
 
 
+DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, anime style, anime illustration, clean line art, vibrant colors"
+DEFAULT_COMMON_NEGATIVE_PROMPT = "low quality, worst quality, bad hands, bad anatomy, text, watermark, speech bubble, logo, extra fingers, missing fingers, distorted face"
+
 LAYOUTS = {
     "vertical_3_start": [
         (0.06, 0.05, 0.88, 0.28),
@@ -57,6 +60,8 @@ def generate_four_page_name(
             1,
             "導入。状況と二人の目的を見せる",
             "vertical_3_start",
+            "establishing shot, after school room, soft daylight, calm mood",
+            (1024, 640, "cover", "center"),
             [
                 ("状況提示のロングショット", "少し高い視点", [character_a, character_b], f"{situation}。二人が並んで状況を確認している。", [(character_a, "これ、思ったより大ごとじゃない？")]),
                 ("バストアップ", "正面", [character_b], "相方が妙に自信ありげに話す。", [(character_b, "大丈夫。段取りは完璧だから。")]),
@@ -68,6 +73,8 @@ def generate_four_page_name(
             2,
             "展開。誤解やすれ違いが大きくなる",
             "conversation_4",
+            "two character conversation, expressive faces, medium shot, clean background",
+            (896, 640, "cover", "center"),
             [
                 ("会話コマ", "左寄り", [character_a], "主役が確認する。", [(character_a, "念のため聞くけど、何を準備したの？")]),
                 ("会話コマ", "右寄り", [character_b], "相方がさらっと答える。", [(character_b, "勢いで乗り切るための勢い。")]),
@@ -79,6 +86,8 @@ def generate_four_page_name(
             3,
             "転換。失敗しかけた状況から別の意味が出る",
             "reaction_3",
+            "dynamic reaction, comedic timing, energetic pose, manga composition",
+            (896, 672, "cover", "top"),
             [
                 ("動きのあるコマ", "斜め", [character_a, character_b], "二人が慌てて立て直す。", [(character_b, "でも、今なら逆にいけるかも。")]),
                 ("顔アップ", "寄り", [character_a], "主役が意図に気づく。", [(character_a, "逆にって何をどう逆に？")]),
@@ -89,6 +98,8 @@ def generate_four_page_name(
             4,
             "オチ。指定された方向で短く締める",
             "punchline_3",
+            "punchline scene, comedic contrast, clear silhouettes, final panel emphasis",
+            (1024, 768, "cover", "center"),
             [
                 ("確認", "正面", [character_a], "主役が最後の確認をする。", [(character_a, "つまり成功ってことでいいの？")]),
                 ("自信満々", "正面", [character_b], "相方が胸を張る。", [(character_b, "もちろん。予定通りだよ。")]),
@@ -98,7 +109,8 @@ def generate_four_page_name(
     ]
 
     pages: list[Page] = []
-    for page_number, theme, template_id, panels in page_specs:
+    for page_number, theme, template_id, page_prompt, page_settings, panels in page_specs:
+        width, height, fit_mode, crop_anchor = page_settings
         page_panels: list[Panel] = []
         for index, (shot, camera, names, prompt, dialogue_specs) in enumerate(panels, start=1):
             panel_id = f"p{page_number:02d}_{index:02d}"
@@ -124,8 +136,13 @@ def generate_four_page_name(
                     sfx=[Sfx(text="しーん", position="center")] if "沈黙" in shot else [],
                     generation=GenerationInfo(
                         backend="stub",
-                        prompt=f"{work_name}, {situation}, {prompt}",
+                        prompt=f"{page_prompt}, {work_name}, {situation}, {prompt}",
+                        negative_prompt=DEFAULT_COMMON_NEGATIVE_PROMPT,
                         seed=page_number * 100 + index,
+                        width=width,
+                        height=height,
+                        fit_mode=fit_mode,
+                        crop_anchor=crop_anchor,
                         status="pending",
                     ),
                 )
@@ -137,6 +154,8 @@ def generate_four_page_name(
         work_name=work_name,
         premise=f"{situation}から始まり、{ending_direction}で締める4ページ短編。",
         target_pages=4,
+        common_positive_prompt=DEFAULT_COMMON_POSITIVE_PROMPT,
+        common_negative_prompt=DEFAULT_COMMON_NEGATIVE_PROMPT,
         characters=[char_a, char_b],
         pages=pages,
     )

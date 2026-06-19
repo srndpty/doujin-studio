@@ -109,6 +109,8 @@ class MangaProject(BaseModel):
     work_name: str = ""
     premise: str = ""
     target_pages: int = 4
+    common_positive_prompt: str = ""
+    common_negative_prompt: str = ""
     characters: list[Character] = Field(default_factory=list)
     pages: list[Page] = Field(default_factory=list)
 

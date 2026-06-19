@@ -52,6 +52,14 @@ npm run build
 
 画像生成promptには、文字や吹き出しを画像側に描かせないための文言を自動付与します。台詞と吹き出しはアプリ側レンダラで後から合成します。
 
+全コマ共通promptも設定できます。
+
+- `anime-preview3-base向け初期値`: anime系workflow向けの品質タグとnegative promptを入力します
+- `全コマに反映`: 共通positiveを各コマpromptへ追加し、共通negativeを各コマへ反映します
+- `4ページ仮設定`: 1p導入、2p会話、3pリアクション、4pオチ用の仮promptと生成サイズを入れます
+
+画像生成後は同名PNGでもプレビューが更新されるよう、UI側でキャッシュを更新します。ページ内全コマ生成は1コマずつ順番にComfyUIへ投入するため、進捗バーで現在のコマが分かります。ComfyUIノード単位の詳細進捗を取るには、後続でComfyUI WebSocket監視を追加する必要があります。
+
 ## ComfyUI連携
 
 ComfyUIはこのリポジトリに同梱しません。外部で起動しているComfyUIに接続します。
