@@ -48,10 +48,23 @@ type ImageCandidate = {
   status: "done" | "fallback" | "error";
   prompt: string;
   negative_prompt: string;
+  characters: string[];
   seed: number;
   prompt_id: string | null;
   message: string;
   created_at: string;
+};
+
+type Character = {
+  id: string;
+  display_name: string;
+  role: string;
+  speech_style: string;
+  visual_notes: string;
+  trigger_prompt: string;
+  appearance_prompt: string;
+  outfit_prompt: string;
+  negative_prompt: string;
 };
 
 type GenerationJob = {
@@ -74,7 +87,7 @@ type MangaProject = {
   target_pages: number;
   common_positive_prompt: string;
   common_negative_prompt: string;
-  characters: { id: string; display_name: string; role: string; speech_style: string; visual_notes: string }[];
+  characters: Character[];
   pages: { page: number; theme: string; layout_template: string; panels: Panel[] }[];
 };
 
@@ -172,6 +185,10 @@ export function App() {
   }, [currentPage, selectedPanelId]);
 
   const currentDialogue = currentPanel?.dialogue[0] ?? null;
+  const effectivePrompts = useMemo(() => {
+    if (!selected || !currentPanel) return { positive: "", negative: "" };
+    return composePromptPreview(selected.manga_json, currentPanel);
+  }, [selected, currentPanel]);
 
   useEffect(() => {
     void refreshProjects();
@@ -512,18 +529,6 @@ export function App() {
     });
   }
 
-  function applyCommonPromptsToPanels() {
-    updateManga((manga) => {
-      for (const page of manga.pages) {
-        for (const panel of page.panels) {
-          panel.generation.prompt = mergePrompt(manga.common_positive_prompt, panel.generation.prompt || panel.prompt);
-          panel.generation.negative_prompt = manga.common_negative_prompt;
-        }
-      }
-    });
-    setMessage("全コマへ共通promptを反映しました");
-  }
-
   function applyFourPageDraftSettings() {
     const pageConfigs: Record<number, { prompt: string; width: number; height: number; fit: "cover" | "contain"; anchor: "center" | "top" | "bottom" | "left" | "right" }> = {
       1: { prompt: "establishing shot, after school room, soft daylight, calm mood", width: 1024, height: 640, fit: "cover", anchor: "center" },
@@ -565,6 +570,40 @@ export function App() {
     });
   }
 
+  function updateCharacter(characterId: string, mutator: (character: Character) => void) {
+    updateManga((manga) => {
+      const character = manga.characters.find((item) => item.id === characterId);
+      if (character) mutator(character);
+    });
+  }
+
+  function addCharacter() {
+    updateManga((manga) => {
+      let index = manga.characters.length + 1;
+      while (manga.characters.some((character) => character.id === `char_${index}`)) index += 1;
+      manga.characters.push({
+        id: `char_${index}`,
+        display_name: `キャラ${index}`,
+        role: "",
+        speech_style: "",
+        visual_notes: "",
+        trigger_prompt: "",
+        appearance_prompt: "",
+        outfit_prompt: "",
+        negative_prompt: ""
+      });
+    });
+    setMessage("キャラクタープロファイルを追加しました");
+  }
+
+  function toggleCurrentPanelCharacter(characterId: string) {
+    updateCurrentPanel((panel) => {
+      panel.characters = panel.characters.includes(characterId)
+        ? panel.characters.filter((id) => id !== characterId)
+        : [...panel.characters, characterId];
+    });
+  }
+
   function updateDialogueBox(index: number, value: number) {
     updateCurrentDialogue((dialogue) => {
       const box = dialogue.box ?? [0.48, 0.06, 0.46, 0.22];
@@ -595,6 +634,37 @@ export function App() {
     if (!cleanPrompt) return cleanPrefix;
     if (cleanPrompt.toLowerCase().includes(cleanPrefix.toLowerCase())) return cleanPrompt;
     return `${cleanPrefix}, ${cleanPrompt}`;
+  }
+
+  function composePromptPreview(manga: MangaProject, panel: Panel): { positive: string; negative: string } {
+    const characterMap = new Map(manga.characters.map((character) => [character.id, character]));
+    const positive = [manga.common_positive_prompt];
+    const negative = [manga.common_negative_prompt];
+    for (const characterId of panel.characters) {
+      const character = characterMap.get(characterId);
+      if (!character) continue;
+      positive.push(character.trigger_prompt || character.display_name, character.appearance_prompt, character.outfit_prompt);
+      negative.push(character.negative_prompt);
+    }
+    positive.push(panel.generation.prompt || panel.prompt);
+    negative.push(panel.generation.negative_prompt);
+    return { positive: mergePromptParts(positive), negative: mergePromptParts(negative) };
+  }
+
+  function mergePromptParts(parts: string[]): string {
+    const seen = new Set<string>();
+    const tags: string[] = [];
+    for (const part of parts) {
+      for (const rawTag of part.split(",")) {
+        const tag = rawTag.trim();
+        const key = tag.toLocaleLowerCase();
+        if (tag && !seen.has(key)) {
+          tags.push(tag);
+          seen.add(key);
+        }
+      }
+    }
+    return tags.join(", ");
   }
 
   const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
@@ -702,8 +772,63 @@ export function App() {
             </label>
             <div className="actions">
               <button onClick={applyAnimePreviewDefaults} disabled={busy}>anime-preview3-base向け初期値</button>
-              <button onClick={applyCommonPromptsToPanels} disabled={busy}>全コマに反映</button>
               <button onClick={applyFourPageDraftSettings} disabled={busy}>4ページ仮設定</button>
+            </div>
+          </section>
+        )}
+
+        {selected && (
+          <section className="character-profiles">
+            <div className="section-heading">
+              <h2>キャラクタープロファイル</h2>
+              <button onClick={addCharacter} disabled={busy}>キャラ追加</button>
+            </div>
+            <div className="character-profile-list">
+              {selected.manga_json.characters.map((character) => (
+                <article key={character.id}>
+                  <div className="character-title">
+                    <strong>{character.display_name}</strong>
+                    <small>{character.id}</small>
+                  </div>
+                  <label>
+                    表示名
+                    <input
+                      value={character.display_name}
+                      onChange={(event) => updateCharacter(character.id, (item) => { item.display_name = event.target.value; })}
+                    />
+                  </label>
+                  <label>
+                    trigger prompt
+                    <input
+                      value={character.trigger_prompt}
+                      onChange={(event) => updateCharacter(character.id, (item) => { item.trigger_prompt = event.target.value; })}
+                    />
+                  </label>
+                  <label>
+                    外見タグ
+                    <textarea
+                      value={character.appearance_prompt}
+                      onChange={(event) => updateCharacter(character.id, (item) => { item.appearance_prompt = event.target.value; })}
+                      spellCheck={false}
+                    />
+                  </label>
+                  <label>
+                    衣装タグ
+                    <textarea
+                      value={character.outfit_prompt}
+                      onChange={(event) => updateCharacter(character.id, (item) => { item.outfit_prompt = event.target.value; })}
+                      spellCheck={false}
+                    />
+                  </label>
+                  <label>
+                    個別negative
+                    <input
+                      value={character.negative_prompt}
+                      onChange={(event) => updateCharacter(character.id, (item) => { item.negative_prompt = event.target.value; })}
+                    />
+                  </label>
+                </article>
+              ))}
             </div>
           </section>
         )}
@@ -748,6 +873,21 @@ export function App() {
                   <span>{currentPanel.generation.message || "生成メッセージなし"}</span>
                   {currentPanel.generation.prompt_id && <small>prompt_id: {currentPanel.generation.prompt_id}</small>}
                 </div>
+                {selected && selected.manga_json.characters.length > 0 && (
+                  <fieldset className="panel-characters">
+                    <legend>登場キャラ</legend>
+                    {selected.manga_json.characters.map((character) => (
+                      <label key={character.id}>
+                        <input
+                          type="checkbox"
+                          checked={currentPanel.characters.includes(character.id)}
+                          onChange={() => toggleCurrentPanelCharacter(character.id)}
+                        />
+                        {character.display_name}
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
                 <label>
                   positive prompt
                   <textarea
@@ -767,6 +907,17 @@ export function App() {
                     })}
                   />
                 </label>
+                <details className="prompt-preview">
+                  <summary>実生成prompt</summary>
+                  <label>
+                    positive
+                    <textarea value={effectivePrompts.positive} readOnly spellCheck={false} />
+                  </label>
+                  <label>
+                    negative
+                    <textarea value={effectivePrompts.negative} readOnly spellCheck={false} />
+                  </label>
+                </details>
                 <label>
                   seed
                   <input
@@ -935,6 +1086,12 @@ export function App() {
                           <strong>seed {candidate.seed}</strong>
                           <small>{candidate.backend} / {candidate.status}</small>
                         </div>
+                        <details>
+                          <summary>生成条件</summary>
+                          <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
+                          <p>{candidate.prompt}</p>
+                          <p>{candidate.negative_prompt}</p>
+                        </details>
                         <button
                           onClick={() => void selectCandidate(candidate.id)}
                           disabled={busy || currentPanel.selected_candidate_id === candidate.id}

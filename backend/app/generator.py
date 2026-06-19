@@ -46,6 +46,10 @@ def generate_four_page_name(
         role="主役",
         speech_style="短めで反応が分かりやすい口調",
         visual_notes="表情差分を重視",
+        trigger_prompt=character_a,
+        appearance_prompt="consistent face, consistent hairstyle",
+        outfit_prompt="consistent outfit",
+        negative_prompt="inconsistent character design",
     )
     char_b = Character(
         id="char_b",
@@ -53,6 +57,10 @@ def generate_four_page_name(
         role="相方",
         speech_style="状況を動かす台詞を担当",
         visual_notes="立ち位置が分かる構図を重視",
+        trigger_prompt=character_b,
+        appearance_prompt="consistent face, consistent hairstyle",
+        outfit_prompt="consistent outfit",
+        negative_prompt="inconsistent character design",
     )
 
     page_specs = [

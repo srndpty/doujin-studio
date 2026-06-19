@@ -66,6 +66,7 @@ class ImageCandidate(BaseModel):
     status: Literal["done", "fallback", "error"]
     prompt: str = ""
     negative_prompt: str = ""
+    characters: list[str] = Field(default_factory=list)
     seed: int = Field(ge=0)
     prompt_id: str | None = None
     message: str = ""
@@ -117,6 +118,10 @@ class Character(BaseModel):
     role: str = ""
     speech_style: str = ""
     visual_notes: str = ""
+    trigger_prompt: str = ""
+    appearance_prompt: str = ""
+    outfit_prompt: str = ""
+    negative_prompt: str = ""
 
 
 class MangaProject(BaseModel):
@@ -208,6 +213,13 @@ class GenerationJobResponse(BaseModel):
     candidate_ids: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class PromptPreviewResponse(BaseModel):
+    panel_id: str
+    positive_prompt: str
+    negative_prompt: str
+    character_ids: list[str] = Field(default_factory=list)
 
 
 class ExportResponse(BaseModel):

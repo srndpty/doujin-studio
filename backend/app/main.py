@@ -16,6 +16,7 @@ from .database import ProjectRecord, create_session_factory, now_utc
 from .generator import generate_four_page_name
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
 from .jobs import GenerationJob, JobManager, TERMINAL_JOB_STATUSES
+from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
     ExportResponse,
@@ -27,6 +28,7 @@ from .schemas import (
     MangaProject,
     PanelImageGenerationResponse,
     PanelPageRenderResponse,
+    PromptPreviewResponse,
     ProjectCreate,
     ProjectDetail,
     ProjectSummary,
@@ -148,7 +150,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for page in manga.pages:
             for panel in page.panels:
                 if force or not panel.image_asset:
-                    apply_generation_result(panel, await backend.generate_panel(project_id, panel, settings.export_dir))
+                    prepared = prepare_panel_for_generation(manga, panel)
+                    apply_generation_result(panel, await backend.generate_panel(project_id, prepared, settings.export_dir))
 
         page_assets = render_project_pages(project_id, manga, settings.export_dir)
         save_manga_json(request, project_id, manga)
@@ -169,9 +172,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         panel = find_panel(manga, panel_id)
         settings = request.app.state.settings
         backend = build_image_backend(settings)
-        apply_generation_result(panel, await backend.generate_panel(project_id, panel, settings.export_dir))
+        prepared = prepare_panel_for_generation(manga, panel)
+        apply_generation_result(panel, await backend.generate_panel(project_id, prepared, settings.export_dir))
         save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
+
+    @app.get(
+        "/api/projects/{project_id}/panels/{panel_id}/prompt-preview",
+        response_model=PromptPreviewResponse,
+    )
+    def preview_panel_prompt(project_id: str, panel_id: str, request: Request) -> PromptPreviewResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        positive, negative = compose_panel_prompts(manga, panel)
+        return PromptPreviewResponse(
+            panel_id=panel_id,
+            positive_prompt=positive,
+            negative_prompt=negative,
+            character_ids=panel.characters,
+        )
 
     @app.post(
         "/api/projects/{project_id}/panels/{panel_id}/generation-jobs",
@@ -327,7 +347,7 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
 
         for candidate_index in range(job.candidate_count):
             candidate_id = str(uuid.uuid4())
-            generated_panel = panel.model_copy(deep=True)
+            generated_panel = prepare_panel_for_generation(manga, panel)
             generated_panel.generation.seed += candidate_index
             target = (
                 app.state.settings.export_dir
@@ -365,6 +385,7 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 status=result.status,
                 prompt=generated_panel.generation.prompt or generated_panel.prompt,
                 negative_prompt=generated_panel.generation.negative_prompt,
+                characters=list(generated_panel.characters),
                 seed=generated_panel.generation.seed,
                 prompt_id=result.prompt_id,
                 message=result.message,
@@ -425,8 +446,6 @@ def apply_candidate_selection(panel, candidate: ImageCandidate) -> None:
     panel.image_asset = candidate.asset
     panel.generation.backend = candidate.backend
     panel.generation.status = candidate.status
-    panel.generation.prompt = candidate.prompt
-    panel.generation.negative_prompt = candidate.negative_prompt
     panel.generation.seed = candidate.seed
     panel.generation.prompt_id = candidate.prompt_id
     panel.generation.message = candidate.message

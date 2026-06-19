@@ -105,8 +105,8 @@ label {
 }
 
 .workspace {
-  display: grid;
-  grid-template-rows: auto auto auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
 }
 
@@ -208,11 +208,67 @@ label {
   font-size: 12px;
 }
 
+.character-profiles {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid #d4cec3;
+  background: #f3f5f3;
+  padding: 14px 18px;
+}
+
+.character-profiles h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.character-profile-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.character-profile-list article {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  border: 1px solid #c8ceca;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.character-title {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.character-title small {
+  color: #68716d;
+}
+
+.character-profile-list textarea {
+  min-height: 64px;
+  resize: vertical;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(420px, 0.95fr) minmax(420px, 1.05fr);
   gap: 16px;
   min-height: 0;
+  flex: 1;
   padding: 16px 18px;
 }
 
@@ -328,6 +384,53 @@ label {
   font-size: 13px;
 }
 
+.panel-characters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+  border: 1px solid #d0c8bb;
+  padding: 8px 10px 10px;
+}
+
+.panel-characters legend {
+  color: #4b5557;
+  font-size: 13px;
+}
+
+.panel-characters label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-characters input {
+  width: auto;
+}
+
+.prompt-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d0c8bb;
+  border-radius: 6px;
+  background: #f4f6f5;
+  padding: 9px;
+}
+
+.prompt-preview summary,
+.candidate-gallery summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.prompt-preview textarea {
+  min-height: 72px;
+  background: #ffffff;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
 .panel-image {
   width: 100%;
   max-height: 220px;
@@ -394,6 +497,18 @@ label {
   font-size: 12px;
 }
 
+.candidate-gallery details {
+  min-width: 0;
+}
+
+.candidate-gallery p {
+  overflow-wrap: anywhere;
+  margin: 6px 0 0;
+  color: #4f5552;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .json-pane textarea {
   min-height: 0;
   resize: none;
@@ -416,7 +531,12 @@ label {
   .status-band,
   .progress-band,
   .common-prompts,
+  .character-profile-list,
   .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .character-profile-list article {
     grid-template-columns: 1fr;
   }
 }

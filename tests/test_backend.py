@@ -15,6 +15,7 @@ from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON
 from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
+from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import fit_image_to_box
 from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
 
@@ -63,6 +64,7 @@ def test_project_crud_and_generate_name(tmp_path: Path) -> None:
         assert first_panel["generation"]["width"] == 1024
         assert first_panel["generation"]["height"] == 640
         assert "establishing shot" in first_panel["generation"]["prompt"]
+        assert payload["manga_json"]["characters"][0]["trigger_prompt"] == "春香"
 
 
 def test_render_and_export_cbz(tmp_path: Path) -> None:
@@ -156,6 +158,7 @@ def test_existing_manga_json_gets_new_defaults() -> None:
     assert panel.dialogue[0].box is None
     assert manga.common_positive_prompt == ""
     assert manga.common_negative_prompt == ""
+    assert manga.characters == []
 
 
 def test_comfyui_status_reports_missing_workflow(tmp_path: Path) -> None:
@@ -234,6 +237,8 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
         assert panel["image_candidates"][0]["asset"] != panel["image_candidates"][1]["asset"]
         assert panel["image_candidates"][0]["seed"] + 1 == panel["image_candidates"][1]["seed"]
         assert panel["selected_candidate_id"] == panel["image_candidates"][1]["id"]
+        assert "masterpiece" in panel["image_candidates"][0]["prompt"]
+        assert panel["image_candidates"][0]["characters"] == ["char_a", "char_b"]
 
         first_candidate_id = panel["image_candidates"][0]["id"]
         response = client.post(
@@ -261,6 +266,60 @@ def test_job_manager_cancels_running_task() -> None:
         assert manager.tasks[job.id].cancelled()
 
     asyncio.run(scenario())
+
+
+def test_character_profiles_are_composed_without_duplicates() -> None:
+    manga = MangaProject.model_validate(
+        {
+            "title": "prompt合成",
+            "common_positive_prompt": "masterpiece, anime style",
+            "common_negative_prompt": "low quality, text",
+            "characters": [
+                {
+                    "id": "hero",
+                    "display_name": "主人公",
+                    "trigger_prompt": "hero trigger",
+                    "appearance_prompt": "black hair, blue eyes",
+                    "outfit_prompt": "school uniform",
+                    "negative_prompt": "different hairstyle, text",
+                }
+            ],
+            "pages": [
+                {
+                    "page": 1,
+                    "theme": "test",
+                    "layout_template": "one",
+                    "panels": [
+                        {
+                            "panel_id": "p01_01",
+                            "bbox": [0, 0, 1, 1],
+                            "shot": "顔アップ",
+                            "characters": ["hero"],
+                            "generation": {
+                                "prompt": "anime style, smiling",
+                                "negative_prompt": "bad hands, text",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    positive, negative = compose_panel_prompts(manga, manga.pages[0].panels[0])
+    assert positive == "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling"
+    assert negative == "low quality, text, different hairstyle, bad hands"
+
+
+def test_prompt_preview_endpoint_uses_character_profiles(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.get(f"/api/projects/{project_id}/panels/p01_01/prompt-preview")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["character_ids"] == ["char_a", "char_b"]
+        assert "春香" in payload["positive_prompt"]
+        assert "千早" in payload["positive_prompt"]
+        assert "inconsistent character design" in payload["negative_prompt"]
 
 
 def test_fit_image_cover_and_contain_modes() -> None:
