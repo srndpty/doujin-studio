@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import asyncio
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -12,6 +13,7 @@ from PIL import Image
 from backend.app.config import Settings
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow
+from backend.app.jobs import JobManager
 from backend.app.main import create_app
 from backend.app.renderer import fit_image_to_box
 from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
@@ -205,6 +207,60 @@ def test_single_panel_render_page_endpoint_updates_page_png(tmp_path: Path) -> N
         page_asset = response.json()["page_asset"]
         assert page_asset == f"{project_id}/pages/page_001.png"
         assert (tmp_path / "exports" / page_asset).exists()
+
+
+def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 2},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["id"]
+
+        with client.websocket_connect(f"/api/generation-jobs/{job_id}/ws") as websocket:
+            while True:
+                job = websocket.receive_json()
+                if job["status"] in {"done", "error", "cancelled"}:
+                    break
+
+        assert job["status"] == "done"
+        assert job["progress"] == 100
+        assert len(job["candidate_ids"]) == 2
+        project = client.get(f"/api/projects/{project_id}").json()
+        panel = project["manga_json"]["pages"][0]["panels"][0]
+        assert len(panel["image_candidates"]) == 2
+        assert panel["image_candidates"][0]["asset"] != panel["image_candidates"][1]["asset"]
+        assert panel["image_candidates"][0]["seed"] + 1 == panel["image_candidates"][1]["seed"]
+        assert panel["selected_candidate_id"] == panel["image_candidates"][1]["id"]
+
+        first_candidate_id = panel["image_candidates"][0]["id"]
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/candidates/{first_candidate_id}/select"
+        )
+        assert response.status_code == 200
+        selected_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        assert selected_panel["selected_candidate_id"] == first_candidate_id
+        assert response.json()["page_asset"] == f"{project_id}/pages/page_001.png"
+
+
+def test_job_manager_cancels_running_task() -> None:
+    async def scenario() -> None:
+        manager = JobManager()
+        job = manager.create("project", "panel", 1)
+
+        async def wait_forever() -> None:
+            await asyncio.sleep(60)
+
+        manager.start(job, wait_forever())
+        manager.update(job, status="running")
+        manager.cancel(job)
+        await asyncio.sleep(0)
+        assert job.status == "cancelled"
+        assert manager.tasks[job.id].cancelled()
+
+    asyncio.run(scenario())
 
 
 def test_fit_image_cover_and_contain_modes() -> None:

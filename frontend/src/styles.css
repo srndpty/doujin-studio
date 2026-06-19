@@ -155,7 +155,7 @@ label {
 
 .progress-band {
   display: grid;
-  grid-template-columns: minmax(180px, 360px) 1fr;
+  grid-template-columns: minmax(180px, 360px) 1fr auto;
   gap: 14px;
   align-items: center;
   border-bottom: 1px solid #d4cec3;
@@ -334,6 +334,64 @@ label {
   object-fit: contain;
   border: 1px solid #d0c8bb;
   background: #ffffff;
+}
+
+.candidate-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #d0c8bb;
+  padding-top: 10px;
+}
+
+.candidate-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.candidate-header label {
+  grid-template-columns: auto 82px;
+  align-items: center;
+}
+
+.candidate-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.candidate-gallery article {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid #d0c8bb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px;
+}
+
+.candidate-gallery article.selected-candidate {
+  border-color: #244c5a;
+  box-shadow: inset 0 0 0 1px #244c5a;
+}
+
+.candidate-gallery img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: #202426;
+}
+
+.candidate-gallery div {
+  display: grid;
+  gap: 2px;
+}
+
+.candidate-gallery small,
+.empty-candidates {
+  color: #5f5850;
+  font-size: 12px;
 }
 
 .json-pane textarea {

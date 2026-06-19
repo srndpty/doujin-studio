@@ -4,12 +4,14 @@ import asyncio
 import copy
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
+from websockets.asyncio.client import ClientConnection, connect
 
 from .config import Settings
 from .schemas import Panel
@@ -51,7 +53,14 @@ class ComfyUIStatus:
 
 
 class ImageBackend(Protocol):
-    async def generate_panel(self, project_id: str, panel: Panel, export_dir: Path) -> ImageResult:
+    async def generate_panel(
+        self,
+        project_id: str,
+        panel: Panel,
+        export_dir: Path,
+        target_path: Path | None = None,
+        progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+    ) -> ImageResult:
         pass
 
 
@@ -68,10 +77,20 @@ def load_font(size: int) -> ImageFont.ImageFont:
 
 
 class StubImageBackend:
-    async def generate_panel(self, project_id: str, panel: Panel, export_dir: Path) -> ImageResult:
+    async def generate_panel(
+        self,
+        project_id: str,
+        panel: Panel,
+        export_dir: Path,
+        target_path: Path | None = None,
+        progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+    ) -> ImageResult:
         panel_dir = export_dir / project_id / "panels"
         panel_dir.mkdir(parents=True, exist_ok=True)
-        target = panel_dir / f"{panel.panel_id}.png"
+        target = target_path or panel_dir / f"{panel.panel_id}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if progress_callback:
+            await progress_callback(0, 1, None, "stub画像を生成中です")
         digest = hashlib.sha256(panel.panel_id.encode("utf-8")).digest()
         base = (220 + digest[0] % 24, 224 + digest[1] % 20, 230 + digest[2] % 18)
         accent = (70 + digest[3] % 90, 80 + digest[4] % 90, 90 + digest[5] % 90)
@@ -86,6 +105,8 @@ class StubImageBackend:
         for line_index, line in enumerate(wrap_text(panel.prompt, 28)[:5]):
             draw.text((48, 160 + line_index * 32), line, fill=(55, 55, 55), font=font_small)
         image.save(target)
+        if progress_callback:
+            await progress_callback(1, 1, None, "stub画像を生成しました")
         return ImageResult("stub", "done", target, "stub画像を生成しました")
 
 
@@ -102,8 +123,15 @@ class ComfyUIImageBackend:
         self.timeout_seconds = timeout_seconds
         self.fallback = fallback or StubImageBackend()
 
-    async def generate_panel(self, project_id: str, panel: Panel, export_dir: Path) -> ImageResult:
-        target = export_dir / project_id / "panels" / f"{panel.panel_id}.png"
+    async def generate_panel(
+        self,
+        project_id: str,
+        panel: Panel,
+        export_dir: Path,
+        target_path: Path | None = None,
+        progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+    ) -> ImageResult:
+        target = target_path or export_dir / project_id / "panels" / f"{panel.panel_id}.png"
         try:
             workflow = load_workflow(self.workflow_config)
             workflow = apply_panel_to_workflow(
@@ -112,15 +140,30 @@ class ComfyUIImageBackend:
                 panel=panel,
                 filename_prefix=f"local-doujin-studio/{project_id}/{panel.panel_id}",
             )
+            client_id = f"local-doujin-studio-{project_id}-{panel.panel_id}-{uuid.uuid4()}"
+            websocket = await open_comfyui_websocket(self.base_url, client_id)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     f"{self.base_url}/prompt",
-                    json={"prompt": workflow, "client_id": f"local-doujin-studio-{project_id}"},
+                    json={"prompt": workflow, "client_id": client_id},
                 )
                 response.raise_for_status()
                 prompt_id = response.json().get("prompt_id")
                 if not prompt_id:
                     raise RuntimeError("ComfyUIからprompt_idが返りませんでした")
+                if progress_callback:
+                    await progress_callback(0, 1, None, "ComfyUIへ投入しました")
+                if websocket:
+                    try:
+                        try:
+                            await wait_for_websocket_completion(
+                                websocket, prompt_id, self.timeout_seconds, progress_callback
+                            )
+                        except Exception:
+                            if progress_callback:
+                                await progress_callback(0, 1, None, "WebSocket監視を継続できないため履歴を確認します")
+                    finally:
+                        await websocket.close()
                 history = await wait_for_history(client, self.base_url, prompt_id, self.timeout_seconds)
                 image_ref = find_first_image(history, prompt_id)
                 image_response = await client.get(f"{self.base_url}/view", params=image_ref)
@@ -129,7 +172,9 @@ class ComfyUIImageBackend:
                 target.write_bytes(image_response.content)
                 return ImageResult("comfyui", "done", target, "ComfyUI画像を取得しました", prompt_id=prompt_id)
         except Exception as exc:
-            fallback = await self.fallback.generate_panel(project_id, panel, export_dir)
+            fallback = await self.fallback.generate_panel(
+                project_id, panel, export_dir, target_path=target, progress_callback=progress_callback
+            )
             return ImageResult("comfyui", "fallback", fallback.asset_path, f"ComfyUI生成に失敗したためstubに戻しました: {exc}")
 
     async def get_status(self) -> ComfyUIStatus:
@@ -283,6 +328,48 @@ async def wait_for_history(client: httpx.AsyncClient, base_url: str, prompt_id: 
                 return history
         await asyncio.sleep(1.0)
     raise TimeoutError(f"ComfyUI生成がタイムアウトしました: {prompt_id}")
+
+
+async def open_comfyui_websocket(base_url: str, client_id: str) -> ClientConnection | None:
+    websocket_url = base_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+    try:
+        return await asyncio.wait_for(connect(f"{websocket_url}/ws?clientId={client_id}"), timeout=2.0)
+    except Exception:
+        return None
+
+
+async def wait_for_websocket_completion(
+    websocket: ClientConnection,
+    prompt_id: str,
+    timeout_seconds: float,
+    progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None,
+) -> None:
+    async with asyncio.timeout(timeout_seconds):
+        while True:
+            message = await websocket.recv()
+            if not isinstance(message, str):
+                continue
+            event = json.loads(message)
+            event_type = event.get("type")
+            data = event.get("data", {})
+            event_prompt_id = data.get("prompt_id")
+            if event_prompt_id and event_prompt_id != prompt_id:
+                continue
+            if event_type == "progress":
+                current = int(data.get("value", 0))
+                total = max(int(data.get("max", 1)), 1)
+                if progress_callback:
+                    await progress_callback(current, total, data.get("node"), "ComfyUIで生成中です")
+            elif event_type == "executing":
+                node = data.get("node")
+                if node is None and event_prompt_id == prompt_id:
+                    if progress_callback:
+                        await progress_callback(1, 1, None, "ComfyUI生成が完了しました")
+                    return
+                if progress_callback:
+                    await progress_callback(0, 1, node, f"ノード {node} を実行中です")
+            elif event_type in {"execution_error", "execution_interrupted"}:
+                raise RuntimeError(data.get("exception_message") or "ComfyUIで生成に失敗しました")
 
 
 def find_first_image(history: dict, prompt_id: str) -> dict[str, str]:

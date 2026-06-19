@@ -57,6 +57,21 @@ class GenerationInfo(BaseModel):
     message: str = ""
 
 
+class ImageCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    asset: str
+    backend: Literal["stub", "comfyui"]
+    status: Literal["done", "fallback", "error"]
+    prompt: str = ""
+    negative_prompt: str = ""
+    seed: int = Field(ge=0)
+    prompt_id: str | None = None
+    message: str = ""
+    created_at: datetime
+
+
 class Panel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +83,8 @@ class Panel(BaseModel):
     characters: list[str] = Field(default_factory=list)
     prompt: str = ""
     image_asset: str | None = None
+    image_candidates: list[ImageCandidate] = Field(default_factory=list)
+    selected_candidate_id: str | None = None
     dialogue: list[Dialogue] = Field(default_factory=list)
     sfx: list[Sfx] = Field(default_factory=list)
     generation: GenerationInfo = Field(default_factory=GenerationInfo)
@@ -172,6 +189,25 @@ class PanelPageRenderResponse(BaseModel):
     panel_id: str
     page_asset: str
     manga_json: MangaProject
+
+
+class GenerationJobCreate(BaseModel):
+    candidate_count: int = Field(default=1, ge=1, le=4)
+
+
+class GenerationJobResponse(BaseModel):
+    id: str
+    project_id: str
+    panel_id: str
+    status: Literal["queued", "running", "done", "error", "cancelled"]
+    progress: int = Field(ge=0, le=100)
+    current: int = Field(ge=0)
+    total: int = Field(ge=0)
+    node: str | None = None
+    message: str
+    candidate_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
 
 
 class ExportResponse(BaseModel):

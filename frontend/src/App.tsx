@@ -19,6 +19,8 @@ type Panel = {
   characters: string[];
   prompt: string;
   image_asset: string | null;
+  image_candidates: ImageCandidate[];
+  selected_candidate_id: string | null;
   dialogue: Dialogue[];
   sfx: { text: string; position: string; style: string }[];
   generation: {
@@ -37,6 +39,32 @@ type Panel = {
     status: string;
     message: string;
   };
+};
+
+type ImageCandidate = {
+  id: string;
+  asset: string;
+  backend: "stub" | "comfyui";
+  status: "done" | "fallback" | "error";
+  prompt: string;
+  negative_prompt: string;
+  seed: number;
+  prompt_id: string | null;
+  message: string;
+  created_at: string;
+};
+
+type GenerationJob = {
+  id: string;
+  project_id: string;
+  panel_id: string;
+  status: "queued" | "running" | "done" | "error" | "cancelled";
+  progress: number;
+  current: number;
+  total: number;
+  node: string | null;
+  message: string;
+  candidate_ids: string[];
 };
 
 type MangaProject = {
@@ -123,6 +151,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [assetVersion, setAssetVersion] = useState(0);
+  const [candidateCount, setCandidateCount] = useState(1);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [form, setForm] = useState({
     title: "テスト本",
     work_name: "サンプル作品",
@@ -272,11 +302,11 @@ export function App() {
       setProgress({ label: "Manga JSONを保存中", current: 1, total: 4 });
       const saved = await saveJsonDraft("生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      setProgress({ label: `${currentPanel.panel_id}を画像生成中`, current: 2, total: 4, indeterminate: true });
-      const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/generate-image`);
+      const job = await createAndWaitForGenerationJob(projectId, currentPanel.panel_id);
+      if (job.status !== "done") throw new Error(job.message);
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
       const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
-      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json ?? response.manga_json };
+      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json };
       setSelected(project);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets((assets) => {
@@ -286,7 +316,7 @@ export function App() {
       });
       setAssetVersion((value) => value + 1);
       setProgress({ label: "プレビューを更新しました", current: 4, total: 4 });
-      setMessage(`${currentPanel.panel_id}の画像を生成しました`);
+      setMessage(`${currentPanel.panel_id}に候補を${candidateCount}件追加しました`);
     });
   }
 
@@ -298,8 +328,10 @@ export function App() {
       let latestManga = saved?.manga_json ?? selected.manga_json;
       const panelIds = currentPage.panels.map((panel) => panel.panel_id);
       for (const [index, panelId] of panelIds.entries()) {
-        setProgress({ label: `${panelId}を画像生成中`, current: index + 1, total: panelIds.length + 1, indeterminate: true });
-        const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${panelId}/generate-image`);
+        setProgress({ label: `${panelId}を画像生成中`, current: index + 1, total: panelIds.length + 1 });
+        const job = await createAndWaitForGenerationJob(projectId, panelId);
+        if (job.status !== "done") throw new Error(job.message);
+        const response = await api.get<Project>(`/api/projects/${projectId}`);
         latestManga = response.manga_json;
         setSelected({ ...(saved ?? selected), manga_json: latestManga });
         setJsonText(JSON.stringify(latestManga, null, 2));
@@ -320,6 +352,85 @@ export function App() {
       setJsonText(JSON.stringify(latestManga, null, 2));
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページの全コマを生成しました`);
+    });
+  }
+
+  async function createAndWaitForGenerationJob(projectId: string, panelId: string): Promise<GenerationJob> {
+    const job = await api.post<GenerationJob>(
+      `/api/projects/${projectId}/panels/${panelId}/generation-jobs`,
+      { candidate_count: candidateCount }
+    );
+    setActiveJobId(job.id);
+    try {
+      return await watchGenerationJob(job);
+    } finally {
+      setActiveJobId(null);
+    }
+  }
+
+  function watchGenerationJob(initialJob: GenerationJob): Promise<GenerationJob> {
+    return new Promise((resolve) => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(`${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`);
+      let settled = false;
+      let polling = false;
+      const finish = (job: GenerationJob) => {
+        if (settled) return;
+        settled = true;
+        socket.close();
+        resolve(job);
+      };
+      const update = (job: GenerationJob) => {
+        setProgress({
+          label: job.node ? `${job.message} (${job.node})` : job.message,
+          current: job.progress,
+          total: 100,
+          indeterminate: job.status === "queued" && job.progress === 0
+        });
+        if (["done", "error", "cancelled"].includes(job.status)) finish(job);
+      };
+      socket.onmessage = (event) => update(JSON.parse(event.data) as GenerationJob);
+      const startPolling = () => {
+        if (settled || polling) return;
+        polling = true;
+        socket.close();
+        void pollGenerationJob(initialJob.id).then(finish);
+      };
+      socket.onerror = startPolling;
+      socket.onclose = startPolling;
+    });
+  }
+
+  async function pollGenerationJob(jobId: string): Promise<GenerationJob> {
+    while (true) {
+      const job = await api.get<GenerationJob>(`/api/generation-jobs/${jobId}`);
+      setProgress({ label: job.message, current: job.progress, total: 100 });
+      if (["done", "error", "cancelled"].includes(job.status)) return job;
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+  }
+
+  async function cancelActiveJob() {
+    if (!activeJobId) return;
+    const job = await api.post<GenerationJob>(`/api/generation-jobs/${activeJobId}/cancel`);
+    setMessage(job.message);
+  }
+
+  async function selectCandidate(candidateId: string) {
+    if (!selected || !currentPanel) return;
+    await runTask(async () => {
+      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+        `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/candidates/${candidateId}/select`
+      );
+      setSelected({ ...selected, manga_json: response.manga_json });
+      setJsonText(JSON.stringify(response.manga_json, null, 2));
+      setPageAssets((assets) => {
+        const next = [...assets];
+        next[selectedPage - 1] = response.page_asset;
+        return next;
+      });
+      setAssetVersion((value) => value + 1);
+      setMessage("画像候補を採用し、ページを更新しました");
     });
   }
 
@@ -536,6 +647,7 @@ export function App() {
               <span>{progress.current} / {progress.total}</span>
             </div>
             <progress className={progress.indeterminate ? "indeterminate" : ""} value={progress.indeterminate ? undefined : progressPercent} max="100" />
+            {activeJobId && <button onClick={cancelActiveJob}>キャンセル</button>}
           </section>
         )}
 
@@ -804,6 +916,36 @@ export function App() {
                 </div>
                 {currentPanel.image_asset && (
                   <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
+                )}
+                <div className="candidate-header">
+                  <h3>画像候補</h3>
+                  <label>
+                    一度に生成
+                    <select value={candidateCount} onChange={(event) => setCandidateCount(Number(event.target.value))} disabled={busy}>
+                      {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}件</option>)}
+                    </select>
+                  </label>
+                </div>
+                {currentPanel.image_candidates.length > 0 ? (
+                  <div className="candidate-gallery">
+                    {currentPanel.image_candidates.map((candidate) => (
+                      <article key={candidate.id} className={currentPanel.selected_candidate_id === candidate.id ? "selected-candidate" : ""}>
+                        <img src={assetUrl(candidate.asset)} alt={`seed ${candidate.seed}の候補`} />
+                        <div>
+                          <strong>seed {candidate.seed}</strong>
+                          <small>{candidate.backend} / {candidate.status}</small>
+                        </div>
+                        <button
+                          onClick={() => void selectCandidate(candidate.id)}
+                          disabled={busy || currentPanel.selected_candidate_id === candidate.id}
+                        >
+                          {currentPanel.selected_candidate_id === candidate.id ? "採用中" : "採用"}
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <small className="empty-candidates">生成すると候補がここに保存されます</small>
                 )}
                 <div className="actions">
                   <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>

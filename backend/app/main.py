@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from asyncio import CancelledError
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
@@ -14,11 +15,15 @@ from .config import Settings
 from .database import ProjectRecord, create_session_factory, now_utc
 from .generator import generate_four_page_name
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
+from .jobs import GenerationJob, JobManager, TERMINAL_JOB_STATUSES
 from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
     ExportResponse,
     ComfyUIStatusResponse,
     GenerateNameRequest,
+    GenerationJobCreate,
+    GenerationJobResponse,
+    ImageCandidate,
     MangaProject,
     PanelImageGenerationResponse,
     PanelPageRenderResponse,
@@ -39,7 +44,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path("data").mkdir(parents=True, exist_ok=True)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
-        yield
+        app.state.job_manager = JobManager()
+        try:
+            yield
+        finally:
+            await app.state.job_manager.shutdown()
 
     app = FastAPI(title="Local Doujin Studio", lifespan=lifespan)
     app.add_middleware(
@@ -164,6 +173,99 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
 
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/generation-jobs",
+        response_model=GenerationJobResponse,
+    )
+    async def create_generation_job(
+        project_id: str,
+        panel_id: str,
+        request: Request,
+        payload: GenerationJobCreate | None = Body(default=None),
+    ) -> GenerationJobResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        manager: JobManager = request.app.state.job_manager
+        active = next(
+            (
+                item
+                for item in manager.jobs.values()
+                if item.project_id == project_id
+                and item.panel_id == panel_id
+                and item.status not in TERMINAL_JOB_STATUSES
+            ),
+            None,
+        )
+        if active:
+            raise HTTPException(status_code=409, detail="このコマは画像生成中です")
+        candidate_count = payload.candidate_count if payload else 1
+        job = manager.create(project_id, panel_id, candidate_count)
+        panel.generation.status = "queued"
+        panel.generation.message = "画像生成ジョブを登録しました"
+        save_manga_json(request, project_id, manga)
+        manager.start(job, run_generation_job(request.app, job))
+        return to_job_response(job)
+
+    @app.get("/api/generation-jobs/{job_id}", response_model=GenerationJobResponse)
+    def get_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
+        job = get_job_or_404(request, job_id)
+        return to_job_response(job)
+
+    @app.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobResponse)
+    def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
+        manager: JobManager = request.app.state.job_manager
+        job = get_job_or_404(request, job_id)
+        manager.cancel(job)
+        mark_panel_job_stopped(request.app, job, "生成をキャンセルしました")
+        return to_job_response(job)
+
+    @app.websocket("/api/generation-jobs/{job_id}/ws")
+    async def generation_job_websocket(websocket: WebSocket, job_id: str) -> None:
+        manager: JobManager = websocket.app.state.job_manager
+        job = manager.get(job_id)
+        if job is None:
+            await websocket.close(code=4404, reason="生成ジョブが見つかりません")
+            return
+        await websocket.accept()
+        try:
+            while True:
+                revision = job.revision
+                await websocket.send_json(job.as_dict())
+                if job.status in TERMINAL_JOB_STATUSES:
+                    return
+                job = await manager.wait_for_change(job_id, revision)
+        except WebSocketDisconnect:
+            return
+
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/candidates/{candidate_id}/select",
+        response_model=PanelPageRenderResponse,
+    )
+    def select_panel_candidate(
+        project_id: str,
+        panel_id: str,
+        candidate_id: str,
+        request: Request,
+    ) -> PanelPageRenderResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        candidate = next((item for item in panel.image_candidates if item.id == candidate_id), None)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="画像候補が見つかりません")
+        apply_candidate_selection(panel, candidate)
+        settings = request.app.state.settings
+        page_number = find_panel_page_number(manga, panel_id)
+        page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        save_manga_json(request, project_id, manga)
+        return PanelPageRenderResponse(
+            project_id=project_id,
+            panel_id=panel_id,
+            page_asset=asset_to_id(page_asset, settings.export_dir),
+            manga_json=manga,
+        )
+
     @app.post("/api/projects/{project_id}/panels/{panel_id}/use-stub", response_model=PanelImageGenerationResponse)
     async def use_stub_panel_image(
         project_id: str,
@@ -210,6 +312,136 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(target)
 
     return app
+
+
+async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
+    manager: JobManager = app.state.job_manager
+    try:
+        manga = load_manga_for_app(app, job.project_id)
+        panel = find_panel(manga, job.panel_id)
+        panel.generation.status = "running"
+        panel.generation.message = "画像候補を生成中です"
+        save_manga_json_for_app(app, job.project_id, manga)
+        manager.update(job, status="running", message="画像候補を生成中です")
+        backend = build_image_backend(app.state.settings)
+
+        for candidate_index in range(job.candidate_count):
+            candidate_id = str(uuid.uuid4())
+            generated_panel = panel.model_copy(deep=True)
+            generated_panel.generation.seed += candidate_index
+            target = (
+                app.state.settings.export_dir
+                / job.project_id
+                / "panels"
+                / job.panel_id
+                / f"{candidate_id}.png"
+            )
+
+            async def report_progress(current: int, total: int, node: str | None, message: str) -> None:
+                fraction = current / max(total, 1)
+                overall = round(((candidate_index + fraction) / job.candidate_count) * 100)
+                manager.update(
+                    job,
+                    progress=max(0, min(overall, 99)),
+                    current=current,
+                    total=total,
+                    node=node,
+                    message=f"候補 {candidate_index + 1}/{job.candidate_count}: {message}",
+                )
+
+            result = await backend.generate_panel(
+                job.project_id,
+                generated_panel,
+                app.state.settings.export_dir,
+                target_path=target,
+                progress_callback=report_progress,
+            )
+            if result.asset_path is None:
+                raise RuntimeError("生成画像の保存先が返りませんでした")
+            candidate = ImageCandidate(
+                id=candidate_id,
+                asset=str(result.asset_path),
+                backend=result.backend,
+                status=result.status,
+                prompt=generated_panel.generation.prompt or generated_panel.prompt,
+                negative_prompt=generated_panel.generation.negative_prompt,
+                seed=generated_panel.generation.seed,
+                prompt_id=result.prompt_id,
+                message=result.message,
+                created_at=now_utc(),
+            )
+            panel.image_candidates.append(candidate)
+            apply_candidate_selection(panel, candidate)
+            save_manga_json_for_app(app, job.project_id, manga)
+            job.candidate_ids.append(candidate_id)
+            manager.update(
+                job,
+                progress=round(((candidate_index + 1) / job.candidate_count) * 100),
+                message=f"候補 {candidate_index + 1}/{job.candidate_count} を保存しました",
+            )
+
+        manager.update(job, status="done", progress=100, node=None, message="画像候補の生成が完了しました")
+    except CancelledError:
+        mark_panel_job_stopped(app, job, "生成をキャンセルしました")
+        if job.status != "cancelled":
+            manager.update(job, status="cancelled", message="生成をキャンセルしました")
+        raise
+    except Exception as exc:
+        mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
+        manager.update(job, status="error", node=None, message=f"画像候補の生成に失敗しました: {exc}")
+
+
+def load_manga_for_app(app: FastAPI, project_id: str) -> MangaProject:
+    with app.state.SessionLocal() as session:
+        record = session.get(ProjectRecord, project_id)
+        if record is None:
+            raise RuntimeError("プロジェクトが見つかりません")
+        return parse_manga_json(record.manga_json)
+
+
+def save_manga_json_for_app(app: FastAPI, project_id: str, manga: MangaProject) -> None:
+    with app.state.SessionLocal() as session:
+        record = session.get(ProjectRecord, project_id)
+        if record is None:
+            raise RuntimeError("プロジェクトが見つかりません")
+        record.manga_json = manga.model_dump_json()
+        record.updated_at = now_utc()
+        session.commit()
+
+
+def mark_panel_job_stopped(app: FastAPI, job: GenerationJob, message: str, error: bool = False) -> None:
+    try:
+        manga = load_manga_for_app(app, job.project_id)
+        panel = find_panel(manga, job.panel_id)
+        panel.generation.status = "error" if error else "skipped"
+        panel.generation.message = message
+        save_manga_json_for_app(app, job.project_id, manga)
+    except Exception:
+        return
+
+
+def apply_candidate_selection(panel, candidate: ImageCandidate) -> None:
+    panel.selected_candidate_id = candidate.id
+    panel.image_asset = candidate.asset
+    panel.generation.backend = candidate.backend
+    panel.generation.status = candidate.status
+    panel.generation.prompt = candidate.prompt
+    panel.generation.negative_prompt = candidate.negative_prompt
+    panel.generation.seed = candidate.seed
+    panel.generation.prompt_id = candidate.prompt_id
+    panel.generation.message = candidate.message
+
+
+def get_job_or_404(request: Request, job_id: str) -> GenerationJob:
+    manager: JobManager = request.app.state.job_manager
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="生成ジョブが見つかりません")
+    return job
+
+
+def to_job_response(job: GenerationJob) -> GenerationJobResponse:
+    return GenerationJobResponse(**job.as_dict())
 
 
 def load_project_record(request: Request, project_id: str) -> ProjectRecord:
