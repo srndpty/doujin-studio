@@ -38,6 +38,23 @@ class Sfx(BaseModel):
     style: str = "small_handwritten"
 
 
+class LoRABinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    lora_name: str
+    strength_model: float = Field(default=1.0, ge=-2.0, le=2.0)
+    strength_clip: float = Field(default=1.0, ge=-2.0, le=2.0)
+
+
+class ReferenceImageBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    asset: str
+    character_id: str
+
+
 class GenerationInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +72,8 @@ class GenerationInfo(BaseModel):
     model_notes: str = ""
     status: Literal["pending", "running", "queued", "done", "fallback", "skipped", "error"] = "pending"
     message: str = ""
+    loras: list[LoRABinding] = Field(default_factory=list)
+    reference_images: list[ReferenceImageBinding] = Field(default_factory=list)
 
 
 class ImageCandidate(BaseModel):
@@ -67,6 +86,8 @@ class ImageCandidate(BaseModel):
     prompt: str = ""
     negative_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
+    loras: list[LoRABinding] = Field(default_factory=list)
+    reference_images: list[ReferenceImageBinding] = Field(default_factory=list)
     seed: int = Field(ge=0)
     prompt_id: str | None = None
     message: str = ""
@@ -108,6 +129,8 @@ class Page(BaseModel):
     theme: str
     layout_template: str
     panels: list[Panel] = Field(min_length=1)
+    render_status: Literal["pending", "done"] = "pending"
+    rendered_at: datetime | None = None
 
 
 class Character(BaseModel):
@@ -122,6 +145,12 @@ class Character(BaseModel):
     appearance_prompt: str = ""
     outfit_prompt: str = ""
     negative_prompt: str = ""
+    lora_node_id: str = ""
+    lora_name: str = ""
+    lora_strength_model: float = Field(default=1.0, ge=-2.0, le=2.0)
+    lora_strength_clip: float = Field(default=1.0, ge=-2.0, le=2.0)
+    reference_image_asset: str | None = None
+    reference_load_node_id: str = ""
 
 
 class MangaProject(BaseModel):
@@ -200,6 +229,11 @@ class GenerationJobCreate(BaseModel):
     candidate_count: int = Field(default=1, ge=1, le=4)
 
 
+class BatchGenerationJobCreate(BaseModel):
+    page: int | None = Field(default=None, ge=1)
+    candidate_count: int = Field(default=1, ge=1, le=4)
+
+
 class GenerationJobResponse(BaseModel):
     id: str
     project_id: str
@@ -222,6 +256,37 @@ class PromptPreviewResponse(BaseModel):
     character_ids: list[str] = Field(default_factory=list)
 
 
+class BatchGenerationJobResponse(BaseModel):
+    jobs: list[GenerationJobResponse]
+
+
+class PageProductionStatus(BaseModel):
+    page: int
+    status: Literal["incomplete", "ready", "complete"]
+    adopted_panels: int
+    total_panels: int
+    rendered: bool
+    blockers: list[str] = Field(default_factory=list)
+
+
+class ProjectProductionStatus(BaseModel):
+    project_id: str
+    status: Literal["incomplete", "ready", "complete"]
+    adopted_panels: int
+    total_panels: int
+    rendered_pages: int
+    total_pages: int
+    pages: list[PageProductionStatus]
+    blockers: list[str] = Field(default_factory=list)
+
+
+class CharacterReferenceResponse(BaseModel):
+    character_id: str
+    asset: str
+    manga_json: MangaProject
+
+
 class ExportResponse(BaseModel):
     project_id: str
     cbz_asset: str
+    warnings: list[str] = Field(default_factory=list)

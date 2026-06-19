@@ -38,8 +38,13 @@ type Panel = {
     model_notes: string;
     status: string;
     message: string;
+    loras: LoRABinding[];
+    reference_images: ReferenceImageBinding[];
   };
 };
+
+type LoRABinding = { node_id: string; lora_name: string; strength_model: number; strength_clip: number };
+type ReferenceImageBinding = { node_id: string; asset: string; character_id: string };
 
 type ImageCandidate = {
   id: string;
@@ -49,6 +54,8 @@ type ImageCandidate = {
   prompt: string;
   negative_prompt: string;
   characters: string[];
+  loras: LoRABinding[];
+  reference_images: ReferenceImageBinding[];
   seed: number;
   prompt_id: string | null;
   message: string;
@@ -65,6 +72,12 @@ type Character = {
   appearance_prompt: string;
   outfit_prompt: string;
   negative_prompt: string;
+  lora_node_id: string;
+  lora_name: string;
+  lora_strength_model: number;
+  lora_strength_clip: number;
+  reference_image_asset: string | null;
+  reference_load_node_id: string;
 };
 
 type GenerationJob = {
@@ -88,7 +101,18 @@ type MangaProject = {
   common_positive_prompt: string;
   common_negative_prompt: string;
   characters: Character[];
-  pages: { page: number; theme: string; layout_template: string; panels: Panel[] }[];
+  pages: { page: number; theme: string; layout_template: string; panels: Panel[]; render_status: "pending" | "done"; rendered_at: string | null }[];
+};
+
+type ProductionStatus = {
+  project_id: string;
+  status: "incomplete" | "ready" | "complete";
+  adopted_panels: number;
+  total_panels: number;
+  rendered_pages: number;
+  total_pages: number;
+  pages: { page: number; status: "incomplete" | "ready" | "complete"; adopted_panels: number; total_panels: number; rendered: boolean; blockers: string[] }[];
+  blockers: string[];
 };
 
 type Project = {
@@ -165,7 +189,8 @@ export function App() {
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [assetVersion, setAssetVersion] = useState(0);
   const [candidateCount, setCandidateCount] = useState(1);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJobIds, setActiveJobIds] = useState<string[]>([]);
+  const [productionStatus, setProductionStatus] = useState<ProductionStatus | null>(null);
   const [form, setForm] = useState({
     title: "テスト本",
     work_name: "サンプル作品",
@@ -196,6 +221,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (selected) void refreshProductionStatus(selected.id);
+  }, [selected?.id]);
+
+  useEffect(() => {
     if (currentPage?.panels.length && !currentPage.panels.some((panel) => panel.panel_id === selectedPanelId)) {
       setSelectedPanelId(currentPage.panels[0].panel_id);
     }
@@ -209,6 +238,11 @@ export function App() {
   async function refreshComfyStatus() {
     const status = await api.get<ComfyUIStatus>("/api/comfyui/status");
     setComfyStatus(status);
+  }
+
+  async function refreshProductionStatus(projectId: string) {
+    const status = await api.get<ProductionStatus>(`/api/projects/${projectId}/production-status`);
+    setProductionStatus(status);
   }
 
   async function runTask(task: () => Promise<void>) {
@@ -268,6 +302,7 @@ export function App() {
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setMessage("4ページネームを生成しました");
       await refreshProjects();
+      await refreshProductionStatus(project.id);
     });
   }
 
@@ -275,6 +310,7 @@ export function App() {
     if (!selected) return;
     await runTask(async () => {
       await saveJsonDraft("Manga JSONを保存しました");
+      await refreshProductionStatus(selected.id);
     });
   }
 
@@ -310,6 +346,7 @@ export function App() {
       setSelected(project);
       setJsonText(JSON.stringify(latestManga, null, 2));
       setMessage("ページをレンダリングしました");
+      await refreshProductionStatus(projectId);
     });
   }
 
@@ -334,6 +371,7 @@ export function App() {
       setAssetVersion((value) => value + 1);
       setProgress({ label: "プレビューを更新しました", current: 4, total: 4 });
       setMessage(`${currentPanel.panel_id}に候補を${candidateCount}件追加しました`);
+      await refreshProductionStatus(projectId);
     });
   }
 
@@ -342,18 +380,21 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("一括生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      let latestManga = saved?.manga_json ?? selected.manga_json;
       const panelIds = currentPage.panels.map((panel) => panel.panel_id);
-      for (const [index, panelId] of panelIds.entries()) {
-        setProgress({ label: `${panelId}を画像生成中`, current: index + 1, total: panelIds.length + 1 });
-        const job = await createAndWaitForGenerationJob(projectId, panelId);
-        if (job.status !== "done") throw new Error(job.message);
-        const response = await api.get<Project>(`/api/projects/${projectId}`);
-        latestManga = response.manga_json;
-        setSelected({ ...(saved ?? selected), manga_json: latestManga });
-        setJsonText(JSON.stringify(latestManga, null, 2));
-        setAssetVersion((value) => value + 1);
+      const batch = await api.post<{ jobs: GenerationJob[] }>(`/api/projects/${projectId}/generation-jobs`, {
+        page: selectedPage,
+        candidate_count: candidateCount
+      });
+      setActiveJobIds(batch.jobs.map((job) => job.id));
+      try {
+        for (const job of batch.jobs) {
+          const completed = await watchGenerationJob(job);
+          if (completed.status !== "done") throw new Error(completed.message);
+        }
+      } finally {
+        setActiveJobIds([]);
       }
+      let latestManga = (await api.get<Project>(`/api/projects/${projectId}`)).manga_json;
       const firstPanelId = panelIds[0];
       if (firstPanelId) {
         setProgress({ label: `${selectedPage}ページを更新中`, current: panelIds.length + 1, total: panelIds.length + 1 });
@@ -369,6 +410,7 @@ export function App() {
       setJsonText(JSON.stringify(latestManga, null, 2));
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページの全コマを生成しました`);
+      await refreshProductionStatus(projectId);
     });
   }
 
@@ -377,11 +419,11 @@ export function App() {
       `/api/projects/${projectId}/panels/${panelId}/generation-jobs`,
       { candidate_count: candidateCount }
     );
-    setActiveJobId(job.id);
+    setActiveJobIds([job.id]);
     try {
       return await watchGenerationJob(job);
     } finally {
-      setActiveJobId(null);
+      setActiveJobIds([]);
     }
   }
 
@@ -399,7 +441,7 @@ export function App() {
       };
       const update = (job: GenerationJob) => {
         setProgress({
-          label: job.node ? `${job.message} (${job.node})` : job.message,
+          label: job.node ? `${job.panel_id}: ${job.message} (${job.node})` : `${job.panel_id}: ${job.message}`,
           current: job.progress,
           total: 100,
           indeterminate: job.status === "queued" && job.progress === 0
@@ -428,9 +470,9 @@ export function App() {
   }
 
   async function cancelActiveJob() {
-    if (!activeJobId) return;
-    const job = await api.post<GenerationJob>(`/api/generation-jobs/${activeJobId}/cancel`);
-    setMessage(job.message);
+    if (activeJobIds.length === 0) return;
+    await Promise.all(activeJobIds.map((jobId) => api.post<GenerationJob>(`/api/generation-jobs/${jobId}/cancel`)));
+    setMessage("生成キューをキャンセルしました");
   }
 
   async function selectCandidate(candidateId: string) {
@@ -448,6 +490,7 @@ export function App() {
       });
       setAssetVersion((value) => value + 1);
       setMessage("画像候補を採用し、ページを更新しました");
+      await refreshProductionStatus(selected.id);
     });
   }
 
@@ -468,6 +511,7 @@ export function App() {
       });
       setAssetVersion((value) => value + 1);
       setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
+      await refreshProductionStatus(projectId);
     });
   }
 
@@ -487,14 +531,17 @@ export function App() {
       });
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページを更新しました`);
+      await refreshProductionStatus(projectId);
     });
   }
 
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ cbz_asset: string }>(`/api/projects/${selected.id}/export/cbz`);
-      setMessage(`CBZを書き出しました: /api/assets/${response.cbz_asset}`);
+      const response = await api.post<{ cbz_asset: string; warnings: string[] }>(`/api/projects/${selected.id}/export/cbz`);
+      const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
+      setMessage(`CBZを書き出しました: /api/assets/${response.cbz_asset}${warning}`);
+      await refreshProductionStatus(selected.id);
     });
   }
 
@@ -590,7 +637,13 @@ export function App() {
         trigger_prompt: "",
         appearance_prompt: "",
         outfit_prompt: "",
-        negative_prompt: ""
+        negative_prompt: "",
+        lora_node_id: "",
+        lora_name: "",
+        lora_strength_model: 1,
+        lora_strength_clip: 1,
+        reference_image_asset: null,
+        reference_load_node_id: ""
       });
     });
     setMessage("キャラクタープロファイルを追加しました");
@@ -601,6 +654,23 @@ export function App() {
       panel.characters = panel.characters.includes(characterId)
         ? panel.characters.filter((id) => id !== characterId)
         : [...panel.characters, characterId];
+    });
+  }
+
+  async function uploadReferenceImage(characterId: string, file: File) {
+    if (!selected) return;
+    await runTask(async () => {
+      const response = await fetch(`/api/projects/${selected.id}/characters/${characterId}/reference-image`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json() as { manga_json: MangaProject };
+      setSelected({ ...selected, manga_json: payload.manga_json });
+      setJsonText(JSON.stringify(payload.manga_json, null, 2));
+      setAssetVersion((value) => value + 1);
+      setMessage("参照画像を登録しました");
     });
   }
 
@@ -717,7 +787,7 @@ export function App() {
               <span>{progress.current} / {progress.total}</span>
             </div>
             <progress className={progress.indeterminate ? "indeterminate" : ""} value={progress.indeterminate ? undefined : progressPercent} max="100" />
-            {activeJobId && <button onClick={cancelActiveJob}>キャンセル</button>}
+            {activeJobIds.length > 0 && <button onClick={cancelActiveJob}>キャンセル</button>}
           </section>
         )}
 
@@ -728,6 +798,20 @@ export function App() {
             workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node: {comfyStatus?.workflow_valid ? "OK" : "未検証"}
           </small>
         </section>
+
+        {productionStatus && (
+          <section className={`production-band ${productionStatus.status}`}>
+            <strong>{productionStatus.status === "complete" ? "制作完了" : productionStatus.status === "ready" ? "レンダリング待ち" : "制作中"}</strong>
+            <span>採用 {productionStatus.adopted_panels}/{productionStatus.total_panels}コマ</span>
+            <span>ページ {productionStatus.rendered_pages}/{productionStatus.total_pages}</span>
+            {productionStatus.blockers.length > 0 && (
+              <details>
+                <summary>未完了 {productionStatus.blockers.length}件</summary>
+                <ul>{productionStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+              </details>
+            )}
+          </section>
+        )}
 
         <section className="generator">
           <label>
@@ -827,6 +911,40 @@ export function App() {
                       onChange={(event) => updateCharacter(character.id, (item) => { item.negative_prompt = event.target.value; })}
                     />
                   </label>
+                  <label>
+                    LoRAノードID
+                    <input value={character.lora_node_id} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_node_id = event.target.value; })} />
+                  </label>
+                  <label>
+                    LoRA名
+                    <input value={character.lora_name} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_name = event.target.value; })} />
+                  </label>
+                  <label>
+                    model強度
+                    <input type="number" step="0.05" min="-2" max="2" value={character.lora_strength_model} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_strength_model = Number(event.target.value); })} />
+                  </label>
+                  <label>
+                    CLIP強度
+                    <input type="number" step="0.05" min="-2" max="2" value={character.lora_strength_clip} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_strength_clip = Number(event.target.value); })} />
+                  </label>
+                  <label>
+                    参照画像ノードID
+                    <input value={character.reference_load_node_id} onChange={(event) => updateCharacter(character.id, (item) => { item.reference_load_node_id = event.target.value; })} />
+                  </label>
+                  <label>
+                    参照画像
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) void uploadReferenceImage(character.id, file);
+                      }}
+                    />
+                  </label>
+                  {character.reference_image_asset && (
+                    <img className="reference-image" src={assetUrl(character.reference_image_asset)} alt={`${character.display_name}参照画像`} />
+                  )}
                 </article>
               ))}
             </div>
@@ -838,7 +956,7 @@ export function App() {
             <div className="tabs">
               {[1, 2, 3, 4].map((page) => (
                 <button key={page} className={selectedPage === page ? "active" : ""} onClick={() => setSelectedPage(page)}>
-                  {page}p
+                  {page}p {productionStatus?.pages.find((item) => item.page === page)?.status === "complete" ? "完了" : ""}
                 </button>
               ))}
             </div>
@@ -1089,6 +1207,8 @@ export function App() {
                         <details>
                           <summary>生成条件</summary>
                           <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
+                          {candidate.loras.map((lora) => <small key={`${candidate.id}-${lora.node_id}`}>LoRA {lora.node_id}: {lora.lora_name}</small>)}
+                          {candidate.reference_images.map((reference) => <small key={`${candidate.id}-${reference.node_id}`}>参照 {reference.node_id}: {reference.character_id}</small>)}
                           <p>{candidate.prompt}</p>
                           <p>{candidate.negative_prompt}</p>
                         </details>

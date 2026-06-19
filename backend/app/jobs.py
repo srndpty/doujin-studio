@@ -54,6 +54,7 @@ class JobManager:
         self.jobs: dict[str, GenerationJob] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.events: dict[str, asyncio.Event] = {}
+        self.generation_lock = asyncio.Lock()
 
     def create(self, project_id: str, panel_id: str, candidate_count: int) -> GenerationJob:
         job = GenerationJob(project_id=project_id, panel_id=panel_id, candidate_count=candidate_count)

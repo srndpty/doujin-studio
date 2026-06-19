@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import uuid
 from asyncio import CancelledError
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
+from PIL import Image
 
 from .config import Settings
 from .database import ProjectRecord, create_session_factory, now_utc
@@ -20,6 +22,9 @@ from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
     ExportResponse,
+    BatchGenerationJobCreate,
+    BatchGenerationJobResponse,
+    CharacterReferenceResponse,
     ComfyUIStatusResponse,
     GenerateNameRequest,
     GenerationJobCreate,
@@ -29,6 +34,8 @@ from .schemas import (
     PanelImageGenerationResponse,
     PanelPageRenderResponse,
     PromptPreviewResponse,
+    PageProductionStatus,
+    ProjectProductionStatus,
     ProjectCreate,
     ProjectDetail,
     ProjectSummary,
@@ -123,6 +130,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/projects/{project_id}/manga-json", response_model=ProjectDetail)
     def update_manga_json(project_id: str, payload: MangaProject, request: Request) -> ProjectDetail:
+        for page in payload.pages:
+            page.render_status = "pending"
+            page.rendered_at = None
         with request.app.state.SessionLocal() as session:
             record = session.get(ProjectRecord, project_id)
             if record is None:
@@ -151,9 +161,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for panel in page.panels:
                 if force or not panel.image_asset:
                     prepared = prepare_panel_for_generation(manga, panel)
-                    apply_generation_result(panel, await backend.generate_panel(project_id, prepared, settings.export_dir))
+                    result = await backend.generate_panel(project_id, prepared, settings.export_dir)
+                    register_generation_candidate(panel, prepared, result)
 
         page_assets = render_project_pages(project_id, manga, settings.export_dir)
+        for page in manga.pages:
+            page.render_status = "done"
+            page.rendered_at = now_utc()
         save_manga_json(request, project_id, manga)
         return RenderResponse(
             project_id=project_id,
@@ -173,7 +187,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = request.app.state.settings
         backend = build_image_backend(settings)
         prepared = prepare_panel_for_generation(manga, panel)
-        apply_generation_result(panel, await backend.generate_panel(project_id, prepared, settings.export_dir))
+        result = await backend.generate_panel(project_id, prepared, settings.export_dir)
+        register_generation_candidate(panel, prepared, result)
         save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
 
@@ -227,6 +242,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manager.start(job, run_generation_job(request.app, job))
         return to_job_response(job)
 
+    @app.post("/api/projects/{project_id}/generation-jobs", response_model=BatchGenerationJobResponse)
+    async def create_batch_generation_jobs(
+        project_id: str,
+        request: Request,
+        payload: BatchGenerationJobCreate | None = Body(default=None),
+    ) -> BatchGenerationJobResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        options = payload or BatchGenerationJobCreate()
+        panels = [
+            panel
+            for page in manga.pages
+            if options.page is None or page.page == options.page
+            for panel in page.panels
+        ]
+        if not panels:
+            raise HTTPException(status_code=404, detail="生成対象のコマが見つかりません")
+        manager: JobManager = request.app.state.job_manager
+        active_keys = {
+            (item.project_id, item.panel_id)
+            for item in manager.jobs.values()
+            if item.status not in TERMINAL_JOB_STATUSES
+        }
+        jobs: list[GenerationJob] = []
+        for panel in panels:
+            if (project_id, panel.panel_id) in active_keys:
+                continue
+            job = manager.create(project_id, panel.panel_id, options.candidate_count)
+            panel.generation.status = "queued"
+            panel.generation.message = "一括生成キューへ登録しました"
+            jobs.append(job)
+        if not jobs:
+            raise HTTPException(status_code=409, detail="対象コマはすべて生成中です")
+        save_manga_json(request, project_id, manga)
+        for job in jobs:
+            manager.start(job, run_generation_job(request.app, job))
+        return BatchGenerationJobResponse(jobs=[to_job_response(job) for job in jobs])
+
     @app.get("/api/generation-jobs/{job_id}", response_model=GenerationJobResponse)
     def get_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
         job = get_job_or_404(request, job_id)
@@ -278,6 +331,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = request.app.state.settings
         page_number = find_panel_page_number(manga, panel_id)
         page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page = next(item for item in manga.pages if item.page == page_number)
+        page.render_status = "done"
+        page.rendered_at = now_utc()
         save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
@@ -296,9 +352,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manga = parse_manga_json(record.manga_json)
         panel = find_panel(manga, panel_id)
         settings = request.app.state.settings
-        apply_generation_result(panel, await StubImageBackend().generate_panel(project_id, panel, settings.export_dir))
+        result = await StubImageBackend().generate_panel(project_id, panel, settings.export_dir)
+        register_generation_candidate(panel, panel, result)
         save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
+
+    @app.post(
+        "/api/projects/{project_id}/characters/{character_id}/reference-image",
+        response_model=CharacterReferenceResponse,
+    )
+    async def upload_character_reference(
+        project_id: str,
+        character_id: str,
+        request: Request,
+    ) -> CharacterReferenceResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        character = next((item for item in manga.characters if item.id == character_id), None)
+        if character is None:
+            raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
+        content = await request.body()
+        if not content or len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
+        try:
+            with Image.open(io.BytesIO(content)) as source:
+                image = source.convert("RGB")
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
+        target = request.app.state.settings.export_dir / project_id / "references" / f"{character_id}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        image.save(target, format="PNG")
+        character.reference_image_asset = str(target)
+        save_manga_json(request, project_id, manga)
+        return CharacterReferenceResponse(
+            character_id=character_id,
+            asset=str(target),
+            manga_json=manga,
+        )
 
     @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
     def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:
@@ -307,6 +397,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page_number = find_panel_page_number(manga, panel_id)
         settings = request.app.state.settings
         page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page = next(item for item in manga.pages if item.page == page_number)
+        page.render_status = "done"
+        page.rendered_at = now_utc()
+        save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
             panel_id=panel_id,
@@ -319,9 +413,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
+        status = build_production_status(project_id, manga)
         page_assets = render_project_pages(project_id, manga, settings.export_dir)
+        for page in manga.pages:
+            page.render_status = "done"
+            page.rendered_at = now_utc()
+        save_manga_json(request, project_id, manga)
         cbz_path = export_cbz(project_id, page_assets, settings.export_dir)
-        return ExportResponse(project_id=project_id, cbz_asset=asset_to_id(cbz_path, settings.export_dir))
+        return ExportResponse(
+            project_id=project_id,
+            cbz_asset=asset_to_id(cbz_path, settings.export_dir),
+            warnings=[blocker for blocker in status.blockers if "採用画像" in blocker],
+        )
+
+    @app.get("/api/projects/{project_id}/production-status", response_model=ProjectProductionStatus)
+    def get_production_status(project_id: str, request: Request) -> ProjectProductionStatus:
+        record = load_project_record(request, project_id)
+        return build_production_status(project_id, parse_manga_json(record.manga_json))
 
     @app.get("/api/assets/{asset_id:path}")
     def get_asset(asset_id: str, request: Request) -> FileResponse:
@@ -335,6 +443,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
+    manager: JobManager = app.state.job_manager
+    manager.update(job, message="生成キューで待機中です")
+    try:
+        async with manager.generation_lock:
+            await execute_generation_job(app, job)
+    except CancelledError:
+        mark_panel_job_stopped(app, job, "生成をキャンセルしました")
+        if job.status != "cancelled":
+            manager.update(job, status="cancelled", message="生成をキャンセルしました")
+        raise
+
+
+async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     manager: JobManager = app.state.job_manager
     try:
         manga = load_manga_for_app(app, job.project_id)
@@ -386,6 +507,8 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 prompt=generated_panel.generation.prompt or generated_panel.prompt,
                 negative_prompt=generated_panel.generation.negative_prompt,
                 characters=list(generated_panel.characters),
+                loras=list(generated_panel.generation.loras),
+                reference_images=list(generated_panel.generation.reference_images),
                 seed=generated_panel.generation.seed,
                 prompt_id=result.prompt_id,
                 message=result.message,
@@ -463,6 +586,65 @@ def to_job_response(job: GenerationJob) -> GenerationJobResponse:
     return GenerationJobResponse(**job.as_dict())
 
 
+def build_production_status(project_id: str, manga: MangaProject) -> ProjectProductionStatus:
+    page_statuses: list[PageProductionStatus] = []
+    project_blockers: list[str] = []
+    adopted_total = 0
+    panel_total = 0
+    rendered_pages = 0
+    for page in manga.pages:
+        total = len(page.panels)
+        adopted = sum(
+            1
+            for panel in page.panels
+            if panel.selected_candidate_id
+            and any(candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates)
+        )
+        rendered = page.render_status == "done"
+        blockers: list[str] = []
+        for panel in page.panels:
+            if not panel.selected_candidate_id:
+                blockers.append(f"{panel.panel_id}: 採用画像が未選択です")
+        if not rendered:
+            blockers.append(f"{page.page}ページ: ページが未レンダリングです")
+        if adopted == total and rendered:
+            status = "complete"
+        elif adopted == total:
+            status = "ready"
+        else:
+            status = "incomplete"
+        page_statuses.append(
+            PageProductionStatus(
+                page=page.page,
+                status=status,
+                adopted_panels=adopted,
+                total_panels=total,
+                rendered=rendered,
+                blockers=blockers,
+            )
+        )
+        adopted_total += adopted
+        panel_total += total
+        rendered_pages += int(rendered)
+        project_blockers.extend(blockers)
+    if page_statuses and all(page.status == "complete" for page in page_statuses):
+        project_status = "complete"
+    elif page_statuses and all(page.status in {"ready", "complete"} for page in page_statuses):
+        project_status = "ready"
+    else:
+        project_status = "incomplete"
+    return ProjectProductionStatus(
+        project_id=project_id,
+        status=project_status,
+        adopted_panels=adopted_total,
+        total_panels=panel_total,
+        rendered_pages=rendered_pages,
+        total_pages=len(manga.pages),
+        pages=page_statuses,
+        blockers=project_blockers,
+    )
+
+
 def load_project_record(request: Request, project_id: str) -> ProjectRecord:
     with request.app.state.SessionLocal() as session:
         record = session.get(ProjectRecord, project_id)
@@ -501,6 +683,29 @@ def apply_generation_result(panel, result) -> None:
     panel.generation.status = result.status
     panel.generation.message = result.message
     panel.generation.prompt_id = result.prompt_id
+
+
+def register_generation_candidate(panel, generated_panel, result) -> None:
+    if result.asset_path is None:
+        apply_generation_result(panel, result)
+        return
+    candidate = ImageCandidate(
+        id=str(uuid.uuid4()),
+        asset=str(result.asset_path),
+        backend=result.backend,
+        status=result.status,
+        prompt=generated_panel.generation.prompt or generated_panel.prompt,
+        negative_prompt=generated_panel.generation.negative_prompt,
+        characters=list(generated_panel.characters),
+        loras=list(generated_panel.generation.loras),
+        reference_images=list(generated_panel.generation.reference_images),
+        seed=generated_panel.generation.seed,
+        prompt_id=result.prompt_id,
+        message=result.message,
+        created_at=now_utc(),
+    )
+    panel.image_candidates.append(candidate)
+    apply_candidate_selection(panel, candidate)
 
 
 def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> None:

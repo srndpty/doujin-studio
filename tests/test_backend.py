@@ -12,10 +12,10 @@ from PIL import Image
 
 from backend.app.config import Settings
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
-from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow
+from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow, apply_reference_images_to_workflow
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
-from backend.app.prompt_composer import compose_panel_prompts
+from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.renderer import fit_image_to_box
 from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
 
@@ -85,6 +85,10 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
         assert cbz_path.exists()
         with ZipFile(cbz_path) as archive:
             assert archive.namelist() == ["page_001.png", "page_002.png", "page_003.png", "page_004.png"]
+        assert response.json()["warnings"] == []
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert status["status"] == "complete"
+        assert status["adopted_panels"] == status["total_panels"]
 
 
 def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
@@ -127,6 +131,30 @@ def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
     assert patched["5"]["inputs"]["width"] == 960
     assert patched["5"]["inputs"]["height"] == 540
     assert patched["9"]["inputs"]["filename_prefix"] == "prefix/test"
+
+
+def test_workflow_json_applies_character_lora(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["20"] = {"class_type": "LoraLoader", "inputs": {"lora_name": "old.safetensors"}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="テスト",
+        generation=GenerationInfo(
+            loras=[
+                {
+                    "node_id": "20",
+                    "lora_name": "character.safetensors",
+                    "strength_model": 0.8,
+                    "strength_clip": 0.7,
+                }
+            ]
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert patched["20"]["inputs"]["lora_name"] == "character.safetensors"
+    assert patched["20"]["inputs"]["strength_model"] == 0.8
+    assert patched["20"]["inputs"]["strength_clip"] == 0.7
 
 
 def test_existing_manga_json_gets_new_defaults() -> None:
@@ -320,6 +348,101 @@ def test_prompt_preview_endpoint_uses_character_profiles(tmp_path: Path) -> None
         assert "春香" in payload["positive_prompt"]
         assert "千早" in payload["positive_prompt"]
         assert "inconsistent character design" in payload["negative_prompt"]
+
+
+def test_character_adapters_are_prepared_for_panel() -> None:
+    manga = MangaProject.model_validate(
+        {
+            "title": "adapter",
+            "characters": [
+                {
+                    "id": "hero",
+                    "display_name": "主人公",
+                    "lora_node_id": "20",
+                    "lora_name": "hero.safetensors",
+                    "reference_image_asset": "exports/project/references/hero.png",
+                    "reference_load_node_id": "30",
+                }
+            ],
+            "pages": [
+                {
+                    "page": 1,
+                    "theme": "test",
+                    "layout_template": "one",
+                    "panels": [{"panel_id": "p01_01", "bbox": [0, 0, 1, 1], "shot": "test", "characters": ["hero"]}],
+                }
+            ],
+        }
+    )
+    prepared = prepare_panel_for_generation(manga, manga.pages[0].panels[0])
+    assert prepared.generation.loras[0].node_id == "20"
+    assert prepared.generation.reference_images[0].node_id == "30"
+
+
+def test_reference_image_is_uploaded_and_patched(tmp_path: Path) -> None:
+    export_dir = tmp_path / "exports"
+    source = export_dir / "project" / "references" / "hero.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (16, 16), "red").save(source)
+    workflow = {"30": {"class_type": "LoadImage", "inputs": {"image": "old.png"}}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        generation=GenerationInfo(
+            reference_images=[{"node_id": "30", "asset": str(source), "character_id": "hero"}]
+        ),
+    )
+
+    class UploadClient:
+        async def post(self, url: str, files: dict, data: dict) -> httpx.Response:
+            return response(url, {"name": "hero.png", "subfolder": data["subfolder"], "type": "input"})
+
+    asyncio.run(
+        apply_reference_images_to_workflow(
+            UploadClient(), "http://comfy", workflow, panel, export_dir, "project"
+        )
+    )
+    assert workflow["30"]["inputs"]["image"] == "local-doujin-studio/project/references/hero.png"
+
+
+def test_reference_image_upload_api(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        image = Image.new("RGB", (20, 20), "blue")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        assert response.status_code == 200
+        asset = response.json()["asset"]
+        assert Path(asset).exists()
+        assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
+
+
+def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/generation-jobs",
+            json={"page": 1, "candidate_count": 1},
+        )
+        assert response.status_code == 200
+        jobs = response.json()["jobs"]
+        assert len(jobs) == 4
+        for job in jobs:
+            with client.websocket_connect(f"/api/generation-jobs/{job['id']}/ws") as websocket:
+                while True:
+                    state = websocket.receive_json()
+                    if state["status"] in {"done", "error", "cancelled"}:
+                        break
+            assert state["status"] == "done"
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert status["pages"][0]["status"] == "ready"
+        assert status["pages"][0]["adopted_panels"] == 4
 
 
 def test_fit_image_cover_and_contain_modes() -> None:

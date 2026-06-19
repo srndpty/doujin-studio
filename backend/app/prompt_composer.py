@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .schemas import MangaProject, Panel
+from .schemas import LoRABinding, MangaProject, Panel, ReferenceImageBinding
 
 
 def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
@@ -44,4 +44,28 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
     positive, negative = compose_panel_prompts(manga, panel)
     prepared.generation.prompt = positive
     prepared.generation.negative_prompt = negative
+    characters_by_id = {character.id: character for character in manga.characters}
+    prepared.generation.loras = []
+    prepared.generation.reference_images = []
+    for character_id in panel.characters:
+        character = characters_by_id.get(character_id)
+        if character is None:
+            continue
+        if character.lora_node_id and character.lora_name:
+            prepared.generation.loras.append(
+                LoRABinding(
+                    node_id=character.lora_node_id,
+                    lora_name=character.lora_name,
+                    strength_model=character.lora_strength_model,
+                    strength_clip=character.lora_strength_clip,
+                )
+            )
+        if character.reference_load_node_id and character.reference_image_asset:
+            prepared.generation.reference_images.append(
+                ReferenceImageBinding(
+                    node_id=character.reference_load_node_id,
+                    asset=character.reference_image_asset,
+                    character_id=character.id,
+                )
+            )
     return prepared

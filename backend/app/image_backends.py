@@ -143,6 +143,14 @@ class ComfyUIImageBackend:
             client_id = f"local-doujin-studio-{project_id}-{panel.panel_id}-{uuid.uuid4()}"
             websocket = await open_comfyui_websocket(self.base_url, client_id)
             async with httpx.AsyncClient(timeout=10.0) as client:
+                await apply_reference_images_to_workflow(
+                    client,
+                    self.base_url,
+                    workflow,
+                    panel,
+                    export_dir,
+                    project_id,
+                )
                 response = await client.post(
                     f"{self.base_url}/prompt",
                     json={"prompt": workflow, "client_id": client_id},
@@ -304,7 +312,55 @@ def apply_panel_to_workflow(
     if panel.generation.height is not None:
         patched[config.height_node_id]["inputs"]["height"] = panel.generation.height
     patched[config.save_prefix_node_id]["inputs"]["filename_prefix"] = filename_prefix
+    lora_nodes: set[str] = set()
+    for lora in panel.generation.loras:
+        if lora.node_id in lora_nodes:
+            raise ValueError(f"複数キャラで同じLoRAノードを指定しています: {lora.node_id}")
+        lora_nodes.add(lora.node_id)
+        node = patched.get(lora.node_id)
+        if not node or "inputs" not in node:
+            raise ValueError(f"LoRAノードがworkflowにありません: {lora.node_id}")
+        node["inputs"]["lora_name"] = lora.lora_name
+        node["inputs"]["strength_model"] = lora.strength_model
+        node["inputs"]["strength_clip"] = lora.strength_clip
     return patched
+
+
+async def apply_reference_images_to_workflow(
+    client: httpx.AsyncClient,
+    base_url: str,
+    workflow: dict,
+    panel: Panel,
+    export_dir: Path,
+    project_id: str,
+) -> None:
+    export_root = export_dir.resolve()
+    reference_nodes: set[str] = set()
+    for binding in panel.generation.reference_images:
+        if binding.node_id in reference_nodes:
+            raise ValueError(f"複数キャラで同じ参照画像ノードを指定しています: {binding.node_id}")
+        reference_nodes.add(binding.node_id)
+        node = workflow.get(binding.node_id)
+        if not node or "inputs" not in node:
+            raise ValueError(f"参照画像ノードがworkflowにありません: {binding.node_id}")
+        source = Path(binding.asset)
+        if not source.is_absolute():
+            source = source.resolve()
+        source = source.resolve()
+        if not source.is_relative_to(export_root) or not source.exists():
+            raise ValueError(f"参照画像が見つかりません: {binding.asset}")
+        subfolder = f"local-doujin-studio/{project_id}/references"
+        with source.open("rb") as image_file:
+            response = await client.post(
+                f"{base_url}/upload/image",
+                files={"image": (source.name, image_file, "image/png")},
+                data={"type": "input", "subfolder": subfolder, "overwrite": "true"},
+            )
+        response.raise_for_status()
+        uploaded = response.json()
+        uploaded_name = uploaded.get("name", source.name)
+        uploaded_subfolder = uploaded.get("subfolder", subfolder)
+        node["inputs"]["image"] = f"{uploaded_subfolder}/{uploaded_name}".replace("\\", "/")
 
 
 def apply_text_policy(prompt: str, text_policy: str) -> str:
