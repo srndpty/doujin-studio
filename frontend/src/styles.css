@@ -749,3 +749,232 @@ label {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Phase 7: タブとパネル --- */
+.workspace-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 14px;
+  border-bottom: 2px solid #d9d3c8;
+  padding-bottom: 8px;
+}
+
+.workspace-tabs button {
+  border-radius: 6px 6px 0 0;
+}
+
+.panel-message {
+  background: #ece7dd;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #46413b;
+  margin-bottom: 12px;
+}
+
+.knowledge-panel,
+.story-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.knowledge-panel h3,
+.story-panel h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.hint {
+  color: #7a7368;
+  font-size: 12px;
+}
+
+.knowledge-import,
+.knowledge-document,
+.knowledge-sources,
+.knowledge-search {
+  background: #fffdfa;
+  border: 1px solid #e0dacf;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.knowledge-document[open] {
+  display: grid;
+  gap: 8px;
+}
+
+.source-card,
+.revision-card,
+.search-hit {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e0dacf;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+
+.source-card.required {
+  border-left: 4px solid #b5532f;
+}
+
+.source-card.reference {
+  border-left: 4px solid #3f7d8c;
+}
+
+.source-card div,
+.revision-card div {
+  display: grid;
+  gap: 2px;
+}
+
+.search-hit {
+  display: grid;
+  text-align: left;
+}
+
+.search-hit .hit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.search-hit p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.search-hit .tags {
+  color: #3f7d8c;
+}
+
+.llm-band {
+  display: grid;
+  gap: 2px;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.llm-band.ok {
+  background: #e3efe6;
+  border: 1px solid #8bbf9a;
+}
+
+.llm-band.ng {
+  background: #f6e6e0;
+  border: 1px solid #d9a48c;
+}
+
+.story-session-bar {
+  display: grid;
+  gap: 10px;
+  background: #fffdfa;
+  border: 1px solid #e0dacf;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.stage-list {
+  display: grid;
+  gap: 12px;
+}
+
+.stage-card {
+  border: 1px solid #e0dacf;
+  border-left: 4px solid #c7c0b4;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fffdfa;
+  display: grid;
+  gap: 8px;
+}
+
+.stage-card.draft {
+  border-left-color: #d6a93f;
+}
+
+.stage-card.approved {
+  border-left-color: #4f9d6a;
+}
+
+.stage-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.stage-card header strong {
+  display: block;
+}
+
+.stage-card header small {
+  color: #7a7368;
+  font-size: 12px;
+}
+
+.stage-status {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #ece7dd;
+  white-space: nowrap;
+}
+
+.stage-status.draft {
+  background: #f3e3bf;
+}
+
+.stage-status.approved {
+  background: #cfe8d8;
+}
+
+.stage-error {
+  color: #b5532f;
+  font-size: 13px;
+  margin: 0;
+}
+
+.stage-knowledge {
+  color: #3f7d8c;
+}
+
+.stage-summary {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+  color: #46413b;
+}
+
+.stage-summary p {
+  margin: 0;
+}
+
+.stage-json textarea {
+  margin: 8px 0;
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-size: 12px;
+}
+
+.story-apply {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.story-apply .primary,
+button.primary {
+  background: #244c5a;
+  color: #ffffff;
+}
+
+.revision-list {
+  background: #fffdfa;
+  border: 1px solid #e0dacf;
+  border-radius: 8px;
+  padding: 14px;
+}

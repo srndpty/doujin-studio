@@ -1,4 +1,8 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { KnowledgePanel } from "./KnowledgePanel";
+import { StoryPanel } from "./StoryPanel";
+
+type WorkspaceTab = "production" | "knowledge" | "story";
 
 type Dialogue = {
   speaker: string;
@@ -207,6 +211,7 @@ export function App() {
   const [jobHistory, setJobHistory] = useState<GenerationJob[]>([]);
   const [showIncompleteOnly, setShowIncompleteOnly] = useState(false);
   const [controlNodeDrafts, setControlNodeDrafts] = useState<Record<string, string>>({});
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("production");
   const dragState = useRef<{ mode: "move" | "resize"; startX: number; startY: number; box: [number, number, number, number] } | null>(null);
   const [form, setForm] = useState({
     title: "テスト本",
@@ -918,6 +923,12 @@ export function App() {
           </div>
         </header>
 
+        <nav className="workspace-tabs">
+          <button className={activeTab === "production" ? "active" : ""} onClick={() => setActiveTab("production")}>制作</button>
+          <button className={activeTab === "knowledge" ? "active" : ""} onClick={() => setActiveTab("knowledge")}>作品知識</button>
+          <button className={activeTab === "story" ? "active" : ""} onClick={() => setActiveTab("story")} disabled={!selected}>ストーリー生成</button>
+        </nav>
+
         {progress && (
           <section className="progress-band">
             <div>
@@ -929,6 +940,20 @@ export function App() {
           </section>
         )}
 
+        {activeTab === "knowledge" && (
+          <KnowledgePanel defaultWorkName={selected?.work_name ?? ""} />
+        )}
+
+        {activeTab === "story" && selected && (
+          <StoryPanel
+            projectId={selected.id}
+            workName={selected.work_name}
+            onApplied={() => { void loadProject(selected.id); }}
+          />
+        )}
+
+        {activeTab === "production" && (
+        <>
         <section className="status-band">
           <strong>{comfyStatus?.backend === "comfyui" ? "ComfyUI" : "stub"}</strong>
           <span>{comfyStatus?.message ?? "接続状態を確認中"}</span>
@@ -1517,6 +1542,8 @@ export function App() {
             <textarea value={jsonText} onChange={(event) => setJsonText(event.target.value)} spellCheck={false} />
           </div>
         </section>
+        </>
+        )}
       </main>
     </div>
   );

@@ -343,3 +343,221 @@ class ExportResponse(BaseModel):
     project_id: str
     cbz_asset: str
     warnings: list[str] = Field(default_factory=list)
+
+
+# --- LLM ---
+
+class LLMStatusResponse(BaseModel):
+    provider: str
+    base_url: str
+    model: str
+    connected: bool
+    available_models: list[str] = Field(default_factory=list)
+    message: str
+
+
+# --- 作品知識DB ---
+
+DocType = Literal["json", "markdown", "txt"]
+KnowledgeUsage = Literal["required", "reference"]
+
+
+class KnowledgeFile(BaseModel):
+    filename: str = Field(min_length=1, max_length=200)
+    content: str = Field(max_length=2_000_000)
+
+
+class KnowledgeImportRequest(BaseModel):
+    work_name: str = Field(min_length=1, max_length=120)
+    usage: KnowledgeUsage = "reference"
+    files: list[KnowledgeFile] = Field(min_length=1)
+
+
+class KnowledgeDocumentRequest(BaseModel):
+    work_name: str = Field(min_length=1, max_length=120)
+    title: str = Field(default="", max_length=200)
+    doc_type: DocType = "txt"
+    usage: KnowledgeUsage = "reference"
+    content: str = Field(min_length=1, max_length=2_000_000)
+
+
+class KnowledgeChunkResponse(BaseModel):
+    id: str
+    source_id: str
+    work_name: str
+    usage: KnowledgeUsage
+    kind: str = ""
+    title: str = ""
+    content: str = ""
+    policy: str = ""
+    tags: list[str] = Field(default_factory=list)
+    position: int = 0
+
+
+class KnowledgeSourceResponse(BaseModel):
+    id: str
+    work_name: str
+    title: str
+    doc_type: DocType
+    usage: KnowledgeUsage
+    chunk_count: int
+    created_at: datetime
+
+
+class KnowledgeImportResponse(BaseModel):
+    sources: list[KnowledgeSourceResponse]
+
+
+class KnowledgeSearchRequest(BaseModel):
+    work_name: str = Field(min_length=1, max_length=120)
+    query: str = Field(min_length=1, max_length=200)
+    usage: KnowledgeUsage | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class KnowledgeSearchHit(BaseModel):
+    chunk: KnowledgeChunkResponse
+    score: float
+    method: Literal["trigram", "like"]
+
+
+class KnowledgeSearchResponse(BaseModel):
+    hits: list[KnowledgeSearchHit]
+
+
+# --- 段階生成のステージデータ ---
+
+class BriefCharacter(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    role: str = ""
+
+
+class BriefStage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    synopsis: str
+    tone: str = ""
+    characters: list[BriefCharacter] = Field(default_factory=list)
+    canon_conditions: list[str] = Field(default_factory=list)
+
+
+class CharacterArc(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    arc: str = ""
+
+
+class PlotStage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ki: str = ""
+    sho: str = ""
+    ten: str = ""
+    ketsu: str = ""
+    beats: list[str] = Field(default_factory=list)
+    character_arcs: list[CharacterArc] = Field(default_factory=list)
+
+
+class PageOutline(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    page: int = Field(ge=1)
+    purpose: str = ""
+    setting: str = ""
+    characters: list[str] = Field(default_factory=list)
+    hook: str = ""
+
+
+class PagesStage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pages: list[PageOutline] = Field(min_length=1)
+
+
+class ScriptDialogue(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    speaker: str = ""
+    text: str = ""
+
+
+class ScriptPanel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    shot: str = ""
+    camera: str = ""
+    location: str = ""
+    visual_prompt: str = ""
+    dialogue: list[ScriptDialogue] = Field(default_factory=list)
+    sfx: list[str] = Field(default_factory=list)
+
+
+class ScriptPage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    page: int = Field(ge=1)
+    layout: str = ""
+    panels: list[ScriptPanel] = Field(min_length=1, max_length=4)
+
+
+class ScriptStage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pages: list[ScriptPage] = Field(min_length=1)
+
+
+StoryStageName = Literal["brief", "plot", "pages", "script"]
+StageStatus = Literal["empty", "draft", "approved"]
+
+
+class StoryStageState(BaseModel):
+    status: StageStatus = "empty"
+    data: dict | None = None
+    knowledge_ids: list[str] = Field(default_factory=list)
+    error: str | None = None
+    updated_at: datetime | None = None
+
+
+class StorySessionCreate(BaseModel):
+    work_name: str = Field(default="", max_length=120)
+    target_pages: Literal[4, 8, 16] = 4
+    instruction: str = Field(default="", max_length=2000)
+
+
+class StorySessionResponse(BaseModel):
+    id: str
+    project_id: str
+    work_name: str
+    target_pages: int
+    instruction: str
+    stages: dict[str, StoryStageState]
+    created_at: datetime
+    updated_at: datetime
+
+
+class StorySessionSummary(BaseModel):
+    id: str
+    project_id: str
+    work_name: str
+    target_pages: int
+    instruction: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class StageGenerateRequest(BaseModel):
+    instruction: str = Field(default="", max_length=2000)
+
+
+class StageUpdateRequest(BaseModel):
+    data: dict
+
+
+class ProjectRevisionResponse(BaseModel):
+    id: str
+    project_id: str
+    label: str
+    created_at: datetime

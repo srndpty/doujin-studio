@@ -14,8 +14,19 @@ from pydantic import ValidationError
 from PIL import Image
 
 from .config import Settings
-from .database import ProjectRecord, create_session_factory, now_utc
+from .database import (
+    KnowledgeChunkRecord,
+    KnowledgeSourceRecord,
+    ProjectRecord,
+    ProjectRevisionRecord,
+    StoryGenerationSessionRecord,
+    create_session_factory,
+    now_utc,
+)
 from .generator import generate_four_page_name
+from . import knowledge as knowledge_db
+from . import story as story_module
+from .llm import build_llm_client, get_llm_status
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
 from .jobs import GenerationJob, JobManager, TERMINAL_JOB_STATUSES
 from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
@@ -31,6 +42,15 @@ from .schemas import (
     GenerationJobCreate,
     GenerationJobResponse,
     ImageCandidate,
+    KnowledgeChunkResponse,
+    KnowledgeDocumentRequest,
+    KnowledgeImportRequest,
+    KnowledgeImportResponse,
+    KnowledgeSearchHit,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResponse,
+    KnowledgeSourceResponse,
+    LLMStatusResponse,
     MangaProject,
     PanelImageGenerationResponse,
     PanelControlReference,
@@ -40,10 +60,17 @@ from .schemas import (
     ProjectProductionStatus,
     ProjectCreate,
     ProjectDetail,
+    ProjectRevisionResponse,
     ProjectSummary,
     RenderRequest,
     RenderResponse,
+    StageGenerateRequest,
+    StageUpdateRequest,
+    StorySessionCreate,
+    StorySessionResponse,
+    StorySessionSummary,
 )
+from .story import StoryError
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -485,6 +512,200 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = load_project_record(request, project_id)
         return build_production_status(project_id, parse_manga_json(record.manga_json))
 
+    @app.get("/api/llm/status", response_model=LLMStatusResponse)
+    async def llm_status(request: Request) -> LLMStatusResponse:
+        status = await get_llm_status(request.app.state.settings)
+        return LLMStatusResponse(**status.__dict__)
+
+    # --- 作品知識DB ---
+
+    @app.post("/api/knowledge/sources/import", response_model=KnowledgeImportResponse)
+    def import_knowledge_sources(payload: KnowledgeImportRequest, request: Request) -> KnowledgeImportResponse:
+        sources: list[KnowledgeSourceResponse] = []
+        with request.app.state.SessionLocal() as session:
+            for file in payload.files:
+                doc_type = knowledge_db.infer_doc_type(file.filename)
+                record = knowledge_db.import_source(
+                    session,
+                    work_name=payload.work_name,
+                    title=file.filename,
+                    doc_type=doc_type,
+                    usage=payload.usage,
+                    content=file.content,
+                )
+                sources.append(to_knowledge_source(record))
+        return KnowledgeImportResponse(sources=sources)
+
+    @app.post("/api/knowledge/documents", response_model=KnowledgeSourceResponse)
+    def add_knowledge_document(payload: KnowledgeDocumentRequest, request: Request) -> KnowledgeSourceResponse:
+        with request.app.state.SessionLocal() as session:
+            record = knowledge_db.import_source(
+                session,
+                work_name=payload.work_name,
+                title=payload.title or "無題ドキュメント",
+                doc_type=payload.doc_type,
+                usage=payload.usage,
+                content=payload.content,
+            )
+            return to_knowledge_source(record)
+
+    @app.get("/api/knowledge/sources", response_model=list[KnowledgeSourceResponse])
+    def list_knowledge_sources(request: Request, work_name: str | None = None) -> list[KnowledgeSourceResponse]:
+        with request.app.state.SessionLocal() as session:
+            return [to_knowledge_source(record) for record in knowledge_db.list_sources(session, work_name)]
+
+    @app.delete("/api/knowledge/sources/{source_id}")
+    def delete_knowledge_source(source_id: str, request: Request) -> dict[str, bool]:
+        with request.app.state.SessionLocal() as session:
+            if not knowledge_db.delete_source(session, source_id):
+                raise HTTPException(status_code=404, detail="知識ソースが見つかりません")
+        return {"ok": True}
+
+    @app.post("/api/knowledge/search", response_model=KnowledgeSearchResponse)
+    def search_knowledge(payload: KnowledgeSearchRequest, request: Request) -> KnowledgeSearchResponse:
+        with request.app.state.SessionLocal() as session:
+            hits = knowledge_db.search_chunks(
+                session,
+                work_name=payload.work_name,
+                query=payload.query,
+                usage=payload.usage,
+                limit=payload.limit,
+            )
+            return KnowledgeSearchResponse(
+                hits=[
+                    KnowledgeSearchHit(chunk=to_knowledge_chunk(record), score=score, method=method)
+                    for record, score, method in hits
+                ]
+            )
+
+    # --- ストーリー生成セッション ---
+
+    @app.post("/api/projects/{project_id}/story-sessions", response_model=StorySessionResponse)
+    def create_story_session(project_id: str, payload: StorySessionCreate, request: Request) -> StorySessionResponse:
+        record = load_project_record(request, project_id)
+        work_name = payload.work_name or record.work_name
+        with request.app.state.SessionLocal() as session:
+            story_record = story_module.create_session(
+                session,
+                project_id=project_id,
+                work_name=work_name,
+                target_pages=payload.target_pages,
+                instruction=payload.instruction,
+            )
+            return story_module.session_to_response(story_record)
+
+    @app.get("/api/projects/{project_id}/story-sessions", response_model=list[StorySessionSummary])
+    def list_story_sessions(project_id: str, request: Request) -> list[StorySessionSummary]:
+        with request.app.state.SessionLocal() as session:
+            records = (
+                session.query(StoryGenerationSessionRecord)
+                .filter(StoryGenerationSessionRecord.project_id == project_id)
+                .order_by(StoryGenerationSessionRecord.created_at.desc())
+                .all()
+            )
+            return [to_story_summary(record) for record in records]
+
+    @app.get("/api/story-sessions/{session_id}", response_model=StorySessionResponse)
+    def get_story_session(session_id: str, request: Request) -> StorySessionResponse:
+        with request.app.state.SessionLocal() as session:
+            record = session.get(StoryGenerationSessionRecord, session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
+            return story_module.session_to_response(record)
+
+    @app.post("/api/story-sessions/{session_id}/stages/{stage}/generate", response_model=StorySessionResponse)
+    async def generate_story_stage(
+        session_id: str,
+        stage: str,
+        request: Request,
+        payload: StageGenerateRequest | None = Body(default=None),
+    ) -> StorySessionResponse:
+        settings = request.app.state.settings
+        llm = build_llm_client(settings)
+        with request.app.state.SessionLocal() as session:
+            record = session.get(StoryGenerationSessionRecord, session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
+            try:
+                await story_module.generate_stage(
+                    session, llm, settings, record, stage, payload.instruction if payload else ""
+                )
+            except StoryError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            return story_module.session_to_response(record)
+
+    @app.put("/api/story-sessions/{session_id}/stages/{stage}", response_model=StorySessionResponse)
+    def update_story_stage(
+        session_id: str, stage: str, payload: StageUpdateRequest, request: Request
+    ) -> StorySessionResponse:
+        with request.app.state.SessionLocal() as session:
+            record = session.get(StoryGenerationSessionRecord, session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
+            try:
+                story_module.update_stage(session, record, stage, payload.data)
+            except StoryError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            return story_module.session_to_response(record)
+
+    @app.post("/api/story-sessions/{session_id}/stages/{stage}/approve", response_model=StorySessionResponse)
+    def approve_story_stage(session_id: str, stage: str, request: Request) -> StorySessionResponse:
+        with request.app.state.SessionLocal() as session:
+            record = session.get(StoryGenerationSessionRecord, session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
+            try:
+                story_module.approve_stage(session, record, stage)
+            except StoryError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            return story_module.session_to_response(record)
+
+    @app.post("/api/story-sessions/{session_id}/apply", response_model=ProjectDetail)
+    def apply_story_session(session_id: str, request: Request) -> ProjectDetail:
+        with request.app.state.SessionLocal() as session:
+            record = session.get(StoryGenerationSessionRecord, session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
+            project = session.get(ProjectRecord, record.project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+            try:
+                story_module.apply_session(session, record, project)
+            except StoryError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            session.refresh(project)
+            return to_detail(project)
+
+    @app.get("/api/projects/{project_id}/revisions", response_model=list[ProjectRevisionResponse])
+    def list_project_revisions(project_id: str, request: Request) -> list[ProjectRevisionResponse]:
+        load_project_record(request, project_id)
+        with request.app.state.SessionLocal() as session:
+            records = (
+                session.query(ProjectRevisionRecord)
+                .filter(ProjectRevisionRecord.project_id == project_id)
+                .order_by(ProjectRevisionRecord.created_at.desc())
+                .all()
+            )
+            return [
+                ProjectRevisionResponse(
+                    id=record.id, project_id=record.project_id, label=record.label, created_at=record.created_at
+                )
+                for record in records
+            ]
+
+    @app.post("/api/projects/{project_id}/revisions/{revision_id}/restore", response_model=ProjectDetail)
+    def restore_project_revision(project_id: str, revision_id: str, request: Request) -> ProjectDetail:
+        with request.app.state.SessionLocal() as session:
+            project = session.get(ProjectRecord, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+            revision = session.get(ProjectRevisionRecord, revision_id)
+            if revision is None or revision.project_id != project_id:
+                raise HTTPException(status_code=404, detail="リビジョンが見つかりません")
+            story_module.restore_revision(session, project, revision)
+            session.refresh(project)
+            return to_detail(project)
+
     @app.get("/api/assets/{asset_id:path}")
     def get_asset(asset_id: str, request: Request) -> FileResponse:
         export_root = request.app.state.settings.export_dir.resolve()
@@ -791,6 +1012,45 @@ def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> N
         writable.manga_json = manga.model_dump_json()
         writable.updated_at = now_utc()
         session.commit()
+
+
+def to_knowledge_source(record: KnowledgeSourceRecord) -> KnowledgeSourceResponse:
+    return KnowledgeSourceResponse(
+        id=record.id,
+        work_name=record.work_name,
+        title=record.title,
+        doc_type=record.doc_type,
+        usage=record.usage,
+        chunk_count=record.chunk_count,
+        created_at=record.created_at,
+    )
+
+
+def to_knowledge_chunk(record: KnowledgeChunkRecord) -> KnowledgeChunkResponse:
+    return KnowledgeChunkResponse(
+        id=record.id,
+        source_id=record.source_id,
+        work_name=record.work_name,
+        usage=record.usage,
+        kind=record.kind,
+        title=record.title,
+        content=record.content,
+        policy=record.policy,
+        tags=[tag for tag in record.tags.split(", ") if tag],
+        position=record.position,
+    )
+
+
+def to_story_summary(record: StoryGenerationSessionRecord) -> StorySessionSummary:
+    return StorySessionSummary(
+        id=record.id,
+        project_id=record.project_id,
+        work_name=record.work_name,
+        target_pages=record.target_pages,
+        instruction=record.instruction,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def to_summary(record: ProjectRecord) -> ProjectSummary:

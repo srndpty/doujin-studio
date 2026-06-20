@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, Text, create_engine, event
+from sqlalchemy import DateTime, Integer, Text, create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -39,8 +39,78 @@ class GenerationJobRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class KnowledgeSourceRecord(Base):
+    __tablename__ = "knowledge_sources"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    work_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    doc_type: Mapped[str] = mapped_column(Text, nullable=False, default="txt")
+    usage: Mapped[str] = mapped_column(Text, nullable=False, default="reference")
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class KnowledgeChunkRecord(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    source_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    work_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    usage: Mapped[str] = mapped_column(Text, nullable=False, default="reference")
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    policy: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tags: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class StoryGenerationSessionRecord(Base):
+    __tablename__ = "story_generation_sessions"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    work_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    target_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stages_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProjectRevisionRecord(Base):
+    __tablename__ = "project_revisions"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    manga_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# FTS5 trigram検索が利用可能か（SQLiteビルド依存）。利用不可ならLIKE検索へ退避する。
+FTS5_AVAILABLE = False
+
+
+def ensure_fts(engine) -> None:
+    """knowledge_chunks用のFTS5 trigram索引を作成する。失敗時はLIKE検索へ退避する。"""
+    global FTS5_AVAILABLE
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts "
+                    "USING fts5(chunk_id UNINDEXED, title, content, tags, tokenize='trigram')"
+                )
+            )
+        FTS5_AVAILABLE = True
+    except Exception:
+        FTS5_AVAILABLE = False
 
 
 def create_session_factory(database_url: str) -> sessionmaker:
@@ -55,4 +125,5 @@ def create_session_factory(database_url: str) -> sessionmaker:
             cursor.close()
 
     Base.metadata.create_all(engine)
+    ensure_fts(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)

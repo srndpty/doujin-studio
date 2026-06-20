@@ -20,7 +20,11 @@ class Settings:
     comfyui_height_node_id: str = "5"
     comfyui_save_prefix_node_id: str = "9"
     llm_provider: str = "stub"
-    llm_base_url: str = ""
+    llm_base_url: str = "http://127.0.0.1:1234/v1"
+    llm_model: str = ""
+    llm_timeout_seconds: float = 180.0
+    llm_json_mode: str = "auto"
+    llm_max_context_chars: int = 24000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -38,5 +42,9 @@ class Settings:
             comfyui_height_node_id=os.getenv("COMFYUI_HEIGHT_NODE_ID", "5"),
             comfyui_save_prefix_node_id=os.getenv("COMFYUI_SAVE_PREFIX_NODE_ID", "9"),
             llm_provider=os.getenv("LLM_PROVIDER", "stub"),
-            llm_base_url=os.getenv("LLM_BASE_URL", ""),
+            llm_base_url=os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
+            llm_model=os.getenv("LLM_MODEL", ""),
+            llm_timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "180")),
+            llm_json_mode=os.getenv("LLM_JSON_MODE", "auto"),
+            llm_max_context_chars=int(os.getenv("LLM_MAX_CONTEXT_CHARS", "24000")),
         )
