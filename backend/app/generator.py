@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .schemas import Character, Dialogue, GenerationInfo, MangaProject, Page, Panel, Sfx
+from .schemas import Character, Dialogue, GenerationInfo, LocationProfile, MangaProject, Page, Panel, Sfx, WorkflowPreset
 
 
 DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, anime style, anime illustration, clean line art, vibrant colors"
@@ -39,6 +39,7 @@ def generate_four_page_name(
     character_b: str,
     situation: str,
     ending_direction: str,
+    target_pages: int = 4,
 ) -> MangaProject:
     char_a = Character(
         id="char_a",
@@ -157,13 +158,44 @@ def generate_four_page_name(
             )
         pages.append(Page(page=page_number, theme=theme, layout_template=template_id, panels=page_panels))
 
-    return MangaProject(
+    manga = MangaProject(
         title=title,
         work_name=work_name,
         premise=f"{situation}から始まり、{ending_direction}で締める4ページ短編。",
-        target_pages=4,
+        target_pages=target_pages,
         common_positive_prompt=DEFAULT_COMMON_POSITIVE_PROMPT,
         common_negative_prompt=DEFAULT_COMMON_NEGATIVE_PROMPT,
         characters=[char_a, char_b],
+        locations=[
+            LocationProfile(
+                id="default_room",
+                display_name="基本の部屋",
+                prompt="consistent room layout, consistent background",
+                negative_prompt="inconsistent background, changing room layout",
+            )
+        ],
+        workflow_presets=[WorkflowPreset(id="default", name="workflow既定")],
+        active_workflow_preset_id="default",
         pages=pages,
     )
+    if target_pages > 4:
+        expand_pages(manga, target_pages)
+    return manga
+
+
+def expand_pages(manga: MangaProject, target_pages: int) -> None:
+    base_pages = [page.model_copy(deep=True) for page in manga.pages]
+    for page_number in range(5, target_pages + 1):
+        page = base_pages[(page_number - 1) % len(base_pages)].model_copy(deep=True)
+        page.page = page_number
+        page.theme = f"{page_number}ページ目。{page.theme}"
+        page.render_status = "pending"
+        page.rendered_at = None
+        for index, panel in enumerate(page.panels, start=1):
+            panel.panel_id = f"p{page_number:02d}_{index:02d}"
+            panel.generation.seed = page_number * 100 + index
+            panel.generation.prompt = f"story continuation, page {page_number}, {panel.generation.prompt}"
+            panel.image_asset = None
+            panel.image_candidates = []
+            panel.selected_candidate_id = None
+        manga.pages.append(page)

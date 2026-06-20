@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app.config import Settings
+from backend.app.database import create_session_factory
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow, apply_reference_images_to_workflow
 from backend.app.jobs import JobManager
@@ -155,6 +156,38 @@ def test_workflow_json_applies_character_lora(tmp_path: Path) -> None:
     assert patched["20"]["inputs"]["lora_name"] == "character.safetensors"
     assert patched["20"]["inputs"]["strength_model"] == 0.8
     assert patched["20"]["inputs"]["strength_clip"] == 0.7
+
+
+def test_workflow_preset_patches_model_and_sampler(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["40"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "old.safetensors"}}
+    workflow["41"] = {"class_type": "VAELoader", "inputs": {"vae_name": "old.vae"}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "anime",
+                "name": "anime",
+                "checkpoint_node_id": "40",
+                "checkpoint_name": "anime.safetensors",
+                "vae_node_id": "41",
+                "vae_name": "anime.vae",
+                "sampler_node_id": "3",
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "steps": 24,
+                "cfg": 5.5,
+                "denoise": 0.9,
+            }
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert patched["40"]["inputs"]["ckpt_name"] == "anime.safetensors"
+    assert patched["41"]["inputs"]["vae_name"] == "anime.vae"
+    assert patched["3"]["inputs"]["steps"] == 24
+    assert patched["3"]["inputs"]["cfg"] == 5.5
 
 
 def test_existing_manga_json_gets_new_defaults() -> None:
@@ -379,6 +412,51 @@ def test_character_adapters_are_prepared_for_panel() -> None:
     assert prepared.generation.reference_images[0].node_id == "30"
 
 
+def test_location_and_control_references_are_prepared() -> None:
+    manga = MangaProject.model_validate(
+        {
+            "title": "scene",
+            "active_workflow_preset_id": "anime",
+            "workflow_presets": [{"id": "anime", "name": "anime", "steps": 20}],
+            "locations": [
+                {
+                    "id": "room",
+                    "display_name": "部屋",
+                    "prompt": "consistent room",
+                    "negative_prompt": "changing room",
+                    "reference_image_asset": "exports/project/room.png",
+                    "reference_load_node_id": "50",
+                }
+            ],
+            "pages": [
+                {
+                    "page": 1,
+                    "theme": "test",
+                    "layout_template": "one",
+                    "panels": [
+                        {
+                            "panel_id": "p01_01",
+                            "bbox": [0, 0, 1, 1],
+                            "shot": "test",
+                            "location_id": "room",
+                            "control_references": [
+                                {"id": "pose", "kind": "pose", "asset": "exports/project/pose.png", "load_node_id": "51"}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    panel = manga.pages[0].panels[0]
+    positive, negative = compose_panel_prompts(manga, panel)
+    prepared = prepare_panel_for_generation(manga, panel)
+    assert "consistent room" in positive
+    assert "changing room" in negative
+    assert prepared.generation.workflow_preset.id == "anime"
+    assert [(item.node_id, item.kind) for item in prepared.generation.reference_images] == [("50", "location"), ("51", "pose")]
+
+
 def test_reference_image_is_uploaded_and_patched(tmp_path: Path) -> None:
     export_dir = tmp_path / "exports"
     source = export_dir / "project" / "references" / "hero.png"
@@ -443,6 +521,72 @@ def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["pages"][0]["status"] == "ready"
         assert status["pages"][0]["adopted_panels"] == 4
+        history = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert len(history) == 4
+        assert all(job["status"] == "done" for job in history)
+
+
+def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    manager = JobManager(session_factory)
+    job = manager.create("project", "panel", 2)
+    manager.update(job, status="running", progress=45, message="生成中")
+
+    restored_manager = JobManager(session_factory)
+    restored = restored_manager.restore_pending()
+    assert len(restored) == 1
+    assert restored[0].id == job.id
+    assert restored[0].status == "queued"
+    assert restored_manager.get(job.id).message == "バックエンド再起動後に生成を再開します"
+
+
+def test_generate_sixteen_page_name(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/projects",
+            json={"title": "16ページ本", "work_name": "作品", "target_pages": 16},
+        )
+        project_id = response.json()["id"]
+        response = client.post(
+            f"/api/projects/{project_id}/generate-name",
+            json={
+                "work_name": "作品",
+                "character_a": "A",
+                "character_b": "B",
+                "situation": "部屋で相談する",
+                "ending_direction": "笑って終わる",
+                "target_pages": 16,
+            },
+        )
+        assert response.status_code == 200
+        manga = response.json()["manga_json"]
+        assert manga["target_pages"] == 16
+        assert len(manga["pages"]) == 16
+        panel_ids = [panel["panel_id"] for page in manga["pages"] for panel in page["panels"]]
+        assert len(panel_ids) == len(set(panel_ids))
+
+
+def test_location_and_control_image_upload_apis(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        image = Image.new("RGB", (20, 20), "green")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/locations/default_room/reference-image",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        assert response.status_code == 200
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image?load_node_id=51",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        assert response.status_code == 200
+        panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        assert panel["control_references"][0]["kind"] == "pose"
+        assert panel["control_references"][0]["load_node_id"] == "51"
 
 
 def test_fit_image_cover_and_contain_modes() -> None:

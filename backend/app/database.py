@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Text, create_engine, event
+from sqlalchemy import DateTime, Integer, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -17,6 +17,24 @@ class ProjectRecord(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     work_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     manga_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GenerationJobRecord(Base):
+    __tablename__ = "generation_jobs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    panel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    node: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="生成待ちです")
+    candidate_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

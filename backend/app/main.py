@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import io
+import json
 import uuid
 from asyncio import CancelledError
 from contextlib import asynccontextmanager
@@ -25,6 +25,7 @@ from .schemas import (
     BatchGenerationJobCreate,
     BatchGenerationJobResponse,
     CharacterReferenceResponse,
+    ReferenceAssetResponse,
     ComfyUIStatusResponse,
     GenerateNameRequest,
     GenerationJobCreate,
@@ -32,6 +33,7 @@ from .schemas import (
     ImageCandidate,
     MangaProject,
     PanelImageGenerationResponse,
+    PanelControlReference,
     PanelPageRenderResponse,
     PromptPreviewResponse,
     PageProductionStatus,
@@ -53,7 +55,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path("data").mkdir(parents=True, exist_ok=True)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
-        app.state.job_manager = JobManager()
+        app.state.job_manager = JobManager(app.state.SessionLocal)
+        for job in app.state.job_manager.restore_pending():
+            app.state.job_manager.start(job, run_generation_job(app, job))
         try:
             yield
         finally:
@@ -80,7 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/projects", response_model=ProjectDetail)
     def create_project(payload: ProjectCreate, request: Request) -> ProjectDetail:
         project_id = str(uuid.uuid4())
-        manga = MangaProject(title=payload.title, work_name=payload.work_name, target_pages=4)
+        manga = MangaProject(title=payload.title, work_name=payload.work_name, target_pages=payload.target_pages)
         record = ProjectRecord(
             id=project_id,
             title=payload.title,
@@ -116,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             character_b=payload.character_b,
             situation=payload.situation,
             ending_direction=payload.ending_direction,
+            target_pages=payload.target_pages,
         )
         with request.app.state.SessionLocal() as session:
             record = session.get(ProjectRecord, project_id)
@@ -285,6 +290,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = get_job_or_404(request, job_id)
         return to_job_response(job)
 
+    @app.get("/api/projects/{project_id}/generation-jobs", response_model=list[GenerationJobResponse])
+    def list_generation_jobs(project_id: str, request: Request) -> list[GenerationJobResponse]:
+        load_project_record(request, project_id)
+        manager: JobManager = request.app.state.job_manager
+        return [to_job_response(job) for job in manager.list_for_project(project_id)]
+
     @app.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobResponse)
     def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
         manager: JobManager = request.app.state.job_manager
@@ -371,17 +382,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         character = next((item for item in manga.characters if item.id == character_id), None)
         if character is None:
             raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
-        content = await request.body()
-        if not content or len(content) > 20 * 1024 * 1024:
-            raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
-        try:
-            with Image.open(io.BytesIO(content)) as source:
-                image = source.convert("RGB")
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
         target = request.app.state.settings.export_dir / project_id / "references" / f"{character_id}.png"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        image.save(target, format="PNG")
+        await save_request_image(request, target)
         character.reference_image_asset = str(target)
         save_manga_json(request, project_id, manga)
         return CharacterReferenceResponse(
@@ -389,6 +391,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             asset=str(target),
             manga_json=manga,
         )
+
+    @app.post(
+        "/api/projects/{project_id}/locations/{location_id}/reference-image",
+        response_model=ReferenceAssetResponse,
+    )
+    async def upload_location_reference(
+        project_id: str,
+        location_id: str,
+        request: Request,
+    ) -> ReferenceAssetResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        location = next((item for item in manga.locations if item.id == location_id), None)
+        if location is None:
+            raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
+        target = request.app.state.settings.export_dir / project_id / "locations" / f"{location_id}.png"
+        await save_request_image(request, target)
+        location.reference_image_asset = str(target)
+        save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(target_id=location_id, asset=str(target), manga_json=manga)
+
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/controls/{kind}/reference-image",
+        response_model=ReferenceAssetResponse,
+    )
+    async def upload_panel_control_reference(
+        project_id: str,
+        panel_id: str,
+        kind: str,
+        request: Request,
+        load_node_id: str,
+    ) -> ReferenceAssetResponse:
+        if kind not in {"pose", "depth", "lineart", "background"}:
+            raise HTTPException(status_code=422, detail="Control参照種別が不正です")
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel(manga, panel_id)
+        target = request.app.state.settings.export_dir / project_id / "controls" / panel_id / f"{kind}.png"
+        await save_request_image(request, target)
+        existing = next((item for item in panel.control_references if item.kind == kind), None)
+        if existing:
+            existing.asset = str(target)
+            existing.load_node_id = load_node_id
+            target_id = existing.id
+        else:
+            control = PanelControlReference(
+                id=str(uuid.uuid4()), kind=kind, asset=str(target), load_node_id=load_node_id
+            )
+            panel.control_references.append(control)
+            target_id = control.id
+        save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(target_id=target_id, asset=str(target), manga_json=manga)
 
     @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
     def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:
@@ -449,6 +503,9 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
         async with manager.generation_lock:
             await execute_generation_job(app, job)
     except CancelledError:
+        if manager.shutting_down:
+            manager.update(job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します")
+            raise
         mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         if job.status != "cancelled":
             manager.update(job, status="cancelled", message="生成をキャンセルしました")
@@ -509,6 +566,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 characters=list(generated_panel.characters),
                 loras=list(generated_panel.generation.loras),
                 reference_images=list(generated_panel.generation.reference_images),
+                workflow_preset=generated_panel.generation.workflow_preset,
                 seed=generated_panel.generation.seed,
                 prompt_id=result.prompt_id,
                 message=result.message,
@@ -526,6 +584,9 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
 
         manager.update(job, status="done", progress=100, node=None, message="画像候補の生成が完了しました")
     except CancelledError:
+        if manager.shutting_down:
+            manager.update(job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します")
+            raise
         mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         if job.status != "cancelled":
             manager.update(job, status="cancelled", message="生成をキャンセルしました")
@@ -654,6 +715,19 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         return record
 
 
+async def save_request_image(request: Request, target: Path) -> None:
+    content = await request.body()
+    if not content or len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
+    try:
+        with Image.open(io.BytesIO(content)) as source:
+            image = source.convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.save(target, format="PNG")
+
+
 def parse_manga_json(raw: str) -> MangaProject:
     try:
         return MangaProject.model_validate(json.loads(raw))
@@ -699,6 +773,7 @@ def register_generation_candidate(panel, generated_panel, result) -> None:
         characters=list(generated_panel.characters),
         loras=list(generated_panel.generation.loras),
         reference_images=list(generated_panel.generation.reference_images),
+        workflow_preset=generated_panel.generation.workflow_preset,
         seed=generated_panel.generation.seed,
         prompt_id=result.prompt_id,
         message=result.message,

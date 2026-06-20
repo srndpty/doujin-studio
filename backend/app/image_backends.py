@@ -312,6 +312,23 @@ def apply_panel_to_workflow(
     if panel.generation.height is not None:
         patched[config.height_node_id]["inputs"]["height"] = panel.generation.height
     patched[config.save_prefix_node_id]["inputs"]["filename_prefix"] = filename_prefix
+    preset = panel.generation.workflow_preset
+    if preset:
+        if preset.checkpoint_node_id and preset.checkpoint_name:
+            patch_workflow_input(patched, preset.checkpoint_node_id, "ckpt_name", preset.checkpoint_name, "checkpoint")
+        if preset.vae_node_id and preset.vae_name:
+            patch_workflow_input(patched, preset.vae_node_id, "vae_name", preset.vae_name, "VAE")
+        if preset.sampler_node_id:
+            sampler_values = {
+                "sampler_name": preset.sampler_name or None,
+                "scheduler": preset.scheduler or None,
+                "steps": preset.steps,
+                "cfg": preset.cfg,
+                "denoise": preset.denoise,
+            }
+            for input_name, value in sampler_values.items():
+                if value is not None:
+                    patch_workflow_input(patched, preset.sampler_node_id, input_name, value, "sampler")
     lora_nodes: set[str] = set()
     for lora in panel.generation.loras:
         if lora.node_id in lora_nodes:
@@ -324,6 +341,13 @@ def apply_panel_to_workflow(
         node["inputs"]["strength_model"] = lora.strength_model
         node["inputs"]["strength_clip"] = lora.strength_clip
     return patched
+
+
+def patch_workflow_input(workflow: dict, node_id: str, input_name: str, value, label: str) -> None:
+    node = workflow.get(node_id)
+    if not node or "inputs" not in node:
+        raise ValueError(f"{label}ノードがworkflowにありません: {node_id}")
+    node["inputs"][input_name] = value
 
 
 async def apply_reference_images_to_workflow(

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Dialogue = {
   speaker: string;
@@ -21,6 +21,7 @@ type Panel = {
   image_asset: string | null;
   image_candidates: ImageCandidate[];
   selected_candidate_id: string | null;
+  control_references: PanelControlReference[];
   dialogue: Dialogue[];
   sfx: { text: string; position: string; style: string }[];
   generation: {
@@ -40,11 +41,19 @@ type Panel = {
     message: string;
     loras: LoRABinding[];
     reference_images: ReferenceImageBinding[];
+    workflow_preset_id: string | null;
+    workflow_preset: WorkflowPreset | null;
   };
 };
 
 type LoRABinding = { node_id: string; lora_name: string; strength_model: number; strength_clip: number };
-type ReferenceImageBinding = { node_id: string; asset: string; character_id: string };
+type ReferenceImageBinding = { node_id: string; asset: string; character_id: string; kind: string };
+type PanelControlReference = { id: string; kind: "pose" | "depth" | "lineart" | "background"; asset: string; load_node_id: string };
+type WorkflowPreset = {
+  id: string; name: string; checkpoint_node_id: string; checkpoint_name: string; vae_node_id: string; vae_name: string;
+  sampler_node_id: string; sampler_name: string; scheduler: string; steps: number | null; cfg: number | null; denoise: number | null;
+};
+type LocationProfile = { id: string; display_name: string; prompt: string; negative_prompt: string; reference_image_asset: string | null; reference_load_node_id: string };
 
 type ImageCandidate = {
   id: string;
@@ -56,6 +65,7 @@ type ImageCandidate = {
   characters: string[];
   loras: LoRABinding[];
   reference_images: ReferenceImageBinding[];
+  workflow_preset: WorkflowPreset | null;
   seed: number;
   prompt_id: string | null;
   message: string;
@@ -101,6 +111,9 @@ type MangaProject = {
   common_positive_prompt: string;
   common_negative_prompt: string;
   characters: Character[];
+  locations: LocationProfile[];
+  workflow_presets: WorkflowPreset[];
+  active_workflow_preset_id: string | null;
   pages: { page: number; theme: string; layout_template: string; panels: Panel[]; render_status: "pending" | "done"; rendered_at: string | null }[];
 };
 
@@ -191,13 +204,18 @@ export function App() {
   const [candidateCount, setCandidateCount] = useState(1);
   const [activeJobIds, setActiveJobIds] = useState<string[]>([]);
   const [productionStatus, setProductionStatus] = useState<ProductionStatus | null>(null);
+  const [jobHistory, setJobHistory] = useState<GenerationJob[]>([]);
+  const [showIncompleteOnly, setShowIncompleteOnly] = useState(false);
+  const [controlNodeDrafts, setControlNodeDrafts] = useState<Record<string, string>>({});
+  const dragState = useRef<{ mode: "move" | "resize"; startX: number; startY: number; box: [number, number, number, number] } | null>(null);
   const [form, setForm] = useState({
     title: "テスト本",
     work_name: "サンプル作品",
     character_a: "キャラA",
     character_b: "キャラB",
     situation: "放課後の部室で差し入れを選ぶ",
-    ending_direction: "小さな勘違いで笑って終わる"
+    ending_direction: "小さな勘違いで笑って終わる",
+    target_pages: 4
   });
 
   const currentPage = useMemo(() => {
@@ -214,6 +232,10 @@ export function App() {
     if (!selected || !currentPanel) return { positive: "", negative: "" };
     return composePromptPreview(selected.manga_json, currentPanel);
   }, [selected, currentPanel]);
+  const visiblePanels = useMemo(
+    () => currentPage?.panels.filter((panel) => !showIncompleteOnly || !panel.selected_candidate_id) ?? [],
+    [currentPage, showIncompleteOnly]
+  );
 
   useEffect(() => {
     void refreshProjects();
@@ -221,7 +243,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (selected) void refreshProductionStatus(selected.id);
+    if (selected) {
+      void refreshProductionStatus(selected.id);
+      void refreshJobHistory(selected.id);
+    }
   }, [selected?.id]);
 
   useEffect(() => {
@@ -245,6 +270,10 @@ export function App() {
     setProductionStatus(status);
   }
 
+  async function refreshJobHistory(projectId: string) {
+    setJobHistory(await api.get<GenerationJob[]>(`/api/projects/${projectId}/generation-jobs`));
+  }
+
   async function runTask(task: () => Promise<void>) {
     setBusy(true);
     try {
@@ -262,7 +291,8 @@ export function App() {
     await runTask(async () => {
       const project = await api.post<Project>("/api/projects", {
         title: form.title,
-        work_name: form.work_name
+        work_name: form.work_name,
+        target_pages: form.target_pages
       });
       setSelected(project);
       setSelectedPage(1);
@@ -294,7 +324,8 @@ export function App() {
         character_a: form.character_a,
         character_b: form.character_b,
         situation: form.situation,
-        ending_direction: form.ending_direction
+        ending_direction: form.ending_direction,
+        target_pages: form.target_pages
       });
       setSelected(project);
       setSelectedPage(1);
@@ -393,6 +424,7 @@ export function App() {
         }
       } finally {
         setActiveJobIds([]);
+        await refreshJobHistory(projectId);
       }
       let latestManga = (await api.get<Project>(`/api/projects/${projectId}`)).manga_json;
       const firstPanelId = panelIds[0];
@@ -424,6 +456,7 @@ export function App() {
       return await watchGenerationJob(job);
     } finally {
       setActiveJobIds([]);
+      await refreshJobHistory(projectId);
     }
   }
 
@@ -649,6 +682,44 @@ export function App() {
     setMessage("キャラクタープロファイルを追加しました");
   }
 
+  function addWorkflowPreset() {
+    updateManga((manga) => {
+      let index = manga.workflow_presets.length + 1;
+      while (manga.workflow_presets.some((preset) => preset.id === `preset_${index}`)) index += 1;
+      manga.workflow_presets.push({
+        id: `preset_${index}`, name: `プリセット${index}`, checkpoint_node_id: "", checkpoint_name: "",
+        vae_node_id: "", vae_name: "", sampler_node_id: "", sampler_name: "", scheduler: "",
+        steps: null, cfg: null, denoise: null
+      });
+      manga.active_workflow_preset_id ??= `preset_${index}`;
+    });
+  }
+
+  function updateWorkflowPreset(presetId: string, mutator: (preset: WorkflowPreset) => void) {
+    updateManga((manga) => {
+      const preset = manga.workflow_presets.find((item) => item.id === presetId);
+      if (preset) mutator(preset);
+    });
+  }
+
+  function addLocation() {
+    updateManga((manga) => {
+      let index = manga.locations.length + 1;
+      while (manga.locations.some((location) => location.id === `location_${index}`)) index += 1;
+      manga.locations.push({
+        id: `location_${index}`, display_name: `ロケーション${index}`, prompt: "", negative_prompt: "",
+        reference_image_asset: null, reference_load_node_id: ""
+      });
+    });
+  }
+
+  function updateLocation(locationId: string, mutator: (location: LocationProfile) => void) {
+    updateManga((manga) => {
+      const location = manga.locations.find((item) => item.id === locationId);
+      if (location) mutator(location);
+    });
+  }
+
   function toggleCurrentPanelCharacter(characterId: string) {
     updateCurrentPanel((panel) => {
       panel.characters = panel.characters.includes(characterId)
@@ -671,6 +742,65 @@ export function App() {
       setJsonText(JSON.stringify(payload.manga_json, null, 2));
       setAssetVersion((value) => value + 1);
       setMessage("参照画像を登録しました");
+    });
+  }
+
+  async function uploadLocationImage(locationId: string, file: File) {
+    if (!selected) return;
+    await uploadProjectImage(`/api/projects/${selected.id}/locations/${locationId}/reference-image`, file, "ロケーション参照画像を登録しました");
+  }
+
+  async function uploadControlImage(kind: PanelControlReference["kind"], file: File) {
+    if (!selected || !currentPanel) return;
+    const existing = currentPanel.control_references.find((item) => item.kind === kind);
+    const nodeId = existing?.load_node_id || controlNodeDrafts[kind] || "";
+    if (!nodeId) {
+      setMessage("Control参照のLoadImageノードIDを入力してください");
+      return;
+    }
+    await uploadProjectImage(
+      `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/controls/${kind}/reference-image?load_node_id=${encodeURIComponent(nodeId)}`,
+      file,
+      `${kind}参照画像を登録しました`
+    );
+  }
+
+  async function uploadProjectImage(path: string, file: File, successMessage: string) {
+    if (!selected) return;
+    await runTask(async () => {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json() as { manga_json: MangaProject };
+      setSelected({ ...selected, manga_json: payload.manga_json });
+      setJsonText(JSON.stringify(payload.manga_json, null, 2));
+      setAssetVersion((value) => value + 1);
+      setMessage(successMessage);
+    });
+  }
+
+  function startBalloonDrag(event: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") {
+    const box = currentDialogue?.box ?? [0.48, 0.06, 0.46, 0.22];
+    dragState.current = { mode, startX: event.clientX, startY: event.clientY, box: [...box] as [number, number, number, number] };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveBalloon(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragState.current;
+    const editor = event.currentTarget.parentElement;
+    if (!drag || !editor) return;
+    const rect = editor.getBoundingClientRect();
+    const dx = (event.clientX - drag.startX) / rect.width;
+    const dy = (event.clientY - drag.startY) / rect.height;
+    updateCurrentDialogue((dialogue) => {
+      const next = [...drag.box] as [number, number, number, number];
+      if (drag.mode === "move") {
+        next[0] = clamp(drag.box[0] + dx, 0, 1 - drag.box[2]);
+        next[1] = clamp(drag.box[1] + dy, 0, 1 - drag.box[3]);
+      } else {
+        next[2] = clamp(drag.box[2] + dx, 0.08, 1 - drag.box[0]);
+        next[3] = clamp(drag.box[3] + dy, 0.06, 1 - drag.box[1]);
+      }
+      dialogue.box = next;
     });
   }
 
@@ -752,6 +882,14 @@ export function App() {
             作品名
             <input value={form.work_name} onChange={(event) => setForm({ ...form, work_name: event.target.value })} />
           </label>
+          <label>
+            ページ数
+            <select value={form.target_pages} onChange={(event) => setForm({ ...form, target_pages: Number(event.target.value) })}>
+              <option value={4}>4ページ</option>
+              <option value={8}>8ページ</option>
+              <option value={16}>16ページ</option>
+            </select>
+          </label>
           <button disabled={busy}>新規作成</button>
         </form>
         <div className="project-list">
@@ -810,6 +948,16 @@ export function App() {
                 <ul>{productionStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
               </details>
             )}
+            {jobHistory.length > 0 && (
+              <details className="job-history">
+                <summary>生成履歴</summary>
+                <ul>
+                  {jobHistory.slice(0, 10).map((job) => (
+                    <li key={job.id}>{job.panel_id}: {job.status} {job.progress}%</li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </section>
         )}
 
@@ -859,6 +1007,58 @@ export function App() {
               <button onClick={applyFourPageDraftSettings} disabled={busy}>4ページ仮設定</button>
             </div>
           </section>
+        )}
+
+        {selected && (
+          <details className="advanced-settings">
+            <summary>生成環境・ロケーション</summary>
+            <section className="workflow-settings">
+              <div className="section-heading">
+                <h2>workflowプリセット</h2>
+                <button onClick={addWorkflowPreset} disabled={busy}>追加</button>
+              </div>
+              <label>
+                プロジェクト既定
+                <select value={selected.manga_json.active_workflow_preset_id ?? ""} onChange={(event) => updateManga((manga) => { manga.active_workflow_preset_id = event.target.value || null; })}>
+                  <option value="">workflow設定を維持</option>
+                  {selected.manga_json.workflow_presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+              <div className="preset-list">
+                {selected.manga_json.workflow_presets.map((preset) => (
+                  <article key={preset.id}>
+                    <label>名前<input value={preset.name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.name = event.target.value; })} /></label>
+                    <label>checkpointノード<input value={preset.checkpoint_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.checkpoint_node_id = event.target.value; })} /></label>
+                    <label>checkpoint名<input value={preset.checkpoint_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.checkpoint_name = event.target.value; })} /></label>
+                    <label>VAEノード<input value={preset.vae_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.vae_node_id = event.target.value; })} /></label>
+                    <label>VAE名<input value={preset.vae_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.vae_name = event.target.value; })} /></label>
+                    <label>samplerノード<input value={preset.sampler_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.sampler_node_id = event.target.value; })} /></label>
+                    <label>sampler<input value={preset.sampler_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.sampler_name = event.target.value; })} /></label>
+                    <label>scheduler<input value={preset.scheduler} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.scheduler = event.target.value; })} /></label>
+                    <label>steps<input type="number" value={preset.steps ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.steps = event.target.value ? Number(event.target.value) : null; })} /></label>
+                    <label>CFG<input type="number" step="0.1" value={preset.cfg ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.cfg = event.target.value ? Number(event.target.value) : null; })} /></label>
+                    <label>denoise<input type="number" step="0.05" min="0" max="1" value={preset.denoise ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.denoise = event.target.value ? Number(event.target.value) : null; })} /></label>
+                  </article>
+                ))}
+              </div>
+            </section>
+            <section className="location-settings">
+              <div className="section-heading"><h2>ロケーション</h2><button onClick={addLocation} disabled={busy}>追加</button></div>
+              <div className="location-list">
+                {selected.manga_json.locations.map((location) => (
+                  <article key={location.id}>
+                    <div className="character-title"><strong>{location.display_name}</strong><small>{location.id}</small></div>
+                    <label>表示名<input value={location.display_name} onChange={(event) => updateLocation(location.id, (item) => { item.display_name = event.target.value; })} /></label>
+                    <label>背景prompt<textarea value={location.prompt} onChange={(event) => updateLocation(location.id, (item) => { item.prompt = event.target.value; })} /></label>
+                    <label>negative<textarea value={location.negative_prompt} onChange={(event) => updateLocation(location.id, (item) => { item.negative_prompt = event.target.value; })} /></label>
+                    <label>LoadImageノード<input value={location.reference_load_node_id} onChange={(event) => updateLocation(location.id, (item) => { item.reference_load_node_id = event.target.value; })} /></label>
+                    <label>参照画像<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadLocationImage(location.id, file); }} /></label>
+                    {location.reference_image_asset && <img className="reference-image" src={assetUrl(location.reference_image_asset)} alt={`${location.display_name}参照`} />}
+                  </article>
+                ))}
+              </div>
+            </section>
+          </details>
         )}
 
         {selected && (
@@ -954,12 +1154,16 @@ export function App() {
         <section className="content-grid">
           <div className="preview">
             <div className="tabs">
-              {[1, 2, 3, 4].map((page) => (
+              {(selected?.manga_json.pages ?? []).map(({ page }) => (
                 <button key={page} className={selectedPage === page ? "active" : ""} onClick={() => setSelectedPage(page)}>
                   {page}p {productionStatus?.pages.find((item) => item.page === page)?.status === "complete" ? "完了" : ""}
                 </button>
               ))}
             </div>
+            <label className="incomplete-filter">
+              <input type="checkbox" checked={showIncompleteOnly} onChange={(event) => setShowIncompleteOnly(event.target.checked)} />
+              未完成のみ
+            </label>
             <div className="page-frame">
               {pageAssets[selectedPage - 1] ? (
                 <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
@@ -971,7 +1175,7 @@ export function App() {
               )}
             </div>
             <div className="panel-list">
-              {currentPage?.panels.map((panel) => (
+              {visiblePanels.map((panel) => (
                 <article
                   key={panel.panel_id}
                   className={currentPanel?.panel_id === panel.panel_id ? "active-panel" : ""}
@@ -1006,6 +1210,48 @@ export function App() {
                     ))}
                   </fieldset>
                 )}
+                {selected && (
+                  <div className="settings-grid">
+                    <label>
+                      ロケーション
+                      <select value={currentPanel.location_id} onChange={(event) => updateCurrentPanel((panel) => { panel.location_id = event.target.value; })}>
+                        <option value="">指定なし</option>
+                        {selected.manga_json.locations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      workflowプリセット
+                      <select value={currentPanel.generation.workflow_preset_id ?? ""} onChange={(event) => updateCurrentPanel((panel) => { panel.generation.workflow_preset_id = event.target.value || null; })}>
+                        <option value="">プロジェクト既定</option>
+                        {selected.manga_json.workflow_presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                )}
+                <details className="control-settings">
+                  <summary>Control参照</summary>
+                  <div className="control-grid">
+                    {(["pose", "depth", "lineart", "background"] as const).map((kind) => {
+                      const control = currentPanel.control_references.find((item) => item.kind === kind);
+                      return (
+                        <div key={kind}>
+                          <strong>{kind}</strong>
+                          <input
+                            placeholder="LoadImageノードID"
+                            value={control?.load_node_id ?? controlNodeDrafts[kind] ?? ""}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              if (control) updateCurrentPanel((panel) => { const item = panel.control_references.find((entry) => entry.id === control.id); if (item) item.load_node_id = value; });
+                              else setControlNodeDrafts((drafts) => ({ ...drafts, [kind]: value }));
+                            }}
+                          />
+                          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadControlImage(kind, file); }} />
+                          {control && <img src={assetUrl(control.asset)} alt={`${kind}参照`} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
                 <label>
                   positive prompt
                   <textarea
@@ -1099,6 +1345,17 @@ export function App() {
                       <option value="left">left</option>
                       <option value="right">right</option>
                     </select>
+                    <span className="anchor-controls">
+                      {(["top", "left", "center", "right", "bottom"] as const).map((anchor) => (
+                        <button
+                          key={anchor}
+                          type="button"
+                          title={`crop ${anchor}`}
+                          className={currentPanel.generation.crop_anchor === anchor ? "active" : ""}
+                          onClick={() => updateCurrentPanel((panel) => { panel.generation.crop_anchor = anchor; })}
+                        >{anchor === "top" ? "↑" : anchor === "bottom" ? "↓" : anchor === "left" ? "←" : anchor === "right" ? "→" : "•"}</button>
+                      ))}
+                    </span>
                   </label>
                 </div>
                 <div className="dialogue-editor">
@@ -1184,7 +1441,26 @@ export function App() {
                   </div>
                 </div>
                 {currentPanel.image_asset && (
-                  <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
+                  <div className="panel-visual-editor">
+                    <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
+                    {currentDialogue && (
+                      <div
+                        className="balloon-overlay"
+                        style={{
+                          left: `${(currentDialogue.box?.[0] ?? 0.48) * 100}%`,
+                          top: `${(currentDialogue.box?.[1] ?? 0.06) * 100}%`,
+                          width: `${(currentDialogue.box?.[2] ?? 0.46) * 100}%`,
+                          height: `${(currentDialogue.box?.[3] ?? 0.22) * 100}%`
+                        }}
+                        onPointerDown={(event) => startBalloonDrag(event, "move")}
+                        onPointerMove={moveBalloon}
+                        onPointerUp={() => { dragState.current = null; }}
+                      >
+                        <span>{currentDialogue.text}</span>
+                        <i onPointerDown={(event) => { event.stopPropagation(); startBalloonDrag(event, "resize"); }} />
+                      </div>
+                    )}
+                  </div>
                 )}
                 <div className="candidate-header">
                   <h3>画像候補</h3>

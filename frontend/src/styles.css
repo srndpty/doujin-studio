@@ -300,6 +300,53 @@ label {
   background: #202426;
 }
 
+.advanced-settings {
+  border-bottom: 1px solid #d4cec3;
+  background: #eef1ef;
+  padding: 12px 18px;
+}
+
+.advanced-settings > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.workflow-settings,
+.location-settings {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.workflow-settings h2,
+.location-settings h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.preset-list,
+.location-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.preset-list article,
+.location-list article {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  border: 1px solid #c8ceca;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.location-list textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(420px, 0.95fr) minmax(420px, 1.05fr);
@@ -316,8 +363,20 @@ label {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.incomplete-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.incomplete-filter input {
+  width: auto;
 }
 
 .page-frame {
@@ -476,6 +535,100 @@ label {
   background: #ffffff;
 }
 
+.panel-visual-editor {
+  position: relative;
+  overflow: hidden;
+  min-height: 180px;
+  border: 1px solid #d0c8bb;
+  background: #202426;
+  touch-action: none;
+}
+
+.panel-visual-editor .panel-image {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  border: 0;
+}
+
+.balloon-overlay {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  min-width: 48px;
+  min-height: 32px;
+  border: 2px solid #171717;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 8px 14px;
+  color: #171717;
+  cursor: move;
+  user-select: none;
+}
+
+.balloon-overlay span {
+  overflow: hidden;
+  max-width: 100%;
+  max-height: 100%;
+  font-size: 12px;
+}
+
+.balloon-overlay i {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #244c5a;
+  cursor: nwse-resize;
+}
+
+.control-settings {
+  border: 1px solid #d0c8bb;
+  border-radius: 6px;
+  padding: 9px;
+}
+
+.control-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.control-grid > div {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #d0c8bb;
+  padding: 8px;
+}
+
+.control-grid img {
+  width: 100%;
+  height: 90px;
+  object-fit: contain;
+  background: #202426;
+}
+
+.anchor-controls {
+  display: grid;
+  grid-template-columns: repeat(5, 32px);
+  gap: 4px;
+}
+
+.anchor-controls button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
 .candidate-header {
   display: flex;
   align-items: end;
@@ -585,6 +738,14 @@ label {
   }
 
   .character-profile-list article {
+    grid-template-columns: 1fr;
+  }
+
+  .preset-list,
+  .location-list,
+  .preset-list article,
+  .location-list article,
+  .control-grid {
     grid-template-columns: 1fr;
   }
 }

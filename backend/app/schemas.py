@@ -38,6 +38,32 @@ class Sfx(BaseModel):
     style: str = "small_handwritten"
 
 
+class WorkflowPreset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    checkpoint_node_id: str = ""
+    checkpoint_name: str = ""
+    vae_node_id: str = ""
+    vae_name: str = ""
+    sampler_node_id: str = ""
+    sampler_name: str = ""
+    scheduler: str = ""
+    steps: int | None = Field(default=None, ge=1, le=200)
+    cfg: float | None = Field(default=None, ge=0, le=30)
+    denoise: float | None = Field(default=None, ge=0, le=1)
+
+
+class PanelControlReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: Literal["pose", "depth", "lineart", "background"] = "pose"
+    asset: str
+    load_node_id: str
+
+
 class LoRABinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -52,7 +78,8 @@ class ReferenceImageBinding(BaseModel):
 
     node_id: str
     asset: str
-    character_id: str
+    character_id: str = ""
+    kind: Literal["character", "location", "pose", "depth", "lineart", "background"] = "character"
 
 
 class GenerationInfo(BaseModel):
@@ -74,6 +101,8 @@ class GenerationInfo(BaseModel):
     message: str = ""
     loras: list[LoRABinding] = Field(default_factory=list)
     reference_images: list[ReferenceImageBinding] = Field(default_factory=list)
+    workflow_preset_id: str | None = None
+    workflow_preset: WorkflowPreset | None = None
 
 
 class ImageCandidate(BaseModel):
@@ -88,6 +117,7 @@ class ImageCandidate(BaseModel):
     characters: list[str] = Field(default_factory=list)
     loras: list[LoRABinding] = Field(default_factory=list)
     reference_images: list[ReferenceImageBinding] = Field(default_factory=list)
+    workflow_preset: WorkflowPreset | None = None
     seed: int = Field(ge=0)
     prompt_id: str | None = None
     message: str = ""
@@ -107,6 +137,7 @@ class Panel(BaseModel):
     image_asset: str | None = None
     image_candidates: list[ImageCandidate] = Field(default_factory=list)
     selected_candidate_id: str | None = None
+    control_references: list[PanelControlReference] = Field(default_factory=list)
     dialogue: list[Dialogue] = Field(default_factory=list)
     sfx: list[Sfx] = Field(default_factory=list)
     generation: GenerationInfo = Field(default_factory=GenerationInfo)
@@ -153,6 +184,17 @@ class Character(BaseModel):
     reference_load_node_id: str = ""
 
 
+class LocationProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    display_name: str
+    prompt: str = ""
+    negative_prompt: str = ""
+    reference_image_asset: str | None = None
+    reference_load_node_id: str = ""
+
+
 class MangaProject(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -163,12 +205,16 @@ class MangaProject(BaseModel):
     common_positive_prompt: str = ""
     common_negative_prompt: str = ""
     characters: list[Character] = Field(default_factory=list)
+    locations: list[LocationProfile] = Field(default_factory=list)
+    workflow_presets: list[WorkflowPreset] = Field(default_factory=list)
+    active_workflow_preset_id: str | None = None
     pages: list[Page] = Field(default_factory=list)
 
 
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     work_name: str = Field(default="", max_length=120)
+    target_pages: Literal[4, 8, 16] = 4
 
 
 class ProjectSummary(BaseModel):
@@ -189,6 +235,7 @@ class GenerateNameRequest(BaseModel):
     character_b: str = Field(min_length=1, max_length=80)
     situation: str = Field(min_length=1, max_length=200)
     ending_direction: str = Field(min_length=1, max_length=200)
+    target_pages: Literal[4, 8, 16] = 4
 
 
 class RenderResponse(BaseModel):
@@ -282,6 +329,12 @@ class ProjectProductionStatus(BaseModel):
 
 class CharacterReferenceResponse(BaseModel):
     character_id: str
+    asset: str
+    manga_json: MangaProject
+
+
+class ReferenceAssetResponse(BaseModel):
+    target_id: str
     asset: str
     manga_json: MangaProject
 

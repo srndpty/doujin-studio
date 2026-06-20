@@ -7,6 +7,10 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
     characters_by_id = {character.id: character for character in manga.characters}
     positive_parts = [manga.common_positive_prompt]
     negative_parts = [manga.common_negative_prompt]
+    location = next((item for item in manga.locations if item.id == panel.location_id), None)
+    if location:
+        positive_parts.append(location.prompt)
+        negative_parts.append(location.negative_prompt)
 
     for character_id in panel.characters:
         character = characters_by_id.get(character_id)
@@ -47,6 +51,12 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
     characters_by_id = {character.id: character for character in manga.characters}
     prepared.generation.loras = []
     prepared.generation.reference_images = []
+    preset_id = panel.generation.workflow_preset_id or manga.active_workflow_preset_id
+    prepared.generation.workflow_preset_id = preset_id
+    prepared.generation.workflow_preset = next(
+        (preset.model_copy(deep=True) for preset in manga.workflow_presets if preset.id == preset_id),
+        None,
+    )
     for character_id in panel.characters:
         character = characters_by_id.get(character_id)
         if character is None:
@@ -66,6 +76,25 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
                     node_id=character.reference_load_node_id,
                     asset=character.reference_image_asset,
                     character_id=character.id,
+                    kind="character",
+                )
+            )
+    location = next((item for item in manga.locations if item.id == panel.location_id), None)
+    if location and location.reference_load_node_id and location.reference_image_asset:
+        prepared.generation.reference_images.append(
+            ReferenceImageBinding(
+                node_id=location.reference_load_node_id,
+                asset=location.reference_image_asset,
+                kind="location",
+            )
+        )
+    for control in panel.control_references:
+        if control.asset and control.load_node_id:
+            prepared.generation.reference_images.append(
+                ReferenceImageBinding(
+                    node_id=control.load_node_id,
+                    asset=control.asset,
+                    kind=control.kind,
                 )
             )
     return prepared
