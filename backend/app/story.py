@@ -22,6 +22,7 @@ from .llm import LLMError, StubLLMClient, extract_json_object
 from .schemas import (
     BriefCharacter,
     BriefStage,
+    Character,
     CharacterArc,
     Dialogue,
     GenerationInfo,
@@ -237,6 +238,9 @@ def invalidate_downstream(stages: dict, stage: str) -> None:
 
 
 def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:
+    # LLMがpages/script段階でラッパーを省き配列だけを返すことがあるため吸収する。
+    if stage in {"pages", "script"} and isinstance(data, list):
+        data = {"pages": data}
     model = STAGE_MODELS[stage]
     validated = model.model_validate(data)
     if stage == "pages":
@@ -344,7 +348,10 @@ def stage_instruction_text(stage: str) -> str:
         ),
         "script": (
             "コマ台本段階です。pages配列を出力してください。各ページは page(整数) と panels(1〜4個)を持ち、"
-            "各コマは shot, camera, location, visual_prompt, dialogue([{speaker, text}]), sfx([string]) を持ちます。"
+            "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue([{speaker, text}]), sfx([string]) を持ちます。"
+            "charactersにはそのコマに描かれる登場人物名を、台詞が無いコマでも必ず列挙してください。"
+            "shotはコマ番号ではなく、close-up, medium shot, wide shotなどの画角を文字列で指定してください。"
+            "camera, location, visual_prompt, speaker, textも文字列で出力してください。"
             "visual_promptは英語の画像生成プロンプトにし、bboxやコマ枠座標は出力しないでください。"
         ),
     }[stage]
@@ -508,6 +515,7 @@ def generate_stub_stage(
                             f"anime style, {outline.get('purpose', 'scene')}, "
                             f"{'close up expressive face' if panel_index % 2 else 'establishing shot'}"
                         ),
+                        "characters": [speaker] if panel_index == panel_count - 1 else list(characters),
                         "dialogue": [{"speaker": speaker, "text": f"{outline.get('purpose', '場面')}…"}]
                         if panel_index != panel_count - 1
                         else [],
@@ -528,16 +536,93 @@ def select_layout(panel_count: int, hint: str) -> list[tuple[float, float, float
     return options["default"]
 
 
+def match_character_id(name: str, characters: list[Character]) -> str | None:
+    """話者名を表示名・別名・部分一致でキャラIDへ解決する。"""
+    name = (name or "").strip()
+    if not name:
+        return None
+    for character in characters:
+        if name == character.id or name == character.display_name or name in character.aliases:
+            return character.id
+    # 「城ヶ崎美嘉さん」「美嘉」などの表記揺れを部分一致で吸収する。
+    for character in characters:
+        for candidate in (character.display_name, *character.aliases):
+            if candidate and (candidate in name or name in candidate):
+                return character.id
+    return None
+
+
 def resolve_character_ids(names: list[str], manga: MangaProject) -> list[str]:
-    by_name = {character.display_name: character.id for character in manga.characters}
-    by_id = {character.id for character in manga.characters}
     resolved: list[str] = []
     for name in names:
-        if name in by_id:
-            resolved.append(name)
-        elif name in by_name:
-            resolved.append(by_name[name])
+        character_id = match_character_id(name, manga.characters)
+        if character_id and character_id not in resolved:
+            resolved.append(character_id)
     return resolved
+
+
+def _is_weak_trigger(character: Character) -> bool:
+    """画像生成トークンとして弱い（未設定/表示名そのまま）triggerかどうか。"""
+    trigger = (character.trigger_prompt or "").strip()
+    return not trigger or trigger == character.display_name.strip()
+
+
+def build_characters_from_knowledge(session: Session, work_name: str) -> list[Character]:
+    """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。"""
+    characters: list[Character] = []
+    used_ids: set[str] = set()
+    for index, chunk in enumerate(knowledge.get_character_chunks(session, work_name)):
+        display_name = (chunk.title or "").strip()
+        if not display_name:
+            continue
+        image = knowledge.parse_chunk_image(chunk)
+        char_id = str(image.get("id") or f"kc_{index + 1}").strip() or f"kc_{index + 1}"
+        while char_id in used_ids:
+            char_id = f"{char_id}_x"
+        used_ids.add(char_id)
+        aliases = [str(alias).strip() for alias in image.get("aliases", []) if str(alias).strip()]
+        characters.append(
+            Character(
+                id=char_id,
+                display_name=display_name,
+                aliases=aliases,
+                trigger_prompt=str(image.get("trigger_prompt", "")).strip() or display_name,
+                appearance_prompt=str(image.get("appearance_prompt", "")).strip(),
+                outfit_prompt=str(image.get("outfit_prompt", "")).strip(),
+                negative_prompt=str(image.get("negative_prompt", "")).strip(),
+                lora_node_id=str(image.get("lora_node_id", "")).strip(),
+                lora_name=str(image.get("lora_name", "")).strip(),
+                speech_style=str(image.get("speech_style", "")).strip(),
+            )
+        )
+    return characters
+
+
+def merge_knowledge_characters(base: MangaProject, knowledge_characters: list[Character]) -> None:
+    """baseにキャラを取り込む。新規は追加し、既存はtriggerが弱ければ画像情報を補完する。"""
+    for known in knowledge_characters:
+        match = next(
+            (c for c in base.characters if match_character_id(known.display_name, [c]) is not None),
+            None,
+        )
+        if match is None:
+            base.characters.append(known)
+            continue
+        # ユーザーが調整済み(=強いtrigger)なら尊重し、未設定のみ補完する。
+        if _is_weak_trigger(match):
+            match.trigger_prompt = known.trigger_prompt
+            match.negative_prompt = match.negative_prompt or known.negative_prompt
+        if not match.appearance_prompt:
+            match.appearance_prompt = known.appearance_prompt
+        if not match.outfit_prompt:
+            match.outfit_prompt = known.outfit_prompt
+        if not match.aliases:
+            match.aliases = known.aliases
+        if known.lora_name and not match.lora_name:
+            match.lora_node_id = known.lora_node_id
+            match.lora_name = known.lora_name
+        if not match.speech_style:
+            match.speech_style = known.speech_style
 
 
 def resolve_location_id(location: str, manga: MangaProject) -> str:
@@ -547,11 +632,14 @@ def resolve_location_id(location: str, manga: MangaProject) -> str:
     return manga.locations[0].id if manga.locations else ""
 
 
-def script_to_manga(script: ScriptStage, base: MangaProject) -> MangaProject:
+def script_to_manga(
+    script: ScriptStage,
+    base: MangaProject,
+    page_characters: dict[int, list[str]] | None = None,
+) -> MangaProject:
     common_positive = base.common_positive_prompt or DEFAULT_COMMON_POSITIVE_PROMPT
     common_negative = base.common_negative_prompt or DEFAULT_COMMON_NEGATIVE_PROMPT
-    by_id = {character.id for character in base.characters}
-    by_name = {character.display_name: character.id for character in base.characters}
+    page_characters = page_characters or {}
 
     pages: list[Page] = []
     for script_page in script.pages:
@@ -560,14 +648,17 @@ def script_to_manga(script: ScriptStage, base: MangaProject) -> MangaProject:
         panels: list[Panel] = []
         for index, script_panel in enumerate(script_page.panels):
             panel_id = f"p{script_page.page:02d}_{index + 1:02d}"
-            speaker_names: list[str] = []
+            # コマ明記の登場人物 + 台詞話者を統合し、無ければページ構成の登場人物で補う。
+            names: list[str] = list(script_panel.characters)
             for line in script_panel.dialogue:
-                if line.speaker and line.speaker not in speaker_names:
-                    speaker_names.append(line.speaker)
-            character_ids = resolve_character_ids(speaker_names, base)
+                if line.speaker and line.speaker not in names:
+                    names.append(line.speaker)
+            character_ids = resolve_character_ids(names, base)
+            if not character_ids:
+                character_ids = resolve_character_ids(page_characters.get(script_page.page, []), base)
             dialogues = []
             for dialogue_index, line in enumerate(script_panel.dialogue):
-                speaker = by_name.get(line.speaker, line.speaker if line.speaker in by_id else line.speaker)
+                speaker = match_character_id(line.speaker, base.characters) or line.speaker
                 dialogues.append(
                     Dialogue(
                         speaker=speaker,
@@ -645,9 +736,18 @@ def apply_session(
     if len(script.pages) not in {4, 8, 16}:
         raise StoryError("ページ数は4・8・16のいずれかにしてください")
     base = MangaProject.model_validate(json.loads(project.manga_json))
+    # 知識DBのキャラ画像情報(trigger_promptなど)をCharacterプロファイルへ反映する。
+    merge_knowledge_characters(base, build_characters_from_knowledge(session, record.work_name))
+    # 台詞の無いコマ向けに、ページ構成段階の登場人物をフォールバックとして渡す。
+    pages_data = stages["pages"].get("data") or {}
+    page_characters = {
+        int(outline.get("page", 0)): list(outline.get("characters", []) or [])
+        for outline in pages_data.get("pages", [])
+        if outline.get("page")
+    }
     # 適用前のManga JSONをリビジョン保存する。
     save_revision(session, project.id, project.manga_json, f"ストーリー適用前 ({now_utc().isoformat()})")
-    manga = script_to_manga(script, base)
+    manga = script_to_manga(script, base, page_characters)
     project.manga_json = manga.model_dump_json()
     project.updated_at = now_utc()
     session.commit()

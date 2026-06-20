@@ -11,7 +11,30 @@
     "title": "城ヶ崎美嘉",
     "content": "本作の中心人物。華やかなギャル系ファッションとアイドルとしての自信を持つ一方、周囲への気配りや面倒見のよさも見せる。城ヶ崎莉嘉の姉であり、莉嘉に対しては姉らしく接する。強気な外見だけに寄せず、照れや繊細さも含む人物として描く。",
     "policy": "主人公として扱い、性格を単純な高圧型にしない",
-    "tags": ["城ヶ崎美嘉", "美嘉", "主人公", "ギャル", "アイドル", "姉"]
+    "tags": ["城ヶ崎美嘉", "美嘉", "主人公", "ギャル", "アイドル", "姉"],
+    "image": {
+      "id": "jougasaki_mika",
+      "aliases": ["美嘉"],
+      "trigger_prompt": "jougasaki mika, idolmaster cinderella girls",
+      "appearance_prompt": "",
+      "outfit_prompt": "",
+      "negative_prompt": "inconsistent character design"
+    }
+  },
+  {
+    "kind": "character",
+    "title": "城ヶ崎莉嘉",
+    "content": "美嘉の妹。明るく元気で、姉の美嘉を身近な先輩として意識する。姉妹らしい遠慮のなさと親しさを見せる。",
+    "policy": "美嘉の妹として扱い、姉妹関係を変更しない",
+    "tags": ["城ヶ崎莉嘉", "莉嘉", "妹", "アイドル"],
+    "image": {
+      "id": "jougasaki_rika",
+      "aliases": ["莉嘉"],
+      "trigger_prompt": "jougasaki rika, idolmaster cinderella girls",
+      "appearance_prompt": "",
+      "outfit_prompt": "",
+      "negative_prompt": "inconsistent character design"
+    }
   },
   {
     "kind": "relationship",

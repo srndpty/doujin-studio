@@ -23,6 +23,7 @@ class ChunkData:
     title: str = ""
     policy: str = ""
     tags: list[str] = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -179,12 +180,15 @@ def chunk_from_json_object(item, default_title: str) -> ChunkData:
         body = json.dumps(raw_content, ensure_ascii=False, indent=2)
     else:
         body = str(raw_content).strip()
+    image = item.get("image")
+    meta = {"image": image} if isinstance(image, dict) else {}
     return ChunkData(
         content=body,
         kind=str(item.get("kind", "")).strip(),
         title=str(item.get("title", "") or default_title).strip(),
         policy=str(item.get("policy", "")).strip(),
         tags=normalize_tags(item.get("tags")),
+        meta=meta,
     )
 
 
@@ -257,6 +261,7 @@ def import_source(
             content=chunk.content,
             policy=chunk.policy,
             tags=", ".join(chunk.tags),
+            meta=json.dumps(chunk.meta, ensure_ascii=False) if chunk.meta else "",
             position=position,
         )
         session.add(record)
@@ -304,6 +309,40 @@ def list_sources(session: Session, work_name: str | None = None) -> list[Knowled
     if work_name:
         query = query.filter(KnowledgeSourceRecord.work_name == work_name)
     return query.order_by(KnowledgeSourceRecord.created_at.desc()).all()
+
+
+def get_character_chunks(session: Session, work_name: str) -> list[KnowledgeChunkRecord]:
+    """作品のキャラクター種別チャンクをrequired優先で返す。"""
+    if not work_name:
+        return []
+    chunks = (
+        session.query(KnowledgeChunkRecord)
+        .filter(KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.kind == "character")
+        .order_by(KnowledgeChunkRecord.usage, KnowledgeChunkRecord.source_id, KnowledgeChunkRecord.position)
+        .all()
+    )
+    # required(usage昇順で先頭)を優先しつつ、同名キャラの重複は最初の1件に絞る。
+    seen: set[str] = set()
+    unique: list[KnowledgeChunkRecord] = []
+    for chunk in chunks:
+        title = (chunk.title or "").strip()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        unique.append(chunk)
+    return unique
+
+
+def parse_chunk_image(chunk: KnowledgeChunkRecord) -> dict:
+    """チャンクのmetaから画像生成用情報(image)を取り出す。無ければ空dict。"""
+    if not getattr(chunk, "meta", ""):
+        return {}
+    try:
+        meta = json.loads(chunk.meta)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    image = meta.get("image") if isinstance(meta, dict) else None
+    return image if isinstance(image, dict) else {}
 
 
 def get_required_chunks(session: Session, work_name: str) -> list[KnowledgeChunkRecord]:

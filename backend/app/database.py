@@ -63,6 +63,8 @@ class KnowledgeChunkRecord(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     policy: Mapped[str] = mapped_column(Text, nullable=False, default="")
     tags: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 画像生成用などの構造化メタデータをJSON文字列で保持する（例: キャラのtrigger_prompt）。
+    meta: Mapped[str] = mapped_column(Text, nullable=False, default="")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
@@ -113,6 +115,17 @@ def ensure_fts(engine) -> None:
         FTS5_AVAILABLE = False
 
 
+def ensure_columns(engine) -> None:
+    """create_allでは追加されない後付けカラムを既存SQLite DBへ補う。"""
+    with engine.begin() as connection:
+        rows = connection.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
+        columns = {row[1] for row in rows}
+        if "meta" not in columns:
+            connection.execute(
+                text("ALTER TABLE knowledge_chunks ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
+            )
+
+
 def create_session_factory(database_url: str) -> sessionmaker:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, connect_args=connect_args)
@@ -125,5 +138,7 @@ def create_session_factory(database_url: str) -> sessionmaker:
             cursor.close()
 
     Base.metadata.create_all(engine)
+    if database_url.startswith("sqlite"):
+        ensure_columns(engine)
     ensure_fts(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)

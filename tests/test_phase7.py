@@ -340,6 +340,112 @@ def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
         assert search["hits"]
 
 
+def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
+    knowledge_dir = tmp_path / "knowledge"
+    pack_dir = knowledge_dir / "cg"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "work.json").write_text(
+        json.dumps(
+            {
+                "work_id": "cg",
+                "work_name": "シンデレラ",
+                "documents": [{"file": "required.json", "usage": "required"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (pack_dir / "required.json").write_text(
+        json.dumps(
+            [
+                {
+                    "kind": "character",
+                    "title": "城ヶ崎美嘉",
+                    "content": "面倒見のよい姉",
+                    "image": {
+                        "id": "jougasaki_mika",
+                        "aliases": ["美嘉"],
+                        "trigger_prompt": "jougasaki mika, idolmaster cinderella girls",
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with make_client(tmp_path, knowledge_dir=knowledge_dir) as client:
+        project_id = create_project(client, work_name="変更前")
+        session_id = client.post(
+            f"/api/projects/{project_id}/story-sessions",
+            json={"knowledge_work_id": "cg", "target_pages": 4, "instruction": "美嘉の日常"},
+        ).json()["id"]
+        for stage in ["brief", "plot", "pages", "script"]:
+            assert client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate").status_code == 200
+            assert client.post(f"/api/story-sessions/{session_id}/stages/{stage}/approve").status_code == 200
+
+        manga = client.post(f"/api/story-sessions/{session_id}/apply").json()["manga_json"]
+
+        mika = next((c for c in manga["characters"] if c["display_name"] == "城ヶ崎美嘉"), None)
+        assert mika is not None, "知識のキャラがプロジェクトへ反映されること"
+        assert "jougasaki mika" in mika["trigger_prompt"]
+
+        # 美嘉が話すコマには美嘉のキャラIDが紐づくこと。
+        linked = [
+            panel
+            for page in manga["pages"]
+            for panel in page["panels"]
+            if mika["id"] in panel["characters"]
+        ]
+        assert linked, "話者解決で美嘉がコマへ紐づくこと"
+
+        # 合成プロンプトにtriggerが含まれること。
+        preview = client.get(
+            f"/api/projects/{project_id}/panels/{linked[0]['panel_id']}/prompt-preview"
+        ).json()
+        assert "jougasaki mika" in preview["positive_prompt"]
+
+
+def test_validate_stage_accepts_bare_pages_array() -> None:
+    # LLMが {"pages":[...]} のラッパーを省いて配列だけ返すケースを吸収する。
+    bare = [
+        {"page": 1, "panels": [{"shot": "wide", "dialogue": [{"speaker": "美嘉", "text": "やったね"}]}]}
+    ]
+    validated = story.validate_stage_data("script", bare, target_pages=1)
+    assert validated["pages"][0]["page"] == 1
+    assert validated["pages"][0]["panels"][0]["dialogue"][0]["speaker"] == "美嘉"
+
+
+def test_silent_panel_keeps_characters() -> None:
+    from backend.app.schemas import Character, MangaProject, ScriptStage
+
+    base = MangaProject(
+        title="本",
+        characters=[
+            Character(id="mika", display_name="城ヶ崎美嘉", aliases=["美嘉"], trigger_prompt="jougasaki mika"),
+        ],
+    )
+    script = ScriptStage.model_validate(
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "panels": [
+                        # 台詞なしだがcharacters明記 → 解決される
+                        {"shot": "wide", "characters": ["美嘉"], "dialogue": []},
+                        # 台詞もcharactersも無い → ページ構成のフォールバックで解決される
+                        {"shot": "close", "characters": [], "dialogue": []},
+                    ],
+                }
+            ]
+        }
+    )
+    manga = story.script_to_manga(script, base, page_characters={1: ["城ヶ崎美嘉"]})
+    panels = manga.pages[0].panels
+    assert panels[0].characters == ["mika"], "characters明記の無言コマが紐づくこと"
+    assert panels[1].characters == ["mika"], "ページ構成フォールバックで無言コマが紐づくこと"
+
+
 def test_llm_status_stub(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         status = client.get("/api/llm/status").json()
@@ -399,6 +505,41 @@ def test_llm_invalid_json_is_corrected_once(tmp_path: Path) -> None:
     assert stage["status"] == "draft"
     assert stage["data"]["tone"] == "穏やか"
     assert len(llm.calls) == 2, "不正JSONは1回だけ修正要求する"
+
+
+def test_script_numeric_fields_are_normalized() -> None:
+    data = {
+        "pages": [
+            {
+                "page": page,
+                "layout": 1,
+                "panels": [
+                    {
+                        "shot": 1,
+                        "camera": 2,
+                        "location": "控室",
+                        "visual_prompt": "two idols talking",
+                        "dialogue": [{"speaker": "美嘉", "text": 3}],
+                        "sfx": 4,
+                    }
+                ],
+            }
+            for page in range(1, 5)
+        ]
+    }
+    validated = story.validate_stage_data("script", data, 4)
+    first = validated["pages"][0]
+    assert first["layout"] == "1"
+    assert first["panels"][0]["shot"] == "1"
+    assert first["panels"][0]["camera"] == "2"
+    assert first["panels"][0]["dialogue"][0]["text"] == "3"
+    assert first["panels"][0]["sfx"] == ["4"]
+
+
+def test_script_prompt_explains_shot_as_string() -> None:
+    instruction = story.stage_instruction_text("script")
+    assert "コマ番号ではなく" in instruction
+    assert "文字列" in instruction
 
 
 def test_llm_persistent_failure_records_error(tmp_path: Path) -> None:

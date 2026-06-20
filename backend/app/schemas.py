@@ -169,6 +169,7 @@ class Character(BaseModel):
 
     id: str
     display_name: str
+    aliases: list[str] = Field(default_factory=list)
     role: str = ""
     speech_style: str = ""
     visual_notes: str = ""
@@ -495,6 +496,15 @@ class ScriptDialogue(BaseModel):
     speaker: str = ""
     text: str = ""
 
+    @field_validator("speaker", "text", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return value
+
 
 class ScriptPanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -503,8 +513,30 @@ class ScriptPanel(BaseModel):
     camera: str = ""
     location: str = ""
     visual_prompt: str = ""
+    characters: list[str] = Field(default_factory=list)
     dialogue: list[ScriptDialogue] = Field(default_factory=list)
     sfx: list[str] = Field(default_factory=list)
+
+    @field_validator("shot", "camera", "location", "visual_prompt", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return value
+
+    @field_validator("characters", "sfx", mode="before")
+    @classmethod
+    def normalize_str_list(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, (str, int, float, bool)):
+            text = str(value).strip()
+            return [text] if text else []
+        return value
 
 
 class ScriptPage(BaseModel):
@@ -513,6 +545,15 @@ class ScriptPage(BaseModel):
     page: int = Field(ge=1)
     layout: str = ""
     panels: list[ScriptPanel] = Field(min_length=1, max_length=4)
+
+    @field_validator("layout", mode="before")
+    @classmethod
+    def normalize_layout(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return value
 
 
 class ScriptStage(BaseModel):
