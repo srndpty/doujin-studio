@@ -544,7 +544,7 @@ class ScriptPage(BaseModel):
 
     page: int = Field(ge=1)
     layout: str = ""
-    panels: list[ScriptPanel] = Field(min_length=1, max_length=4)
+    panels: list[ScriptPanel] = Field(min_length=1, max_length=9)
 
     @field_validator("layout", mode="before")
     @classmethod

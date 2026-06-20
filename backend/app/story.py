@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -347,11 +348,18 @@ def stage_instruction_text(stage: str) -> str:
             "各要素は page(整数), purpose, setting, characters([string]), hook を持ちます。"
         ),
         "script": (
-            "コマ台本段階です。pages配列を出力してください。各ページは page(整数) と panels(1〜4個)を持ち、"
+            "コマ台本段階です。各ページをプロの漫画のように読みやすいコマ割りへ分割してください。"
+            "コマ割りの基準:"
+            "・標準的な進行のページは3〜5コマに割る。テンポの速い場面や情報量の多いページは最大9コマまで増やしてよい（このシステムは1ページ最大9コマ）。"
+            "・1ページを1コマにするのは、山場・見せ場・余韻など明確な演出意図があるページだけに限る。漫然と全ページを1コマにしない。"
+            "・各コマで画角(shot)と役割を変え、状況提示→反応→引き のように流れを作る。"
+            "・ページのpurposeとhookに沿ってコマを配置する。"
+            "出力形式: pages配列。各ページは page(整数) と panels(1〜9個)を持ちます。"
             "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue([{speaker, text}]), sfx([string]) を持ちます。"
             "charactersにはそのコマに描かれる登場人物名を、台詞が無いコマでも必ず列挙してください。"
             "shotはコマ番号ではなく、close-up, medium shot, wide shotなどの画角を文字列で指定してください。"
             "camera, location, visual_prompt, speaker, textも文字列で出力してください。"
+            "任意で各ページにlayout(コマ割りのヒント文字列)を付けてもかまいません。"
             "visual_promptは英語の画像生成プロンプトにし、bboxやコマ枠座標は出力しないでください。"
         ),
     }[stage]
@@ -364,6 +372,7 @@ def build_stage_messages(
     context: KnowledgeContext,
     instruction: str,
     retry_error: str | None = None,
+    directive: str | None = None,
 ) -> list[dict]:
     system = (
         "あなたは同人誌のネーム制作を支援するアシスタントです。"
@@ -393,10 +402,26 @@ def build_stage_messages(
         parts.append(
             "前回の出力は検証に失敗しました。次のエラーを修正し、有効なJSONのみを再出力してください:\n" + retry_error
         )
+    if directive:
+        parts.append("前回の出力には次の問題がありました。修正して再出力してください:\n" + directive)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
+
+
+PANELING_DIRECTIVE = (
+    "全ページが1コマになっています。山場などの演出意図があるページ以外は、"
+    "1ページを複数コマに分割し直してください。標準的な進行のページは3〜5コマを目安にします。"
+)
+
+
+def script_needs_repaneling(data: dict) -> bool:
+    """台本が「全ページ1コマ」の退化状態かどうか（2ページ以上が前提）。"""
+    pages = data.get("pages", []) if isinstance(data, dict) else []
+    if len(pages) < 2:
+        return False
+    return all(len(page.get("panels", [])) <= 1 for page in pages)
 
 
 async def generate_llm_stage(
@@ -407,23 +432,34 @@ async def generate_llm_stage(
     context: KnowledgeContext,
     instruction: str,
 ) -> dict:
-    messages = build_stage_messages(record, stages, stage, context, instruction)
-    last_error: Exception | None = None
-    for attempt in range(2):
-        content = await llm.chat(messages, want_json=True)
+    async def attempt(directive: str | None) -> dict:
+        messages = build_stage_messages(record, stages, stage, context, instruction, directive=directive)
+        last_error: Exception | None = None
+        for retry in range(2):
+            content = await llm.chat(messages, want_json=True)
+            try:
+                parsed = extract_json_object(content)
+                return validate_stage_data(stage, parsed, record.target_pages)
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if retry == 0:
+                    # Pydantic検証失敗時はエラー内容付きで1回だけ修正要求する。
+                    messages = build_stage_messages(
+                        record, stages, stage, context, instruction,
+                        retry_error=str(exc), directive=directive,
+                    )
+                else:
+                    raise
+        raise last_error if last_error else RuntimeError("LLM生成に失敗しました")
+
+    result = await attempt(None)
+    # 台本が全ページ1コマの退化状態なら、一度だけコマ割りの作り直しを促す。
+    if stage == "script" and script_needs_repaneling(result):
         try:
-            parsed = extract_json_object(content)
-            return validate_stage_data(stage, parsed, record.target_pages)
-        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-            last_error = exc
-            if attempt == 0:
-                # Pydantic検証失敗時はエラー内容付きで1回だけ修正要求する。
-                messages = build_stage_messages(
-                    record, stages, stage, context, instruction, retry_error=str(exc)
-                )
-            else:
-                raise
-    raise last_error if last_error else RuntimeError("LLM生成に失敗しました")
+            result = await attempt(PANELING_DIRECTIVE)
+        except (LLMError, ValidationError, ValueError, json.JSONDecodeError):
+            pass  # 作り直しに失敗したら元の結果を採用する。
+    return result
 
 
 # --- スタブ生成 ---
@@ -529,11 +565,43 @@ def generate_stub_stage(
 
 # --- Manga JSON変換と適用 ---
 
+def distribute_rows(panel_count: int, max_cols: int = 3) -> list[int]:
+    """コマ数を1行あたり最大max_colsで均等な行構成へ分配する。"""
+    panel_count = max(1, panel_count)
+    n_rows = math.ceil(panel_count / max_cols)
+    base, extra = divmod(panel_count, n_rows)
+    # 余りは上の行から1コマずつ足す（読み始めを情報量多めにする）。
+    return [base + (1 if i < extra else 0) for i in range(n_rows)]
+
+
+def grid_layout(
+    panel_count: int, margin: float = 0.05, gap: float = 0.02
+) -> list[tuple[float, float, float, float]]:
+    """任意コマ数を行グリッドのbboxへ自動配置する（1〜4以外のフォールバック）。"""
+    rows = distribute_rows(panel_count)
+    usable_h = 1 - 2 * margin - gap * (len(rows) - 1)
+    row_h = usable_h / len(rows)
+    boxes: list[tuple[float, float, float, float]] = []
+    y = margin
+    for cols in rows:
+        usable_w = 1 - 2 * margin - gap * (cols - 1)
+        col_w = usable_w / cols
+        x = margin
+        for _ in range(cols):
+            boxes.append((round(x, 4), round(y, 4), round(col_w, 4), round(row_h, 4)))
+            x += col_w + gap
+        y += row_h + gap
+    return boxes
+
+
 def select_layout(panel_count: int, hint: str) -> list[tuple[float, float, float, float]]:
-    options = PANEL_LAYOUTS.get(panel_count) or PANEL_LAYOUTS[max(1, min(panel_count, 4))]
-    if hint and hint in options:
-        return options[hint]
-    return options["default"]
+    options = PANEL_LAYOUTS.get(panel_count)
+    if options:
+        if hint and hint in options:
+            return options[hint]
+        return options["default"]
+    # 5コマ以上は動的グリッドで配置する。
+    return grid_layout(panel_count)
 
 
 def match_character_id(name: str, characters: list[Character]) -> str | None:

@@ -416,6 +416,43 @@ def test_validate_stage_accepts_bare_pages_array() -> None:
     assert validated["pages"][0]["panels"][0]["dialogue"][0]["speaker"] == "美嘉"
 
 
+def test_script_needs_repaneling_detects_all_single_panel() -> None:
+    one = lambda: {"shot": "wide", "dialogue": []}
+    all_single = {"pages": [{"page": 1, "panels": [one()]}, {"page": 2, "panels": [one()]}]}
+    assert story.script_needs_repaneling(all_single) is True
+    # 1ページでも複数コマがあれば退化ではない。
+    mixed = {"pages": [{"page": 1, "panels": [one(), one()]}, {"page": 2, "panels": [one()]}]}
+    assert story.script_needs_repaneling(mixed) is False
+    # 1ページ作品は強調1コマが正当なので対象外。
+    assert story.script_needs_repaneling({"pages": [{"page": 1, "panels": [one()]}]}) is False
+
+
+def test_grid_layout_produces_valid_bboxes() -> None:
+    assert story.distribute_rows(6) == [3, 3]
+    assert story.distribute_rows(5) == [3, 2]
+    assert story.distribute_rows(7) == [3, 2, 2]
+    for count in range(1, 10):
+        boxes = story.grid_layout(count)
+        assert len(boxes) == count
+        for left, top, width, height in boxes:
+            assert width > 0 and height > 0
+            assert left >= 0 and top >= 0
+            assert left + width <= 1.0001 and top + height <= 1.0001
+
+
+def test_script_to_manga_supports_six_panels() -> None:
+    from backend.app.schemas import MangaProject, ScriptStage
+
+    base = MangaProject(title="本")
+    panels = [{"shot": "medium shot", "dialogue": []} for _ in range(6)]
+    script = ScriptStage.model_validate({"pages": [{"page": 1, "panels": panels}]})
+    manga = story.script_to_manga(script, base)
+    page = manga.pages[0]
+    assert len(page.panels) == 6
+    # bboxはPanel構築時に範囲検証される。一意なpanel_idも確認する。
+    assert len({panel.panel_id for panel in page.panels}) == 6
+
+
 def test_silent_panel_keeps_characters() -> None:
     from backend.app.schemas import Character, MangaProject, ScriptStage
 
