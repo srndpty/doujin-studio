@@ -1322,6 +1322,9 @@ export function App() {
                 if (!selected) return;
                 setBusy(true);
                 try {
+                  // 未保存の編集を先に保存する。再レイアウトAPIは保存済みManga JSONを基準に動くため、
+                  // 保存しないと直前のコマ移動・吹き出し・overlay編集が失われる。
+                  await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
                   const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
                     `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
                     { family }
