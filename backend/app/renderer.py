@@ -43,11 +43,25 @@ def render_project_page(
 
 
 def _render_single_page(manga: MangaProject, page: Page, pages_dir: Path) -> tuple[Path, list[str]]:
+    # レンダリング順: 背景 → 通常コマ → 背面overlay → 前面overlay → 吹き出し・SFX。
     image = Image.new("RGBA", PAGE_SIZE, (248, 248, 244, 255))
     draw = ImageDraw.Draw(image)
     warnings: list[str] = []
+    panel_boxes = {panel.panel_id: _panel_box_px(panel) for panel in page.panels}
+
     for panel in page.panels:
-        warnings.extend(draw_panel(image, draw, panel, manga.typography, manga.reading_direction))
+        draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id])
+    for overlay in page.overlay_elements:
+        if overlay.layer == "back":
+            draw_overlay(image, draw, overlay, page, panel_boxes)
+    for overlay in page.overlay_elements:
+        if overlay.layer == "front":
+            draw_overlay(image, draw, overlay, page, panel_boxes)
+    for panel in page.panels:
+        warnings.extend(
+            draw_panel_text(image, draw, panel, panel_boxes[panel.panel_id], manga.typography)
+        )
+
     draw_page_number(draw, page.page, manga.reading_direction)
     target = pages_dir / f"page_{page.page:03d}.png"
     image.convert("RGB").save(target)
@@ -71,44 +85,62 @@ def sanitize_export_filename(title: str) -> str:
     return (sanitized or "名称未設定")[:80].rstrip(" .")
 
 
-def draw_panel(
-    page_image: Image.Image,
-    draw: ImageDraw.ImageDraw,
-    panel: Panel,
-    typography: TypographySettings,
-    reading_direction: str,
-) -> list[str]:
+def _panel_box_px(panel: Panel) -> tuple[int, int, int, int]:
     page_w, page_h = PAGE_SIZE
     left = int(panel.bbox[0] * page_w)
     top = int(panel.bbox[1] * page_h)
     width = int(panel.bbox[2] * page_w)
     height = int(panel.bbox[3] * page_h)
-    box = (left, top, left + width, top + height)
+    return (left, top, left + width, top + height)
 
-    if panel.image_asset and Path(panel.image_asset).exists():
-        panel_image = Image.open(panel.image_asset).convert("RGB")
-        fitted = fit_image_to_box(
-            panel_image,
-            (width, height),
-            panel.generation.fit_mode,
-            panel.generation.crop_anchor,
-            scale=panel.generation.crop_scale,
-            offset_x=panel.generation.crop_offset_x,
-            offset_y=panel.generation.crop_offset_y,
-            focal=(
-                (panel.generation.focal_x, panel.generation.focal_y)
-                if panel.generation.focal_x is not None and panel.generation.focal_y is not None
-                else None
-            ),
-        )
-        page_image.paste(fitted.convert("RGB"), (left, top))
+
+def _fit_panel_image(panel: Panel, box: tuple[int, int, int, int]) -> Image.Image | None:
+    if not (panel.image_asset and Path(panel.image_asset).exists()):
+        return None
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    source = Image.open(panel.image_asset).convert("RGB")
+    return fit_image_to_box(
+        source,
+        (width, height),
+        panel.generation.fit_mode,
+        panel.generation.crop_anchor,
+        scale=panel.generation.crop_scale,
+        offset_x=panel.generation.crop_offset_x,
+        offset_y=panel.generation.crop_offset_y,
+        focal=(
+            (panel.generation.focal_x, panel.generation.focal_y)
+            if panel.generation.focal_x is not None and panel.generation.focal_y is not None
+            else None
+        ),
+    )
+
+
+def draw_panel_art(
+    page_image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    panel: Panel,
+    box: tuple[int, int, int, int],
+) -> None:
+    """コマの画像と枠線・番号ラベルだけを描く（overlayより下のレイヤー）。"""
+    fitted = _fit_panel_image(panel, box)
+    if fitted is not None:
+        page_image.paste(fitted.convert("RGB"), (box[0], box[1]))
     else:
         draw.rectangle(box, fill=(230, 232, 235, 255))
-
     draw.rectangle(box, outline=(20, 20, 20, 255), width=PANEL_OUTLINE_WIDTH)
     label_font = load_label_font(20)
-    draw.text((left + 14, top + 10), panel.panel_id, fill=(20, 20, 20, 255), font=label_font)
+    draw.text((box[0] + 14, box[1] + 10), panel.panel_id, fill=(20, 20, 20, 255), font=label_font)
 
+
+def draw_panel_text(
+    page_image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    panel: Panel,
+    box: tuple[int, int, int, int],
+    typography: TypographySettings,
+) -> list[str]:
+    """吹き出し・SFXを描く（overlayより上のレイヤー）。"""
     warnings: list[str] = []
     for sfx in panel.sfx:
         if sfx.layer == "below":
@@ -119,6 +151,47 @@ def draw_panel(
         if sfx.layer == "above":
             draw_sfx(page_image, sfx, box)
     return warnings
+
+
+def draw_overlay(
+    page_image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    overlay,
+    page,
+    panel_boxes: dict[str, tuple[int, int, int, int]],
+) -> None:
+    """オーバーフレーム（コマ枠外の演出レイヤー）を合成する。"""
+    page_w, page_h = PAGE_SIZE
+    target_w = max(1, int(overlay.box[2] * page_w * overlay.scale))
+    target_h = max(1, int(overlay.box[3] * page_h * overlay.scale))
+    dest_x = int(overlay.box[0] * page_w)
+    dest_y = int(overlay.box[1] * page_h)
+
+    tile: Image.Image | None = None
+    if overlay.asset and Path(overlay.asset).exists():
+        tile = Image.open(overlay.asset).convert("RGBA").resize((target_w, target_h))
+        if overlay.mask_asset and Path(overlay.mask_asset).exists():
+            mask = Image.open(overlay.mask_asset).convert("L").resize((target_w, target_h))
+            tile.putalpha(mask)
+    if tile is None:
+        # アセット未設定でも配置枠を点線で示す（後からマスク/抽出を接続できる）。
+        draw.rectangle(
+            (dest_x, dest_y, dest_x + target_w, dest_y + target_h),
+            outline=(120, 120, 200, 255), width=3,
+        )
+        return
+    if overlay.opacity < 1.0:
+        alpha = tile.getchannel("A").point(lambda value: int(value * overlay.opacity))
+        tile.putalpha(alpha)
+    page_image.alpha_composite(tile, (dest_x, dest_y))
+
+    # 指定コマの絵だけは手前に再描画し、overlayがそのコマに隠れるようにする。
+    for panel_id in overlay.occluded_by_panel_ids:
+        panel = next((item for item in page.panels if item.panel_id == panel_id), None)
+        box = panel_boxes.get(panel_id)
+        if panel is None or box is None:
+            continue
+        draw_panel_art(page_image, draw, panel, box)
 
 
 # --- 吹き出しと写植 ---
@@ -168,13 +241,12 @@ def _clamp_box(box: tuple[int, int, int, int], bounds: tuple[int, int, int, int]
     return (x0, y0, x0 + w, y0 + h)
 
 
-def draw_dialogue(
-    page_image: Image.Image,
-    draw: ImageDraw.ImageDraw,
+def resolve_dialogue_layout(
     dialogue: Dialogue,
     panel_box: tuple[int, int, int, int],
     typography: TypographySettings,
-) -> list[str]:
+) -> tuple[tuple[int, int, int, int], typeset.TextLayout]:
+    """吹き出し枠と写植レイアウトを決める（描画と検査で共通利用）。"""
     left, top, right, bottom = panel_box
     inset = PANEL_OUTLINE_WIDTH + 4
     bounds = (left + inset, top + inset, right - inset, bottom - inset)
@@ -201,7 +273,19 @@ def draw_dialogue(
         expanded_layout = layout_for(expanded)
         if expanded_layout.fits or expanded_layout.font_size >= layout.font_size:
             bubble, layout = expanded, expanded_layout
+    return bubble, layout
 
+
+def draw_dialogue(
+    page_image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    dialogue: Dialogue,
+    panel_box: tuple[int, int, int, int],
+    typography: TypographySettings,
+) -> list[str]:
+    bubble, layout = resolve_dialogue_layout(dialogue, panel_box, typography)
+    font_path = find_dialogue_font_path()
+    font_path_str = str(font_path) if font_path else None
     warnings = list(layout.warnings)
     fill = (20, 20, 20)
     stroke_width = 0

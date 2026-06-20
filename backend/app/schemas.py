@@ -227,6 +227,42 @@ class Panel(BaseModel):
         return value
 
 
+class OverlayElement(BaseModel):
+    """コマ枠外へ配置する演出レイヤー（オーバーフレーム）。
+
+    透過画像やマスク付き人物を、ページ座標で前面/背面に重ねる。
+    occluded_by_panel_idsに挙げたコマの絵だけは手前に再描画され、
+    「上のコマには隠れ、中央以降で手前へ出る」表現を実現する。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    # 抽出元コマ（人物の出所）。読み順判定にも使う。
+    source_panel_id: str = ""
+    # 透過画像（人物切り抜き等）。
+    asset: str | None = None
+    # 別途マスク画像を持つ場合のアルファ。
+    mask_asset: str | None = None
+    # ページ全体を基準にした配置(x, y, width, height) 0..1。
+    box: tuple[float, float, float, float]
+    scale: float = Field(default=1.0, ge=0.05, le=4.0)
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    # back=通常コマの直後（背面）、front=コマより手前。
+    layer: Literal["back", "front"] = "front"
+    z_index: int = 0
+    # frontでもこのコマの絵には隠れる（手前に再描画される）。
+    occluded_by_panel_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("box")
+    @classmethod
+    def validate_box(cls, value: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        left, top, width, height = value
+        if width <= 0 or height <= 0:
+            raise ValueError("overlayのboxは正の幅・高さにしてください")
+        return value
+
+
 class Page(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -241,6 +277,7 @@ class Page(BaseModel):
     layout_locked: bool = False
     # コマの読み順（panel_id列）。右上から左下を既定とする。
     reading_order: list[str] = Field(default_factory=list)
+    overlay_elements: list[OverlayElement] = Field(default_factory=list)
     panels: list[Panel] = Field(min_length=1)
     render_status: Literal["pending", "done"] = "pending"
     rendered_at: datetime | None = None
@@ -371,6 +408,31 @@ class FontsResponse(BaseModel):
 
 class RenderRequest(BaseModel):
     force: bool = False
+
+
+class PreflightIssue(BaseModel):
+    level: Literal["error", "warning"]
+    code: str
+    message: str
+    page: int
+    panel_id: str | None = None
+
+
+class PreflightResponse(BaseModel):
+    project_id: str
+    page: int | None = None
+    ok: bool
+    errors: list[PreflightIssue] = Field(default_factory=list)
+    warnings: list[PreflightIssue] = Field(default_factory=list)
+
+
+class PageRenderResponse(BaseModel):
+    project_id: str
+    page: int
+    page_asset: str
+    manga_json: MangaProject
+    warnings: list[str] = Field(default_factory=list)
+    preflight: PreflightResponse
 
 
 class LayoutSuggestRequest(BaseModel):

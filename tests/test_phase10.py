@@ -1,0 +1,197 @@
+"""Phase 3（オーバーフレーム・品質検査）のテスト。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from backend.app import preflight
+from backend.app.config import Settings
+from backend.app.main import create_app
+from backend.app.renderer import render_project_page
+from backend.app.schemas import (
+    BalloonTail,
+    Dialogue,
+    MangaProject,
+    OverlayElement,
+    Page,
+    Panel,
+)
+
+
+def make_client(tmp_path: Path) -> TestClient:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        export_dir=tmp_path / "exports",
+        image_backend="stub",
+    )
+    return TestClient(create_app(settings))
+
+
+def create_generated_project(client: TestClient) -> str:
+    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()["id"]
+    client.post(
+        f"/api/projects/{project_id}/generate-name",
+        json={
+            "work_name": "作品",
+            "character_a": "春香",
+            "character_b": "千早",
+            "situation": "事務所で相談する",
+            "ending_direction": "笑って終わる",
+        },
+    )
+    return project_id
+
+
+def _two_panel_page(overlay: OverlayElement | None = None) -> MangaProject:
+    return MangaProject(
+        title="overlay",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="grid",
+                reading_order=["p01_01", "p01_02"],
+                overlay_elements=[overlay] if overlay else [],
+                panels=[
+                    Panel(panel_id="p01_01", bbox=(0.05, 0.05, 0.9, 0.42), shot="t"),
+                    Panel(panel_id="p01_02", bbox=(0.05, 0.52, 0.9, 0.42), shot="t"),
+                ],
+            )
+        ],
+    )
+
+
+def test_overlay_renders_with_occlusion_and_placeholder(tmp_path: Path) -> None:
+    asset = tmp_path / "overlay.png"
+    Image.new("RGBA", (300, 400), (200, 50, 50, 255)).save(asset)
+    overlay = OverlayElement(
+        id="ov1",
+        source_panel_id="p01_02",
+        asset=str(asset),
+        box=(0.4, 0.3, 0.3, 0.5),
+        layer="front",
+        occluded_by_panel_ids=["p01_01"],
+    )
+    manga = _two_panel_page(overlay)
+    target, _warnings = render_project_page("proj", manga, 1, tmp_path)
+    assert target.exists()
+
+    # アセット未設定でもプレースホルダ枠を描いて落ちない。
+    placeholder = OverlayElement(id="ov2", box=(0.4, 0.3, 0.2, 0.2), layer="back")
+    manga2 = _two_panel_page(placeholder)
+    target2, _ = render_project_page("proj", manga2, 1, tmp_path)
+    assert target2.exists()
+
+
+def test_preflight_flags_dialogue_overflow_as_error() -> None:
+    manga = MangaProject(
+        title="overflow",
+        pages=[
+            Page(
+                page=1, theme="t", layout_template="one",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0.05, 0.05, 0.2, 0.1),
+                        shot="t",
+                        dialogue=[Dialogue(speaker="a", text="あ" * 300, box=(0.0, 0.0, 0.5, 0.5))],
+                    )
+                ],
+            )
+        ],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    assert any(issue.code == "dialogue_overflow" and issue.level == "error" for issue in issues)
+
+
+def test_preflight_tail_out_of_range_and_insert_characters() -> None:
+    manga = MangaProject(
+        title="warn",
+        pages=[
+            Page(
+                page=1, theme="t", layout_template="one",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0.05, 0.05, 0.9, 0.9),
+                        shot="t",
+                        subject_mode="prop_insert",
+                        characters=["hero"],
+                        dialogue=[Dialogue(speaker="a", text="やあ", tail=BalloonTail(tip=(1.15, 0.5)))],
+                    )
+                ],
+            )
+        ],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    codes = {issue.code for issue in issues}
+    assert "tail_out_of_range" in codes
+    assert "insert_panel_has_characters" in codes
+    assert all(issue.level == "warning" for issue in issues if issue.code in {"tail_out_of_range", "insert_panel_has_characters"})
+
+
+def test_preflight_reading_order_reversal_and_overlay_occlusion() -> None:
+    overlay = OverlayElement(
+        id="ov", source_panel_id="p01_02", box=(0.05, 0.05, 0.9, 0.42), layer="front"
+    )
+    manga = _two_panel_page(overlay)
+    # 読み順を逆転させる。
+    manga.pages[0].reading_order = ["p01_02", "p01_01"]
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    codes = {issue.code for issue in issues}
+    assert "reading_order_reversed" in codes
+    # overlay(source=p01_02)が先に読むp01_01を隠している（逆順だとp01_02が先なので隠さない）。
+    # 自然順に戻すと隠蔽警告が出る。
+    manga.pages[0].reading_order = ["p01_01", "p01_02"]
+    issues2 = preflight.preflight_page(manga, manga.pages[0])
+    assert any(issue.code == "overlay_hides_earlier_panel" for issue in issues2)
+
+
+def test_preflight_layout_repetition() -> None:
+    pages = []
+    for page_number in range(1, 4):
+        pages.append(
+            Page(
+                page=page_number, theme="t", layout_template="grid", layout_family="dialogue",
+                panels=[Panel(panel_id=f"p{page_number:02d}_01", bbox=(0.05, 0.05, 0.9, 0.9), shot="t")],
+            )
+        )
+    manga = MangaProject(title="rep", pages=pages)
+    issues = preflight.preflight_page(manga, manga.pages[2], page_index=2)
+    assert any(issue.code == "layout_repetition" for issue in issues)
+
+
+def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        preflight_response = client.post(f"/api/projects/{project_id}/pages/1/preflight")
+        assert preflight_response.status_code == 200
+        payload = preflight_response.json()
+        assert payload["ok"] is True  # 既定の短い台詞はエラーにならない
+        assert "errors" in payload and "warnings" in payload
+
+        render_response = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert render_response.status_code == 200
+        body = render_response.json()
+        assert body["page_asset"].endswith("page_001.png")
+        assert (tmp_path / "exports" / body["page_asset"]).exists()
+        assert body["preflight"]["ok"] is True
+
+
+def test_cbz_export_blocked_on_dialogue_overflow(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 1つのコマに収まらない長文を仕込む。
+        dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
+        dialogue["text"] = "あ" * 300
+        dialogue["box"] = [0.0, 0.0, 0.15, 0.1]
+        manga["pages"][0]["panels"][0]["bbox"] = [0.05, 0.05, 0.2, 0.1]
+        saved = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert saved.status_code == 200
+        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert export.status_code == 422
+        assert "プリフライト" in export.json()["detail"]

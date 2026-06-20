@@ -1387,3 +1387,16 @@ button.primary {
   justify-content: space-between;
   gap: 8px;
 }
+
+.preflight-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+.preflight-list .ok { color: #2a7d2a; }
+.preflight-list .error { color: #c0392b; }
+.preflight-list .warning { color: #b8860b; }

@@ -50,6 +50,19 @@ export function PageEditor({ projectId, manga, pageNumber, assetVersion, busy, o
   const page = manga?.pages?.find((item: any) => item.page === pageNumber) ?? null;
   const [selection, setSelection] = useState<{ panelId: string; kind: "panel" | "dialogue" | "sfx"; index: number } | null>(null);
   const [family, setFamily] = useState<string>("");
+  const [preflight, setPreflight] = useState<{ ok: boolean; errors: any[]; warnings: any[] } | null>(null);
+
+  const runPreflight = async () => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, { method: "POST" });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      setPreflight(result);
+      setMessage(result.ok ? "プリフライト: 重大エラーなし" : `プリフライト: ${result.errors.length}件のエラー`);
+    } catch (error) {
+      setMessage(`プリフライトに失敗しました: ${(error as Error).message}`);
+    }
+  };
   const rectRefs = useRef<Record<string, Konva.Rect>>({});
   const transformerRef = useRef<Konva.Transformer | null>(null);
 
@@ -221,6 +234,22 @@ export function PageEditor({ projectId, manga, pageNumber, assetVersion, busy, o
             }
           />
         )}
+
+        <fieldset>
+          <legend>品質検査（プリフライト）</legend>
+          <button disabled={busy} onClick={runPreflight}>このページを検査</button>
+          {preflight && (
+            <ul className="preflight-list">
+              {preflight.errors.length === 0 && preflight.warnings.length === 0 && <li className="ok">問題は見つかりませんでした</li>}
+              {preflight.errors.map((issue, index) => (
+                <li key={`e${index}`} className="error">⛔ {issue.message}</li>
+              ))}
+              {preflight.warnings.map((issue, index) => (
+                <li key={`w${index}`} className="warning">⚠ {issue.message}</li>
+              ))}
+            </ul>
+          )}
+        </fieldset>
 
         <div className="editor-row">
           <button className="primary" disabled={busy} onClick={() => {

@@ -29,6 +29,7 @@ from .generator import generate_four_page_name
 from . import fonts as font_registry
 from . import knowledge as knowledge_db
 from . import layout_engine
+from . import preflight as preflight_module
 from . import story as story_module
 from .llm import build_llm_client, get_llm_status
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
@@ -62,6 +63,9 @@ from .schemas import (
     LayoutSuggestResponse,
     LLMStatusResponse,
     MangaProject,
+    PageRenderResponse,
+    PreflightIssue,
+    PreflightResponse,
     OpenExportFolderResponse,
     PanelImageGenerationResponse,
     PanelControlReference,
@@ -530,6 +534,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             manga_json=manga,
         )
 
+    @app.post(
+        "/api/projects/{project_id}/pages/{page_number}/preflight",
+        response_model=PreflightResponse,
+    )
+    def preflight_page_endpoint(project_id: str, page_number: int, request: Request) -> PreflightResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        page = next((item for item in manga.pages if item.page == page_number), None)
+        if page is None:
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        issues = preflight_module.preflight_page(manga, page)
+        return _to_preflight_response(project_id, page_number, issues)
+
+    @app.post(
+        "/api/projects/{project_id}/pages/{page_number}/render",
+        response_model=PageRenderResponse,
+    )
+    def render_page_endpoint(project_id: str, page_number: int, request: Request) -> PageRenderResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        page = next((item for item in manga.pages if item.page == page_number), None)
+        if page is None:
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        settings = request.app.state.settings
+        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page.render_status = "done"
+        page.rendered_at = now_utc()
+        save_manga_json(request, project_id, manga)
+        issues = preflight_module.preflight_page(manga, page)
+        return PageRenderResponse(
+            project_id=project_id,
+            page=page_number,
+            page_asset=asset_to_id(page_asset, settings.export_dir),
+            manga_json=manga,
+            warnings=warnings,
+            preflight=_to_preflight_response(project_id, page_number, issues),
+        )
+
     @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
     def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:
         record = load_project_record(request, project_id)
@@ -555,6 +597,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manga = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
         status = build_production_status(project_id, manga)
+        # 重大エラー（台詞のはみ出し等）があればCBZ出力を停止する。
+        preflight_errors = [
+            issue for issue in preflight_module.preflight_project(manga) if issue.level == "error"
+        ]
+        if preflight_errors:
+            raise HTTPException(
+                status_code=422,
+                detail="プリフライトで重大エラーが見つかりました: "
+                + "; ".join(f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]),
+            )
         page_assets, render_warnings = render_project_pages(project_id, manga, settings.export_dir)
         for page in manga.pages:
             page.render_status = "done"
@@ -1004,6 +1056,20 @@ def get_job_or_404(request: Request, job_id: str) -> GenerationJob:
 
 def to_job_response(job: GenerationJob) -> GenerationJobResponse:
     return GenerationJobResponse(**job.as_dict())
+
+
+def _to_preflight_response(
+    project_id: str, page: int | None, issues: list[PreflightIssue]
+) -> PreflightResponse:
+    errors = [issue for issue in issues if issue.level == "error"]
+    warnings = [issue for issue in issues if issue.level == "warning"]
+    return PreflightResponse(
+        project_id=project_id,
+        page=page,
+        ok=not errors,
+        errors=errors,
+        warnings=warnings,
+    )
 
 
 def build_production_status(project_id: str, manga: MangaProject) -> ProjectProductionStatus:
