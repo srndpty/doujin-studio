@@ -218,12 +218,23 @@ export function PageEditor({
   };
 
   const uploadOverlay = async (overlay: OverlayElement, kind: "asset" | "mask", file: File) => {
+    const saveResponse = await fetch(`/api/projects/${projectId}/manga-json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(manga)
+    });
+    if (!saveResponse.ok) throw new Error(await saveResponse.text());
+    const saved = (await saveResponse.json()) as { manga_json: MangaProject };
+    setManga(saved.manga_json);
+    onChange(saved.manga_json);
+
     const response = await fetch(
       `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlay.id)}/${kind}`,
       { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }
     );
     if (!response.ok) throw new Error(await response.text());
     const result = (await response.json()) as { manga_json: MangaProject };
+    setManga(result.manga_json);
     onChange(result.manga_json);
     setMessage(kind === "asset" ? "overlay画像を登録しました" : "overlayマスクを登録しました");
   };

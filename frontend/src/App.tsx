@@ -420,11 +420,8 @@ export function App() {
   async function saveProjectTitle() {
     if (!selected) return;
     await runTask(async () => {
-      const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
-      setSelected(project);
-      setJsonText(JSON.stringify(project.manga_json, null, 2));
+      await saveJsonDraft("タイトルとManga JSONを保存しました");
       await refreshProjects();
-      setMessage("タイトルを保存しました");
     });
   }
 

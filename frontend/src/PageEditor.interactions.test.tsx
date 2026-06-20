@@ -230,8 +230,13 @@ describe("PageEditor interactions", () => {
 
     const file = new File(["x"], "a.png", { type: "image/png" });
     fireEvent.change(within(controls).getByLabelText("画像"), { target: { files: [file] } });
-    fireEvent.change(within(controls).getByLabelText("マスク"), { target: { files: [file] } });
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [saveUrl, saveOptions] = fetchMock.mock.calls[0];
+    expect(saveUrl).toBe("/api/projects/project/manga-json");
+    expect(saveOptions?.method).toBe("PUT");
+    const savedManga = JSON.parse(String(saveOptions?.body)) as MangaProject;
+    expect(savedManga.pages[0].overlay_elements).toHaveLength(1);
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/overlays/overlay_");
 
     fireEvent.click(within(controls).getByRole("button", { name: "削除" }));
     expect(props.setMessage).toHaveBeenCalled();
