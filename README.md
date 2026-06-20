@@ -182,6 +182,18 @@ $env:COMFYUI_SAVE_PREFIX_NODE_ID = "46"
 
 MVPではComfyUI接続、workflow読込、生成待機、画像取得のいずれかに失敗してもstub画像へフォールバックします。NoobAI、Illustrious、各種LoRAなどのモデル名や配置はユーザーのComfyUI環境に依存します。
 
+### Anima 3既定プロンプト
+
+同梱workflowの`anima-preview3-base.safetensors`設定に合わせ、共通positiveは`masterpiece, best quality, score_7, safe, anime`、共通negativeは`worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia`を基準にしています。漫画制作向けに手・人体の破綻と文字・透かし・吹き出しの抑制語も追加しています。制作画面の`共通プロンプト`から編集できます。
+
+### 制作画面
+
+- 左上のメニューボタンでプロジェクト一覧を開閉します
+- `+`からタイトルだけを入力して本を作成し、作品知識とページ数は`ストーリー生成`で設定します
+- `全ページ生成`は全コマをキューへ登録し、完了後に全ページをレンダリングします
+- 生成中の進捗は画面下部へ固定表示され、許可済みの場合は完了時にデスクトップ通知を表示します
+- Manga JSON、キャラクター、生成環境は折り畳み内で編集します
+
 ## 主なAPI
 
 - `GET /api/health`

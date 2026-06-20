@@ -68,11 +68,13 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
 export function StoryPanel({
   projectId,
   workName,
-  onApplied
+  onApplied,
+  onBusyChange
 }: {
   projectId: string;
   workName: string;
   onApplied: () => void;
+  onBusyChange?: (busy: boolean, label: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [session, setSession] = useState<StorySession | null>(null);
@@ -88,12 +90,14 @@ export function StoryPanel({
 
   async function run(task: () => Promise<void>) {
     setBusy(true);
+    onBusyChange?.(true, "ストーリー生成処理を実行中");
     try {
       await task();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "処理に失敗しました");
     } finally {
       setBusy(false);
+      onBusyChange?.(false, "");
     }
   }
 

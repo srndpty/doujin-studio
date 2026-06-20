@@ -1,4 +1,5 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Download, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
 import { KnowledgePanel } from "./KnowledgePanel";
 import { StoryPanel } from "./StoryPanel";
 
@@ -164,8 +165,8 @@ type TaskProgress = {
   indeterminate?: boolean;
 };
 
-const ANIME_PREVIEW_POSITIVE = "masterpiece, best quality, anime style, anime illustration, clean line art, vibrant colors";
-const ANIME_PREVIEW_NEGATIVE = "low quality, worst quality, bad hands, bad anatomy, text, watermark, speech bubble, logo, extra fingers, missing fingers, distorted face";
+const ANIMA3_POSITIVE = "masterpiece, best quality, score_7, safe, anime";
+const ANIMA3_NEGATIVE = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo";
 
 const api = {
   async get<T>(path: string): Promise<T> {
@@ -212,17 +213,10 @@ export function App() {
   const [showIncompleteOnly, setShowIncompleteOnly] = useState(false);
   const [controlNodeDrafts, setControlNodeDrafts] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("production");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
   const dragState = useRef<{ mode: "move" | "resize"; startX: number; startY: number; box: [number, number, number, number] } | null>(null);
-  const [form, setForm] = useState({
-    title: "テスト本",
-    work_name: "サンプル作品",
-    character_a: "キャラA",
-    character_b: "キャラB",
-    situation: "放課後の部室で差し入れを選ぶ",
-    ending_direction: "小さな勘違いで笑って終わる",
-    target_pages: 4
-  });
-
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
@@ -281,6 +275,7 @@ export function App() {
 
   async function runTask(task: () => Promise<void>) {
     setBusy(true);
+    setProgress({ label: "処理中", current: 0, total: 100, indeterminate: true });
     try {
       await task();
     } catch (error) {
@@ -293,11 +288,12 @@ export function App() {
 
   async function createProject(event: FormEvent) {
     event.preventDefault();
+    if (!newProjectTitle.trim()) return;
     await runTask(async () => {
       const project = await api.post<Project>("/api/projects", {
-        title: form.title,
-        work_name: form.work_name,
-        target_pages: form.target_pages
+        title: newProjectTitle.trim(),
+        work_name: "",
+        target_pages: 4
       });
       setSelected(project);
       setSelectedPage(1);
@@ -305,7 +301,20 @@ export function App() {
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets([]);
       await refreshProjects();
+      setNewProjectOpen(false);
+      setActiveTab("story");
       setMessage("プロジェクトを作成しました");
+    });
+  }
+
+  async function saveProjectTitle() {
+    if (!selected) return;
+    await runTask(async () => {
+      const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
+      setSelected(project);
+      setJsonText(JSON.stringify(project.manga_json, null, 2));
+      await refreshProjects();
+      setMessage("タイトルを保存しました");
     });
   }
 
@@ -318,27 +327,6 @@ export function App() {
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets([]);
       setMessage("プロジェクトを読み込みました");
-    });
-  }
-
-  async function generateName() {
-    if (!selected) return;
-    await runTask(async () => {
-      const project = await api.post<Project>(`/api/projects/${selected.id}/generate-name`, {
-        work_name: form.work_name,
-        character_a: form.character_a,
-        character_b: form.character_b,
-        situation: form.situation,
-        ending_direction: form.ending_direction,
-        target_pages: form.target_pages
-      });
-      setSelected(project);
-      setSelectedPage(1);
-      setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
-      setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setMessage("4ページネームを生成しました");
-      await refreshProjects();
-      await refreshProductionStatus(project.id);
     });
   }
 
@@ -449,6 +437,76 @@ export function App() {
       setMessage(`${selectedPage}ページの全コマを生成しました`);
       await refreshProductionStatus(projectId);
     });
+  }
+
+  async function generateAllPageImages() {
+    if (!selected) return;
+    void requestNotificationPermission();
+    await runTask(async () => {
+      const saved = await saveJsonDraft("全ページ生成前にManga JSONを保存しました");
+      const projectId = saved?.id ?? selected.id;
+      const batch = await api.post<{ jobs: GenerationJob[] }>(`/api/projects/${projectId}/generation-jobs`, {
+        candidate_count: candidateCount
+      });
+      setActiveJobIds(batch.jobs.map((job) => job.id));
+      try {
+        await waitForBatchJobs(batch.jobs, "全ページの画像を生成中");
+      } finally {
+        setActiveJobIds([]);
+        await refreshJobHistory(projectId);
+      }
+      const latest = await api.get<Project>(`/api/projects/${projectId}`);
+      setSelected(latest);
+      setJsonText(JSON.stringify(latest.manga_json, null, 2));
+      setAssetVersion((value) => value + 1);
+      await renderAllPages(projectId, latest);
+      await refreshProductionStatus(projectId);
+      setMessage("全ページの画像生成とレンダリングが完了しました");
+      notifyCompletion("全ページ生成が完了しました", latest.title);
+    });
+  }
+
+  async function waitForBatchJobs(initialJobs: GenerationJob[], label: string): Promise<void> {
+    let jobs = initialJobs;
+    while (true) {
+      jobs = await Promise.all(jobs.map((job) => api.get<GenerationJob>(`/api/generation-jobs/${job.id}`)));
+      const completed = jobs.filter((job) => ["done", "error", "cancelled"].includes(job.status)).length;
+      const progressTotal = jobs.reduce((sum, job) => sum + job.progress, 0);
+      setProgress({ label: `${label}（${completed}/${jobs.length}コマ完了）`, current: progressTotal, total: jobs.length * 100 });
+      if (completed === jobs.length) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    const failed = jobs.find((job) => job.status !== "done");
+    if (failed) throw new Error(failed.message);
+  }
+
+  async function renderAllPages(projectId: string, project: Project): Promise<void> {
+    const nextAssets = [...pageAssets];
+    let latestManga = project.manga_json;
+    for (let index = 0; index < project.manga_json.pages.length; index += 1) {
+      const page = project.manga_json.pages[index];
+      const firstPanel = page.panels[0];
+      if (!firstPanel) continue;
+      setProgress({ label: `${page.page}ページをレンダリング中`, current: index, total: project.manga_json.pages.length });
+      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
+      latestManga = response.manga_json;
+      nextAssets[page.page - 1] = response.page_asset;
+      setPageAssets([...nextAssets]);
+    }
+    setSelected({ ...project, manga_json: latestManga });
+    setJsonText(JSON.stringify(latestManga, null, 2));
+  }
+
+  async function requestNotificationPermission(): Promise<void> {
+    if ("Notification" in window && Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+  }
+
+  function notifyCompletion(title: string, body: string): void {
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification(title, { body });
+    }
   }
 
   async function createAndWaitForGenerationJob(projectId: string, panelId: string): Promise<GenerationJob> {
@@ -609,8 +667,8 @@ export function App() {
 
   function applyAnimePreviewDefaults() {
     updateManga((manga) => {
-      manga.common_positive_prompt = ANIME_PREVIEW_POSITIVE;
-      manga.common_negative_prompt = ANIME_PREVIEW_NEGATIVE;
+      manga.common_positive_prompt = ANIMA3_POSITIVE;
+      manga.common_negative_prompt = ANIMA3_NEGATIVE;
     });
   }
 
@@ -627,7 +685,7 @@ export function App() {
         if (!config) continue;
         for (const panel of page.panels) {
           panel.generation.prompt = mergePrompt(config.prompt, panel.generation.prompt || panel.prompt);
-          panel.generation.negative_prompt = manga.common_negative_prompt || ANIME_PREVIEW_NEGATIVE;
+          panel.generation.negative_prompt = manga.common_negative_prompt || ANIMA3_NEGATIVE;
           panel.generation.width = config.width;
           panel.generation.height = config.height;
           panel.generation.fit_mode = config.fit;
@@ -875,30 +933,17 @@ export function App() {
   const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarOpen ? "" : "sidebar-closed"}`}>
       <aside className="sidebar">
-        <h1>Local Doujin Studio</h1>
-        <form onSubmit={createProject} className="stack">
-          <label>
-            タイトル
-            <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-          </label>
-          <label>
-            作品名
-            <input value={form.work_name} onChange={(event) => setForm({ ...form, work_name: event.target.value })} />
-          </label>
-          <label>
-            ページ数
-            <select value={form.target_pages} onChange={(event) => setForm({ ...form, target_pages: Number(event.target.value) })}>
-              <option value={4}>4ページ</option>
-              <option value={8}>8ページ</option>
-              <option value={16}>16ページ</option>
-            </select>
-          </label>
-          <button disabled={busy}>新規作成</button>
-        </form>
+        <div className="sidebar-heading">
+          <h1>Doujin Studio</h1>
+          <button className="icon-button" title="サイドバーを閉じる" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={18} /></button>
+        </div>
         <div className="project-list">
-          <h2>プロジェクト</h2>
+          <div className="section-heading">
+            <h2>プロジェクト</h2>
+            <button className="icon-button" title="新規プロジェクト" onClick={() => setNewProjectOpen(true)} disabled={busy}><Plus size={18} /></button>
+          </div>
           {projects.map((project) => (
             <button key={project.id} className={selected?.id === project.id ? "selected" : ""} onClick={() => void loadProject(project.id)}>
               <span>{project.title}</span>
@@ -910,16 +955,24 @@ export function App() {
 
       <main className="workspace">
         <header className="toolbar">
-          <div>
-            <strong>{selected?.title ?? "プロジェクト未選択"}</strong>
+          <button className="icon-button" title="プロジェクト一覧" onClick={() => setSidebarOpen((value) => !value)}><Menu size={20} /></button>
+          <div className="project-heading">
+            {selected ? (
+              <input
+                className="project-title-input"
+                aria-label="本のタイトル"
+                value={selected.manga_json.title}
+                onChange={(event) => updateManga((manga) => { manga.title = event.target.value; })}
+              />
+            ) : <strong>プロジェクト未選択</strong>}
             <span>{message}</span>
           </div>
           <div className="actions">
-            <button onClick={() => void refreshComfyStatus()} disabled={busy}>接続確認</button>
-            <button onClick={generateName} disabled={!selected || busy}>ネーム生成</button>
-            <button onClick={saveJson} disabled={!selected || busy}>JSON保存</button>
-            <button onClick={renderPages} disabled={!selected || busy}>レンダリング</button>
-            <button onClick={exportCbz} disabled={!selected || busy}>CBZ出力</button>
+            <button className="icon-button" title="接続確認" onClick={() => void refreshComfyStatus()} disabled={busy}><RefreshCw size={18} /></button>
+            <button title="タイトルと編集内容を保存" onClick={saveProjectTitle} disabled={!selected || busy}><Save size={17} />保存</button>
+            <button title="全ページを生成" onClick={generateAllPageImages} disabled={!selected || busy}><Images size={17} />全ページ生成</button>
+            <button title="全ページをレンダリング" onClick={renderPages} disabled={!selected || busy}><RefreshCw size={17} />レンダリング</button>
+            <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}><Download size={17} />CBZ</button>
           </div>
         </header>
 
@@ -930,7 +983,7 @@ export function App() {
         </nav>
 
         {progress && (
-          <section className="progress-band">
+          <section className="progress-band" role="status" aria-live="polite">
             <div>
               <strong>{progress.label}</strong>
               <span>{progress.current} / {progress.total}</span>
@@ -949,6 +1002,10 @@ export function App() {
             projectId={selected.id}
             workName={selected.work_name}
             onApplied={() => { void loadProject(selected.id); }}
+            onBusyChange={(working, label) => {
+              setBusy(working);
+              setProgress(working ? { label, current: 0, total: 100, indeterminate: true } : null);
+            }}
           />
         )}
 
@@ -986,27 +1043,10 @@ export function App() {
           </section>
         )}
 
-        <section className="generator">
-          <label>
-            キャラA
-            <input value={form.character_a} onChange={(event) => setForm({ ...form, character_a: event.target.value })} />
-          </label>
-          <label>
-            キャラB
-            <input value={form.character_b} onChange={(event) => setForm({ ...form, character_b: event.target.value })} />
-          </label>
-          <label>
-            シチュエーション
-            <input value={form.situation} onChange={(event) => setForm({ ...form, situation: event.target.value })} />
-          </label>
-          <label>
-            オチの方向
-            <input value={form.ending_direction} onChange={(event) => setForm({ ...form, ending_direction: event.target.value })} />
-          </label>
-        </section>
-
         {selected && (
-          <section className="common-prompts">
+          <details className="common-prompts">
+            <summary>共通プロンプト</summary>
+            <div className="common-prompt-grid">
             <label>
               全コマ共通positive
               <textarea
@@ -1028,10 +1068,11 @@ export function App() {
               />
             </label>
             <div className="actions">
-              <button onClick={applyAnimePreviewDefaults} disabled={busy}>anime-preview3-base向け初期値</button>
+              <button onClick={applyAnimePreviewDefaults} disabled={busy}>Anima 3向け初期値</button>
               <button onClick={applyFourPageDraftSettings} disabled={busy}>4ページ仮設定</button>
             </div>
-          </section>
+            </div>
+          </details>
         )}
 
         {selected && (
@@ -1087,9 +1128,10 @@ export function App() {
         )}
 
         {selected && (
-          <section className="character-profiles">
+          <details className="character-profiles">
+            <summary>キャラクタープロファイル（{selected.manga_json.characters.length}人）</summary>
             <div className="section-heading">
-              <h2>キャラクタープロファイル</h2>
+              <h2>キャラクター設定</h2>
               <button onClick={addCharacter} disabled={busy}>キャラ追加</button>
             </div>
             <div className="character-profile-list">
@@ -1173,11 +1215,12 @@ export function App() {
                 </article>
               ))}
             </div>
-          </section>
+          </details>
         )}
 
         <section className="content-grid">
           <div className="preview">
+            <div className="page-workbench">
             <div className="tabs">
               {(selected?.manga_json.pages ?? []).map(({ page }) => (
                 <button key={page} className={selectedPage === page ? "active" : ""} onClick={() => setSelectedPage(page)}>
@@ -1211,6 +1254,7 @@ export function App() {
                   <small>{panel.generation.backend} / {panel.generation.status}</small>
                 </article>
               ))}
+            </div>
             </div>
             {currentPanel && (
               <div className="panel-editor">
@@ -1529,6 +1573,7 @@ export function App() {
                   <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>
                   <button onClick={generateCurrentPanelImage} disabled={busy}>再生成</button>
                   <button onClick={generateCurrentPageImages} disabled={busy}>ページ内全コマ生成</button>
+                  <button onClick={generateAllPageImages} disabled={busy}>全ページ生成</button>
                   <button onClick={renderCurrentPanelPage} disabled={busy}>写植更新</button>
                   <button onClick={renderCurrentPanelPage} disabled={busy}>ページ更新</button>
                   <button onClick={useStubForCurrentPanel} disabled={busy}>stubへ戻す</button>
@@ -1536,15 +1581,32 @@ export function App() {
               </div>
             )}
           </div>
-
-          <div className="json-pane">
-            <h2>Manga JSON</h2>
-            <textarea value={jsonText} onChange={(event) => setJsonText(event.target.value)} spellCheck={false} />
-          </div>
         </section>
+        <details className="json-pane">
+          <summary>Manga JSON</summary>
+          <textarea value={jsonText} onChange={(event) => setJsonText(event.target.value)} spellCheck={false} />
+        </details>
         </>
         )}
       </main>
+      {newProjectOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setNewProjectOpen(false)}>
+          <form className="project-dialog" onSubmit={createProject} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="dialog-heading">
+              <h2>新しい本</h2>
+              <button type="button" className="icon-button" title="閉じる" onClick={() => setNewProjectOpen(false)}><X size={18} /></button>
+            </div>
+            <label>
+              タイトル
+              <input autoFocus value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} maxLength={120} />
+            </label>
+            <div className="actions dialog-actions">
+              <button type="button" onClick={() => setNewProjectOpen(false)}>キャンセル</button>
+              <button className="primary" disabled={busy || !newProjectTitle.trim()}><Plus size={17} />作成</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

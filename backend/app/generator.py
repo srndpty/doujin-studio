@@ -3,8 +3,11 @@ from __future__ import annotations
 from .schemas import Character, Dialogue, GenerationInfo, LocationProfile, MangaProject, Page, Panel, Sfx, WorkflowPreset
 
 
-DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, anime style, anime illustration, clean line art, vibrant colors"
-DEFAULT_COMMON_NEGATIVE_PROMPT = "low quality, worst quality, bad hands, bad anatomy, text, watermark, speech bubble, logo, extra fingers, missing fingers, distorted face"
+DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, score_7, safe, anime"
+DEFAULT_COMMON_NEGATIVE_PROMPT = (
+    "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, "
+    "bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo"
+)
 
 LAYOUTS = {
     "vertical_3_start": [
