@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 
 from PIL import ImageFont
 
@@ -101,13 +102,28 @@ def find_genei_antique() -> Path | None:
     return _scan_for_keywords(GENEI_ANTIQUE_KEYWORDS)
 
 
-@lru_cache(maxsize=1)
-def find_dialogue_font_path() -> Path | None:
+@lru_cache(maxsize=16)
+def find_dialogue_font_path(preferred_font: str | None = None) -> Path | None:
     """台詞フォント（源暎アンチック優先、無ければBIZ UDゴシック等）のパス。
 
     Windowsの定番フォントが無ければ、Linux/Macの日本語フォント（Noto/IPA等）を
     再帰探索で拾う。日本語フォントが一切無い環境ではNone。
     """
+    preferred = (preferred_font or "").casefold()
+    if preferred and "源暎アンチック" not in preferred and "genei" not in preferred:
+        choices = {
+            "biz udゴシック": ["BIZ-UDGothicR.ttc", "BIZ-UDPGothicR.ttc"],
+            "游ゴシック": ["YuGothR.ttc", "YuGothM.ttc"],
+            "ms ゴシック": ["msgothic.ttc"],
+        }
+        for name, files in choices.items():
+            if name in preferred:
+                return (
+                    _find_in_dirs(files)
+                    or find_genei_antique()
+                    or _find_in_dirs(FALLBACK_FONT_FILES)
+                    or _scan_for_keywords(CJK_FALLBACK_KEYWORDS)
+                )
     return (
         find_genei_antique()
         or _find_in_dirs(FALLBACK_FONT_FILES)
@@ -128,7 +144,7 @@ def load_dialogue_font(size: int) -> ImageFont.ImageFont:
     """台詞用フォントを読み込む。源暎アンチック→BIZ UD→PIL既定の順。"""
     path = find_dialogue_font_path()
     if path is not None:
-        return _truetype_cached(str(path), size)
+        return cast(ImageFont.ImageFont, _truetype_cached(str(path), size))
     return ImageFont.load_default()
 
 
@@ -137,7 +153,7 @@ def load_label_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     files = BOLD_FONT_FILES if bold else FALLBACK_FONT_FILES
     path = _find_in_dirs(files)
     if path is not None:
-        return _truetype_cached(str(path), size)
+        return cast(ImageFont.ImageFont, _truetype_cached(str(path), size))
     return ImageFont.load_default()
 
 

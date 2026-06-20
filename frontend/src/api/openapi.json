@@ -2448,18 +2448,30 @@
             "default": true
           },
           "font_size": {
-            "type": "integer",
-            "maximum": 96.0,
-            "minimum": 10.0,
-            "title": "Font Size",
-            "default": 34
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 96.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Font Size"
           },
           "min_font_size": {
-            "type": "integer",
-            "maximum": 96.0,
-            "minimum": 8.0,
-            "title": "Min Font Size",
-            "default": 26
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 96.0,
+                "minimum": 8.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Font Size"
           },
           "max_lines": {
             "type": "integer",

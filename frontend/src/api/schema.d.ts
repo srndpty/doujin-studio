@@ -968,16 +968,10 @@ export interface components {
              * @default true
              */
             vertical: boolean;
-            /**
-             * Font Size
-             * @default 34
-             */
-            font_size: number;
-            /**
-             * Min Font Size
-             * @default 26
-             */
-            min_font_size: number;
+            /** Font Size */
+            font_size?: number | null;
+            /** Min Font Size */
+            min_font_size?: number | null;
             /**
              * Max Lines
              * @default 6

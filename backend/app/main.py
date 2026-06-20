@@ -25,6 +25,7 @@ from .assets import (
     path_to_asset_id,
     resolve_asset_path,
     safe_component,
+    stable_asset_name,
 )
 from .config import Settings
 from .database import (
@@ -463,7 +464,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post(
-        "/api/projects/{project_id}/characters/{character_id}/reference-image",
+        "/api/projects/{project_id}/characters/{character_id:path}/reference-image",
         response_model=CharacterReferenceResponse,
     )
     async def upload_character_reference(
@@ -480,7 +481,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "references"
-            / f"{safe_component(character_id, 'character')}.png"
+            / stable_asset_name(character_id, "character")
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
@@ -493,7 +494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post(
-        "/api/projects/{project_id}/locations/{location_id}/reference-image",
+        "/api/projects/{project_id}/locations/{location_id:path}/reference-image",
         response_model=ReferenceAssetResponse,
     )
     async def upload_location_reference(
@@ -510,7 +511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "locations"
-            / f"{safe_component(location_id, 'location')}.png"
+            / stable_asset_name(location_id, "location")
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
@@ -519,7 +520,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ReferenceAssetResponse(target_id=location_id, asset=asset_id, manga_json=manga)
 
     @app.post(
-        "/api/projects/{project_id}/panels/{panel_id}/controls/{kind}/reference-image",
+        "/api/projects/{project_id}/panels/{panel_id:path}/controls/{kind}/reference-image",
         response_model=ReferenceAssetResponse,
     )
     async def upload_panel_control_reference(
@@ -538,7 +539,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "controls"
-            / safe_component(panel_id, "panel")
+            / stable_asset_name(panel_id, "panel").removesuffix(".png")
             / f"{kind}.png"
         )
         await save_request_image(request, target)
@@ -558,7 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ReferenceAssetResponse(target_id=target_id, asset=asset_id, manga_json=manga)
 
     @app.post(
-        "/api/projects/{project_id}/pages/{page_number}/overlays/{overlay_id}/{asset_kind}",
+        "/api/projects/{project_id}/pages/{page_number}/overlays/{overlay_id:path}/{asset_kind}",
         response_model=ReferenceAssetResponse,
     )
     async def upload_overlay_asset(
@@ -583,7 +584,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "overlays"
-            / f"{safe_component(overlay_id, 'overlay')}-{suffix}.png"
+            / stable_asset_name(overlay_id, "overlay", suffix)
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)

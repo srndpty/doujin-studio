@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -12,6 +13,14 @@ def safe_component(value: str, fallback: str = "asset") -> str:
     """URLや識別子をファイル名へ安全に埋め込める形へ変換する。"""
     cleaned = _UNSAFE_COMPONENT.sub("_", value).strip(" ._")
     return (cleaned or fallback)[:120]
+
+
+def stable_asset_name(value: str, kind: str, suffix: str = "") -> str:
+    """可読部分が衝突しても一意性を保つ安定ファイル名を返す。"""
+    readable = safe_component(value, kind)[:64]
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    suffix_part = f"-{safe_component(suffix, 'asset')}" if suffix else ""
+    return f"{readable}-{digest}{suffix_part}.png"
 
 
 def path_to_asset_id(path: Path, export_dir: Path) -> str:

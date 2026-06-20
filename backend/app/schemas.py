@@ -43,8 +43,8 @@ class Dialogue(BaseModel):
     box: tuple[float, float, float, float] | None = None
     # 縦書きを既定にする（日本語漫画）。
     vertical: bool = True
-    font_size: int = Field(default=34, ge=10, le=96)
-    min_font_size: int = Field(default=26, ge=8, le=96)
+    font_size: int | None = Field(default=None, ge=10, le=96)
+    min_font_size: int | None = Field(default=None, ge=8, le=96)
     max_lines: int = Field(default=6, ge=1, le=20)
     tail: BalloonTail | None = None
 

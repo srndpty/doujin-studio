@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -129,6 +130,7 @@ def layout_text(
     vertical: bool,
     default_size: int,
     min_size: int,
+    max_lines: int | None = None,
 ) -> TextLayout:
     """領域へ収まる最大のフォントサイズを選び、行/列構成を返す。
 
@@ -137,7 +139,7 @@ def layout_text(
     default_size = max(default_size, min_size)
     chosen: TextLayout | None = None
     for size in range(default_size, min_size - 1, -1):
-        layout = _layout_at_size(text, area_w, area_h, vertical, size)
+        layout = _layout_at_size(text, area_w, area_h, vertical, size, max_lines)
         chosen = layout
         if layout.fits:
             return layout
@@ -147,7 +149,12 @@ def layout_text(
 
 
 def _layout_at_size(
-    text: str, area_w: float, area_h: float, vertical: bool, size: int
+    text: str,
+    area_w: float,
+    area_h: float,
+    vertical: bool,
+    size: int,
+    max_lines: int | None = None,
 ) -> TextLayout:
     cell = size * 1.06
     advance = size * 1.12
@@ -159,7 +166,11 @@ def _layout_at_size(
         max_cells = max((len(line) for line in lines), default=1)
         width = line_count * advance
         height = max_cells * cell
-        fits = width <= area_w + 0.5 and height <= area_h + 0.5
+        fits = (
+            width <= area_w + 0.5
+            and height <= area_h + 0.5
+            and (max_lines is None or line_count <= max_lines)
+        )
         return TextLayout(size, True, lines, cell, advance, fits, width, height)
     tokens = tokenize_horizontal(text)
     cells_per_line = max(1, int(area_w // cell))
@@ -168,7 +179,11 @@ def _layout_at_size(
     max_cells = max((len(line) for line in lines), default=1)
     width = max_cells * cell
     height = line_count * advance
-    fits = width <= area_w + 0.5 and height <= area_h + 0.5
+    fits = (
+        width <= area_w + 0.5
+        and height <= area_h + 0.5
+        and (max_lines is None or line_count <= max_lines)
+    )
     return TextLayout(size, False, lines, advance, cell, fits, width, height)
 
 
@@ -334,7 +349,7 @@ def _load(font_path: str | None, size: int) -> ImageFont.ImageFont:
     if cached is not None:
         return cached
     if font_path:
-        font = ImageFont.truetype(font_path, size)
+        font = cast(ImageFont.ImageFont, ImageFont.truetype(font_path, size))
     else:
         font = ImageFont.load_default()
     _FONT_CACHE[key] = font

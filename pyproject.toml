@@ -63,18 +63,13 @@ sqlite_cache = false
 [[tool.mypy.overrides]]
 module = [
     "backend.app.database",
-    "backend.app.fonts",
     "backend.app.generator",
     "backend.app.image_backends",
     "backend.app.jobs",
     "backend.app.knowledge",
-    "backend.app.layout_engine",
     "backend.app.llm",
     "backend.app.main",
-    "backend.app.renderer",
-    "backend.app.schemas",
     "backend.app.story",
-    "backend.app.typeset",
 ]
 ignore_errors = true
 

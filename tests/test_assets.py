@@ -4,7 +4,12 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from backend.app.assets import path_to_asset_id, resolve_asset_path, safe_component
+from backend.app.assets import (
+    path_to_asset_id,
+    resolve_asset_path,
+    safe_component,
+    stable_asset_name,
+)
 
 
 @given(st.text(min_size=1, max_size=200))
@@ -29,3 +34,8 @@ def test_asset_id_round_trip(tmp_path: Path) -> None:
 def test_resolve_asset_path_rejects_escape(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         resolve_asset_path("../outside.png", tmp_path / "exports")
+
+
+@pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
+def test_stable_asset_name_avoids_slug_collisions(left: str, right: str) -> None:
+    assert stable_asset_name(left, "character") != stable_asset_name(right, "character")

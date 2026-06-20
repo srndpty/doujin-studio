@@ -9,7 +9,7 @@ from PIL import Image
 from backend.app import fonts, typeset
 from backend.app.generator import compute_generation_size
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
-from backend.app.renderer import fit_image_to_box, render_project_page
+from backend.app.renderer import fit_image_to_box, render_project_page, resolve_dialogue_layout
 from backend.app.schemas import (
     BalloonTail,
     Dialogue,
@@ -98,6 +98,46 @@ def test_dialogue_font_falls_back_to_biz_ud_when_genei_absent() -> None:
         assert "GenEiAntique".casefold() not in path.name.casefold()
     listed = {item["id"]: item for item in fonts.list_fonts()}
     assert listed["genei_antique"]["is_primary"] is True
+
+
+def test_dialogue_font_size_is_not_capped_by_project_default() -> None:
+    manga = MangaProject(
+        title="font-size",
+        typography={"default_font_size": 34, "min_font_size": 20},
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="one",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0.0, 0.0, 1.0, 1.0),
+                        shot="wide",
+                        dialogue=[Dialogue(speaker="a", text="大", font_size=60)],
+                    )
+                ],
+            )
+        ],
+    )
+    _bubble, layout = resolve_dialogue_layout(
+        manga.pages[0].panels[0].dialogue[0], (0, 0, 1200, 1700), manga.typography
+    )
+    assert layout.font_size == 60
+
+
+def test_max_lines_marks_layout_as_not_fitting() -> None:
+    layout = typeset.layout_text(
+        "一二三四五六七八九十",
+        None,
+        80,
+        500,
+        vertical=False,
+        default_size=30,
+        min_size=30,
+        max_lines=1,
+    )
+    assert layout.fits is False
 
 
 def test_vertical_typeset_keeps_all_characters() -> None:

@@ -12,7 +12,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Dialogue, MangaPage, MangaProject, OverlayElement, Panel, Sfx } from "./App";
-import { normalizeBox, overlapsWithGutter } from "./editor-geometry";
+import { computeImagePlacement, normalizeBox, overlapsWithGutter } from "./editor-geometry";
 import type { Box } from "./editor-geometry";
 
 // ページ実寸（rendererと一致）。
@@ -477,35 +477,45 @@ function PanelNode(props: PanelNodeProps) {
     onBbox(bbox);
   };
 
-  const cover = useMemo(() => {
+  const placement = useMemo(() => {
     if (!image) return null;
-    const scale = Math.max(pw / image.width, ph / image.height) * (panel.generation?.crop_scale ?? 1);
-    const drawW = image.width * scale;
-    const drawH = image.height * scale;
-    const extraX = Math.max(0, drawW - pw);
-    const extraY = Math.max(0, drawH - ph);
-    const fracX = 0.5 + (panel.generation?.crop_offset_x ?? 0) * 0.5;
-    const fracY = 0.5 + (panel.generation?.crop_offset_y ?? 0) * 0.5;
-    return { drawW, drawH, offsetX: extraX * clamp01(fracX), offsetY: extraY * clamp01(fracY) };
+    return computeImagePlacement(image.width, image.height, pw, ph, {
+      fitMode: panel.generation.fit_mode,
+      anchor: panel.generation.crop_anchor,
+      scale: panel.generation.crop_scale,
+      offsetX: panel.generation.crop_offset_x,
+      offsetY: panel.generation.crop_offset_y,
+      focal:
+        panel.generation.focal_x != null && panel.generation.focal_y != null
+          ? [panel.generation.focal_x, panel.generation.focal_y]
+          : null
+    });
   }, [
     image,
     pw,
     ph,
+    panel.generation.fit_mode,
+    panel.generation.crop_anchor,
     panel.generation?.crop_scale,
     panel.generation?.crop_offset_x,
-    panel.generation?.crop_offset_y
+    panel.generation?.crop_offset_y,
+    panel.generation.focal_x,
+    panel.generation.focal_y
   ]);
 
   return (
     <Group>
       <Group clipX={px} clipY={py} clipWidth={pw} clipHeight={ph}>
-        {image && cover && (
+        {panel.generation.fit_mode === "contain" && (
+          <Rect x={px} y={py} width={pw} height={ph} fill="#f5f5f2" listening={false} />
+        )}
+        {image && placement && (
           <KonvaImage
             image={image}
-            x={px - cover.offsetX}
-            y={py - cover.offsetY}
-            width={cover.drawW}
-            height={cover.drawH}
+            x={px + placement.x}
+            y={py + placement.y}
+            width={placement.width}
+            height={placement.height}
           />
         )}
       </Group>
@@ -653,7 +663,7 @@ function DialogueNode({
           height={bh - 16}
           text={displayText}
           fontFamily="源暎アンチック, BIZ UDPGothic"
-          fontSize={dialogue.font_size || 26}
+          fontSize={dialogue.font_size ?? 34}
           align="center"
           verticalAlign="middle"
           fill="#191919"
@@ -958,6 +968,42 @@ function BalloonControls({
           onChange={(event) => onChange({ vertical: event.target.checked })}
         />{" "}
         縦書き
+      </label>
+      <label>
+        文字サイズ
+        <input
+          type="number"
+          min={10}
+          max={96}
+          placeholder="プロジェクト既定"
+          value={dialogue.font_size ?? ""}
+          onChange={(event) =>
+            onChange({ font_size: event.target.value ? Number(event.target.value) : null })
+          }
+        />
+      </label>
+      <label>
+        縮小下限
+        <input
+          type="number"
+          min={8}
+          max={96}
+          placeholder="プロジェクト既定"
+          value={dialogue.min_font_size ?? ""}
+          onChange={(event) =>
+            onChange({ min_font_size: event.target.value ? Number(event.target.value) : null })
+          }
+        />
+      </label>
+      <label>
+        最大行・列数
+        <input
+          type="number"
+          min={1}
+          max={20}
+          value={dialogue.max_lines}
+          onChange={(event) => onChange({ max_lines: Number(event.target.value) })}
+        />
       </label>
       <label>
         <input

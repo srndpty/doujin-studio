@@ -789,6 +789,7 @@ def script_to_manga(
                         speaker=speaker,
                         text=line.text[:120] if line.text else "…",
                         position="upper_right" if dialogue_index % 2 == 0 else "upper_left",
+                        vertical=base.typography.vertical_default,
                     )
                 )
             panel_bbox = layout[index]

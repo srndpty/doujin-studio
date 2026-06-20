@@ -22,8 +22,8 @@ export type Dialogue = {
   balloon: string;
   position: string;
   box: [number, number, number, number] | null;
-  font_size: number;
-  min_font_size?: number;
+  font_size: number | null;
+  min_font_size?: number | null;
   max_lines: number;
   vertical?: boolean;
   tail?: { enabled: boolean; tip: [number, number]; base: number; width: number } | null;
@@ -205,6 +205,12 @@ export type MangaProject = {
   workflow_presets: WorkflowPreset[];
   active_workflow_preset_id: string | null;
   reading_direction?: "rtl" | "ltr";
+  typography?: {
+    primary_font: string;
+    default_font_size: number;
+    min_font_size: number;
+    vertical_default: boolean;
+  };
   pages: MangaPage[];
 };
 
@@ -886,8 +892,10 @@ export function App() {
           balloon: "round",
           position: "upper_right",
           box: [0.48, 0.06, 0.46, 0.22],
-          font_size: 24,
-          max_lines: 3
+          font_size: null,
+          min_font_size: null,
+          max_lines: 6,
+          vertical: selected?.manga_json.typography?.vertical_default ?? true
         });
       }
       mutator(panel.dialogue[0]);
@@ -2205,11 +2213,12 @@ export function App() {
                           <input
                             type="number"
                             min="10"
-                            max="72"
-                            value={currentDialogue?.font_size ?? 24}
+                            max="96"
+                            placeholder="プロジェクト既定"
+                            value={currentDialogue?.font_size ?? ""}
                             onChange={(event) =>
                               updateCurrentDialogue((dialogue) => {
-                                dialogue.font_size = Number(event.target.value);
+                                dialogue.font_size = event.target.value ? Number(event.target.value) : null;
                               })
                             }
                           />

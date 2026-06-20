@@ -4,9 +4,11 @@ import asyncio
 import io
 import json
 from pathlib import Path
+from urllib.parse import quote
 from zipfile import ZipFile
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -268,7 +270,8 @@ def test_existing_manga_json_gets_new_defaults() -> None:
     assert panel.generation.text_policy == "no_text"
     assert panel.generation.crop_scale == 1.0
     assert panel.subject_mode == "character_scene"
-    assert panel.dialogue[0].font_size == 34
+    assert panel.dialogue[0].font_size is None
+    assert manga.typography.default_font_size == 34
     assert panel.dialogue[0].vertical is True
     # 旧形式は吹き出し既定が無いので新既定のovalになる。
     assert panel.dialogue[0].balloon == "oval"
@@ -579,6 +582,69 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
 
 
+@pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
+def test_reference_upload_keeps_colliding_ids_separate(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["characters"][0]["id"] = left
+        manga["characters"][1]["id"] = right
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        assets: list[str] = []
+        for character_id, color in ((left, "red"), (right, "blue")):
+            image = Image.new("RGB", (12, 12), color)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            response = client.post(
+                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image",
+                content=buffer.getvalue(),
+                headers={"Content-Type": "image/png"},
+            )
+            assert response.status_code == 200
+            assets.append(response.json()["asset"])
+
+        assert assets[0] != assets[1]
+        colors = []
+        for asset in assets:
+            with Image.open(io.BytesIO(client.get(f"/api/assets/{asset}").content)) as saved:
+                colors.append(saved.getpixel((0, 0)))
+        assert colors == [(255, 0, 0), (0, 0, 255)]
+
+
+@pytest.mark.parametrize("left,right", [("事務所", "公園"), ("a/b", "a:b")])
+def test_location_upload_keeps_colliding_ids_separate(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        template = manga["locations"][0]
+        manga["locations"] = [
+            {**template, "id": left, "display_name": left},
+            {**template, "id": right, "display_name": right},
+        ]
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        assets: list[str] = []
+        for location_id, color in ((left, "red"), (right, "blue")):
+            image = Image.new("RGB", (12, 12), color)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            response = client.post(
+                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image",
+                content=buffer.getvalue(),
+                headers={"Content-Type": "image/png"},
+            )
+            assert response.status_code == 200
+            assets.append(response.json()["asset"])
+
+        assert assets[0] != assets[1]
+        assert all((tmp_path / "exports" / asset).is_file() for asset in assets)
+
+
 def test_asset_api_rejects_path_traversal(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.get("/api/assets/../test.db")
@@ -621,6 +687,35 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
             issue["code"] == "invalid_reading_order"
             for issue in preflight_response.json()["errors"]
         )
+
+
+@pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
+def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, right: str) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel_id = manga["pages"][0]["panels"][0]["panel_id"]
+        manga["pages"][0]["overlay_elements"] = [
+            {"id": overlay_id, "source_panel_id": panel_id, "box": [0.2, 0.2, 0.4, 0.5]}
+            for overlay_id in (left, right)
+        ]
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        assets: list[str] = []
+        for overlay_id, color in ((left, "red"), (right, "blue")):
+            image = Image.new("RGBA", (12, 12), color)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            response = client.post(
+                f"/api/projects/{project_id}/pages/1/overlays/{quote(overlay_id, safe='')}/asset",
+                content=buffer.getvalue(),
+                headers={"Content-Type": "image/png"},
+            )
+            assert response.status_code == 200
+            assets.append(response.json()["asset"])
+
+        assert assets[0] != assets[1]
+        assert all((tmp_path / "exports" / asset).is_file() for asset in assets)
 
 
 def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:

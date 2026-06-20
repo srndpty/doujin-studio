@@ -66,19 +66,19 @@ def _rows_and_weights(panel_count: int, family: str) -> tuple[list[int], list[fl
 
     if family == "action":
         # 全幅と分割を交互に並べてテンポを作る。
-        rows: list[int] = []
+        action_rows: list[int] = []
         remaining = panel_count
         toggle = True
         while remaining > 0:
             if toggle or remaining == 1:
-                rows.append(1)
+                action_rows.append(1)
                 remaining -= 1
             else:
-                rows.append(2)
+                action_rows.append(2)
                 remaining -= 2
             toggle = not toggle
-        weights = [1.3 if cols == 1 else 1.0 for cols in rows]
-        return rows, _vary_full_width(rows, weights)
+        weights = [1.3 if cols == 1 else 1.0 for cols in action_rows]
+        return action_rows, _vary_full_width(action_rows, weights)
 
     # 既定は会話グリッド。
     rows = _distribute_rows(panel_count, 2)

@@ -275,14 +275,14 @@ def resolve_dialogue_layout(
     pw, ph = right - left, bottom - top
     inset = PANEL_OUTLINE_WIDTH + 4
     bounds = (left + inset, top + inset, right - inset, bottom - inset)
-    font_path = find_dialogue_font_path()
+    font_path = find_dialogue_font_path(typography.primary_font)
     font_path_str = str(font_path) if font_path else None
     vertical = dialogue.vertical
     pad = BUBBLE_INNER_PAD
 
-    default_size = max(
-        min(dialogue.font_size, typography.default_font_size or dialogue.font_size), TEXT_FLOOR_SIZE
-    )
+    default_size = max(dialogue.font_size or typography.default_font_size, TEXT_FLOOR_SIZE)
+    min_size = max(dialogue.min_font_size or typography.min_font_size, TEXT_FLOOR_SIZE)
+    min_size = min(min_size, default_size)
     # 形状ごとの余白係数（楕円/雲/爆発は内接ぶん広めに取る）。
     if dialogue.balloon in {"oval", "cloud", "burst"}:
         shape_x, shape_y = 1.24, 1.18
@@ -305,7 +305,8 @@ def resolve_dialogue_layout(
             max(8, inner_h),
             vertical,
             default_size,
-            TEXT_FLOOR_SIZE,
+            min_size,
+            dialogue.max_lines,
         )
         return bubble, layout
 
@@ -318,13 +319,20 @@ def resolve_dialogue_layout(
     cap_h = min(cap_h, bounds[3] - bounds[1])
 
     chosen: typeset.TextLayout | None = None
-    for size in range(default_size, TEXT_FLOOR_SIZE - 1, -1):
+    for size in range(default_size, min_size - 1, -1):
         inner_w = cap_w / shape_x - pad * 2
         inner_h = cap_h / shape_y - pad * 2
         if inner_w < size or inner_h < size:
             continue
         layout = typeset.layout_text(
-            dialogue.text, font_path_str, inner_w, inner_h, vertical, size, size
+            dialogue.text,
+            font_path_str,
+            inner_w,
+            inner_h,
+            vertical,
+            size,
+            size,
+            dialogue.max_lines,
         )
         if layout.fits:
             chosen = layout
@@ -338,8 +346,9 @@ def resolve_dialogue_layout(
             inner_w,
             inner_h,
             vertical,
-            TEXT_FLOOR_SIZE,
-            TEXT_FLOOR_SIZE,
+            min_size,
+            min_size,
+            dialogue.max_lines,
         )
 
     # 吹き出しを内容ぴったりに縮める。
