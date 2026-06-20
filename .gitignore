@@ -10,6 +10,8 @@ frontend/.vite/
 
 data/*
 !data/.gitkeep
+!data/knowledge/
+!data/knowledge/**
 exports/
 tmp-*.err
 workflows/*.workflow_api.json

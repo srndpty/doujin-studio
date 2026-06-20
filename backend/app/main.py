@@ -46,6 +46,8 @@ from .schemas import (
     KnowledgeDocumentRequest,
     KnowledgeImportRequest,
     KnowledgeImportResponse,
+    LocalKnowledgeSyncResponse,
+    LocalKnowledgeWorkResponse,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
@@ -79,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app_settings.export_dir.mkdir(parents=True, exist_ok=True)
+        app_settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
         Path("data").mkdir(parents=True, exist_ok=True)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
@@ -519,6 +522,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- 作品知識DB ---
 
+    @app.get("/api/knowledge/local-works", response_model=list[LocalKnowledgeWorkResponse])
+    def list_local_knowledge_works(request: Request) -> list[LocalKnowledgeWorkResponse]:
+        try:
+            works = knowledge_db.list_local_works(request.app.state.settings.knowledge_dir)
+        except knowledge_db.LocalKnowledgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return [
+            LocalKnowledgeWorkResponse(
+                work_id=work.work_id,
+                work_name=work.work_name,
+                description=work.description,
+                document_count=len(work.documents),
+            )
+            for work in works
+        ]
+
+    @app.post(
+        "/api/knowledge/local-works/{work_id}/sync",
+        response_model=LocalKnowledgeSyncResponse,
+    )
+    def sync_local_knowledge_work(work_id: str, request: Request) -> LocalKnowledgeSyncResponse:
+        try:
+            work = knowledge_db.load_local_work(request.app.state.settings.knowledge_dir, work_id)
+            with request.app.state.SessionLocal() as session:
+                records = knowledge_db.sync_local_work(session, work)
+                sources = [to_knowledge_source(record) for record in records]
+        except knowledge_db.LocalKnowledgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return LocalKnowledgeSyncResponse(
+            work=LocalKnowledgeWorkResponse(
+                work_id=work.work_id,
+                work_name=work.work_name,
+                description=work.description,
+                document_count=len(work.documents),
+            ),
+            sources=sources,
+        )
+
     @app.post("/api/knowledge/sources/import", response_model=KnowledgeImportResponse)
     def import_knowledge_sources(payload: KnowledgeImportRequest, request: Request) -> KnowledgeImportResponse:
         sources: list[KnowledgeSourceResponse] = []
@@ -585,6 +626,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = load_project_record(request, project_id)
         work_name = payload.work_name or record.work_name
         with request.app.state.SessionLocal() as session:
+            if payload.knowledge_work_id:
+                try:
+                    local_work = knowledge_db.load_local_work(
+                        request.app.state.settings.knowledge_dir, payload.knowledge_work_id
+                    )
+                    knowledge_db.sync_local_work(session, local_work)
+                except knowledge_db.LocalKnowledgeError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                work_name = local_work.work_name
+                project = session.get(ProjectRecord, project_id)
+                if project is None:
+                    raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+                manga = parse_manga_json(project.manga_json)
+                manga.work_name = work_name
+                project.work_name = work_name
+                project.manga_json = manga.model_dump_json()
+                project.updated_at = now_utc()
+                session.commit()
             story_record = story_module.create_session(
                 session,
                 project_id=project_id,

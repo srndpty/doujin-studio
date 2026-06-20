@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from . import database
 from .database import KnowledgeChunkRecord, KnowledgeSourceRecord, now_utc
 
 TXT_CHUNK_CHARS = 800
+LOCAL_SOURCE_PREFIX = "local:"
 
 
 @dataclass
@@ -21,6 +23,108 @@ class ChunkData:
     title: str = ""
     policy: str = ""
     tags: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LocalKnowledgeDocument:
+    path: Path
+    usage: str
+
+
+@dataclass(frozen=True)
+class LocalKnowledgeWork:
+    work_id: str
+    work_name: str
+    description: str
+    documents: tuple[LocalKnowledgeDocument, ...]
+
+
+class LocalKnowledgeError(ValueError):
+    pass
+
+
+def load_local_work(knowledge_dir: Path, work_id: str) -> LocalKnowledgeWork:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", work_id):
+        raise LocalKnowledgeError("作品IDの形式が不正です")
+    pack_dir = (knowledge_dir / work_id).resolve()
+    root = knowledge_dir.resolve()
+    if pack_dir.parent != root:
+        raise LocalKnowledgeError("作品ディレクトリが不正です")
+    manifest_path = pack_dir / "work.json"
+    if not manifest_path.is_file():
+        raise LocalKnowledgeError(f"作品定義がありません: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LocalKnowledgeError(f"作品定義を読み込めません: {manifest_path}") from exc
+    if not isinstance(manifest, dict):
+        raise LocalKnowledgeError("work.jsonはJSONオブジェクトにしてください")
+    manifest_work_id = str(manifest.get("work_id", work_id)).strip()
+    work_name = str(manifest.get("work_name", "")).strip()
+    if manifest_work_id != work_id or not work_name:
+        raise LocalKnowledgeError("work_idまたはwork_nameが不正です")
+    raw_documents = manifest.get("documents", [])
+    if not isinstance(raw_documents, list) or not raw_documents:
+        raise LocalKnowledgeError("documentsを1件以上指定してください")
+    documents: list[LocalKnowledgeDocument] = []
+    for item in raw_documents:
+        if not isinstance(item, dict):
+            raise LocalKnowledgeError("documentsの要素はJSONオブジェクトにしてください")
+        relative = Path(str(item.get("file", "")))
+        usage = str(item.get("usage", "reference"))
+        if usage not in {"required", "reference"}:
+            raise LocalKnowledgeError("usageはrequiredまたはreferenceにしてください")
+        document_path = (pack_dir / relative).resolve()
+        if document_path.parent != pack_dir or document_path.suffix.lower() != ".json":
+            raise LocalKnowledgeError("知識ファイルは作品ディレクトリ直下のJSONにしてください")
+        if not document_path.is_file():
+            raise LocalKnowledgeError(f"知識ファイルがありません: {relative}")
+        documents.append(LocalKnowledgeDocument(path=document_path, usage=usage))
+    return LocalKnowledgeWork(
+        work_id=work_id,
+        work_name=work_name,
+        description=str(manifest.get("description", "")).strip(),
+        documents=tuple(documents),
+    )
+
+
+def list_local_works(knowledge_dir: Path) -> list[LocalKnowledgeWork]:
+    if not knowledge_dir.is_dir():
+        return []
+    works: list[LocalKnowledgeWork] = []
+    for directory in sorted(knowledge_dir.iterdir(), key=lambda item: item.name):
+        if not directory.is_dir() or not (directory / "work.json").is_file():
+            continue
+        works.append(load_local_work(knowledge_dir, directory.name))
+    return works
+
+
+def sync_local_work(session: Session, work: LocalKnowledgeWork) -> list[KnowledgeSourceRecord]:
+    marker = f"{LOCAL_SOURCE_PREFIX}{work.work_id}:"
+    existing = (
+        session.query(KnowledgeSourceRecord)
+        .filter(KnowledgeSourceRecord.title.like(f"{escape_like(marker)}%", escape="\\"))
+        .all()
+    )
+    for source in existing:
+        delete_source(session, source.id)
+    imported: list[KnowledgeSourceRecord] = []
+    for document in work.documents:
+        try:
+            content = document.path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise LocalKnowledgeError(f"知識ファイルを読み込めません: {document.path.name}") from exc
+        imported.append(
+            import_source(
+                session,
+                work_name=work.work_name,
+                title=f"{marker}{document.path.name}",
+                doc_type="json",
+                usage=document.usage,
+                content=content,
+            )
+        )
+    return imported
 
 
 def infer_doc_type(filename: str) -> str:

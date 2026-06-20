@@ -65,6 +65,16 @@ class OpenAICompatibleClient:
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.post(f"{self.base_url}/chat/completions", json=payload)
+                if (
+                    self.json_mode == "auto"
+                    and "response_format" in payload
+                    and getattr(response, "status_code", 200) == 400
+                ):
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("response_format", None)
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions", json=fallback_payload
+                    )
                 response.raise_for_status()
                 data = response.json()
         except httpx.TimeoutException as exc:

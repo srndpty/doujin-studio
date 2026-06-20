@@ -9,6 +9,7 @@ from pathlib import Path
 class Settings:
     database_url: str = "sqlite:///data/local-doujin-studio.db"
     export_dir: Path = Path("exports")
+    knowledge_dir: Path = Path("data/knowledge")
     image_backend: str = "stub"
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_workflow_path: Path = Path("workflows/default.workflow_api.json")
@@ -31,6 +32,7 @@ class Settings:
         return cls(
             database_url=os.getenv("DATABASE_URL", "sqlite:///data/local-doujin-studio.db"),
             export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
+            knowledge_dir=Path(os.getenv("KNOWLEDGE_DIR", "data/knowledge")),
             image_backend=os.getenv("IMAGE_BACKEND", "stub"),
             comfyui_base_url=os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188"),
             comfyui_workflow_path=Path(os.getenv("COMFYUI_WORKFLOW_PATH", "workflows/default.workflow_api.json")),

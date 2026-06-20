@@ -124,6 +124,14 @@ $env:LLM_MAX_CONTEXT_CHARS = "24000"
 
 作品名単位で全プロジェクトから知識を再利用します。`作品知識`タブからJSON・Markdown・TXTを取り込み、各文書に`required`（必須条件）または`reference`（参考情報）を設定します。
 
+通常は`data/knowledge/<work_id>/`へローカル知識パックを配置します。`work.json`に作品名とJSON文書を列挙すると、`ストーリー生成`タブの作品知識選択肢へ自動表示されます。選択して新規セッションを作成した時点でDBへ同期されるため、ファイル修正後も再登録は不要です。形式は`data/knowledge/README.md`を参照してください。
+
+知識ディレクトリを変更する場合は`KNOWLEDGE_DIR`を設定します。
+
+```powershell
+$env:KNOWLEDGE_DIR = "data/knowledge"
+```
+
 - JSONは`kind/title/content/policy/tags`形式で1件ずつ分割します
 - Markdownは見出し単位で分割します
 - TXTは文字数単位で分割します

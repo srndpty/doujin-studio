@@ -1,0 +1,15 @@
+{
+  "work_id": "idolmaster-cinderella-girls",
+  "work_name": "アイドルマスター シンデレラガールズ",
+  "description": "城ヶ崎美嘉を中心にした試作用知識パック。事実関係は制作前に公式資料で再確認してください。",
+  "documents": [
+    {
+      "file": "required.json",
+      "usage": "required"
+    },
+    {
+      "file": "reference.json",
+      "usage": "reference"
+    }
+  ]
+}

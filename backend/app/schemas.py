@@ -408,6 +408,18 @@ class KnowledgeImportResponse(BaseModel):
     sources: list[KnowledgeSourceResponse]
 
 
+class LocalKnowledgeWorkResponse(BaseModel):
+    work_id: str
+    work_name: str
+    description: str = ""
+    document_count: int = 0
+
+
+class LocalKnowledgeSyncResponse(BaseModel):
+    work: LocalKnowledgeWorkResponse
+    sources: list[KnowledgeSourceResponse]
+
+
 class KnowledgeSearchRequest(BaseModel):
     work_name: str = Field(min_length=1, max_length=120)
     query: str = Field(min_length=1, max_length=200)
@@ -523,6 +535,7 @@ class StoryStageState(BaseModel):
 
 class StorySessionCreate(BaseModel):
     work_name: str = Field(default="", max_length=120)
+    knowledge_work_id: str = Field(default="", max_length=120)
     target_pages: Literal[4, 8, 16] = 4
     instruction: str = Field(default="", max_length=2000)
 

@@ -13,10 +13,13 @@ from backend.app.llm import LLMError, OpenAICompatibleClient
 from backend.app.main import create_app
 
 
-def make_client(tmp_path: Path, llm_provider: str = "stub") -> TestClient:
+def make_client(
+    tmp_path: Path, llm_provider: str = "stub", knowledge_dir: Path | None = None
+) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         export_dir=tmp_path / "exports",
+        knowledge_dir=knowledge_dir or tmp_path / "knowledge",
         image_backend="stub",
         llm_provider=llm_provider,
     )
@@ -265,6 +268,78 @@ def test_knowledge_import_and_search_api(tmp_path: Path) -> None:
         assert len(client.get("/api/knowledge/sources", params={"work_name": "API作品"}).json()) == 1
 
 
+def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
+    knowledge_dir = tmp_path / "knowledge"
+    pack_dir = knowledge_dir / "local-work"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "work.json").write_text(
+        json.dumps(
+            {
+                "work_id": "local-work",
+                "work_name": "ローカル作品",
+                "description": "テスト用",
+                "documents": [{"file": "required.json", "usage": "required"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (pack_dir / "required.json").write_text(
+        json.dumps(
+            [{"kind": "character", "title": "美嘉", "content": "面倒見のよい主人公"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with make_client(tmp_path, knowledge_dir=knowledge_dir) as client:
+        works = client.get("/api/knowledge/local-works")
+        assert works.status_code == 200
+        assert works.json()[0]["work_id"] == "local-work"
+
+        project_id = create_project(client, work_name="変更前")
+        created = client.post(
+            f"/api/projects/{project_id}/story-sessions",
+            json={
+                "knowledge_work_id": "local-work",
+                "target_pages": 4,
+                "instruction": "美嘉の日常",
+            },
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["work_name"] == "ローカル作品"
+        assert client.get(f"/api/projects/{project_id}").json()["work_name"] == "ローカル作品"
+
+        generated = client.post(
+            f"/api/story-sessions/{created.json()['id']}/stages/brief/generate"
+        ).json()
+        assert generated["stages"]["brief"]["knowledge_ids"]
+        assert generated["stages"]["brief"]["data"]["characters"][0]["name"] == "美嘉"
+
+        # ファイル修正後の新規セッションでは同じローカルソースを置換する。
+        (pack_dir / "required.json").write_text(
+            json.dumps(
+                [{"kind": "character", "title": "莉嘉", "content": "明るい妹"}],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        second = client.post(
+            f"/api/projects/{project_id}/story-sessions",
+            json={"knowledge_work_id": "local-work", "target_pages": 4},
+        )
+        assert second.status_code == 200
+        sources = client.get(
+            "/api/knowledge/sources", params={"work_name": "ローカル作品"}
+        ).json()
+        assert len(sources) == 1
+        search = client.post(
+            "/api/knowledge/search",
+            json={"work_name": "ローカル作品", "query": "莉嘉"},
+        ).json()
+        assert search["hits"]
+
+
 def test_llm_status_stub(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         status = client.get("/api/llm/status").json()
@@ -371,6 +446,25 @@ def test_openai_client_parses_and_handles_errors(monkeypatch) -> None:
     client = OpenAICompatibleClient("http://x/v1", "model", 5.0, "auto")
     content = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
     assert "海斗" in content
+
+    class AutoFallbackClient(MockAsyncClient):
+        payloads: list[dict] = []
+
+        async def post(self, url: str, json: dict) -> MockResponse:
+            self.payloads.append(json)
+            if len(self.payloads) == 1:
+                response = MockResponse({"error": "json_objectは非対応"})
+                response.status_code = 400
+                return response
+            response = MockResponse({"choices": [{"message": {"content": VALID_BRIEF}}]})
+            response.status_code = 200
+            return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", AutoFallbackClient)
+    content = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+    assert "海斗" in content
+    assert "response_format" in AutoFallbackClient.payloads[0]
+    assert "response_format" not in AutoFallbackClient.payloads[1]
 
     class TimeoutClient(MockAsyncClient):
         async def post(self, url: str, json: dict):

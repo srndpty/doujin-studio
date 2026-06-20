@@ -33,6 +33,12 @@ type SessionSummary = {
 type Revision = { id: string; project_id: string; label: string; created_at: string };
 
 type LlmStatus = { provider: string; model: string; connected: boolean; message: string };
+type LocalKnowledgeWork = {
+  work_id: string;
+  work_name: string;
+  description: string;
+  document_count: number;
+};
 
 const STAGES: { name: StageName; label: string; hint: string }[] = [
   { name: "brief", label: "企画", hint: "あらすじ・トーン・キャラの役割・原作準拠条件" },
@@ -72,6 +78,8 @@ export function StoryPanel({
   const [session, setSession] = useState<StorySession | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [llm, setLlm] = useState<LlmStatus | null>(null);
+  const [localWorks, setLocalWorks] = useState<LocalKnowledgeWork[]>([]);
+  const [knowledgeWorkId, setKnowledgeWorkId] = useState("");
   const [targetPages, setTargetPages] = useState(4);
   const [instruction, setInstruction] = useState("");
   const [drafts, setDrafts] = useState<Record<StageName, string>>({ brief: "", plot: "", pages: "", script: "" });
@@ -99,7 +107,17 @@ export function StoryPanel({
 
   useEffect(() => {
     void getJson<LlmStatus>("/api/llm/status").then(setLlm).catch(() => setLlm(null));
+    void getJson<LocalKnowledgeWork[]>("/api/knowledge/local-works")
+      .then((works) => {
+        setLocalWorks(works);
+      })
+      .catch(() => setLocalWorks([]));
   }, []);
+
+  useEffect(() => {
+    const matched = localWorks.find((work) => work.work_name === workName);
+    setKnowledgeWorkId(matched?.work_id ?? localWorks[0]?.work_id ?? "");
+  }, [workName, localWorks]);
 
   useEffect(() => {
     setSession(null);
@@ -120,13 +138,17 @@ export function StoryPanel({
   async function createSession() {
     await run(async () => {
       const created = await sendJson<StorySession>(`/api/projects/${projectId}/story-sessions`, "POST", {
-        work_name: workName,
+        work_name: selectedLocalWork?.work_name ?? workName,
+        knowledge_work_id: knowledgeWorkId,
         target_pages: targetPages,
         instruction
       });
       syncDrafts(created);
-      setMessage("セッションを作成しました。企画から生成してください");
+      setMessage(knowledgeWorkId
+        ? `「${created.work_name}」のローカル知識を同期してセッションを作成しました`
+        : "セッションを作成しました。企画から生成してください");
       await refreshSessions();
+      if (knowledgeWorkId) onApplied();
     });
   }
 
@@ -197,6 +219,7 @@ export function StoryPanel({
   }
 
   const scriptApproved = session?.stages.script.status === "approved";
+  const selectedLocalWork = localWorks.find((work) => work.work_id === knowledgeWorkId);
   const canGenerate = useMemo(() => {
     const result: Record<StageName, boolean> = { brief: false, plot: false, pages: false, script: false };
     if (!session) return result;
@@ -219,6 +242,18 @@ export function StoryPanel({
 
       <div className="story-session-bar">
         <div className="settings-grid">
+          <label>
+            作品知識
+            <select value={knowledgeWorkId} onChange={(event) => setKnowledgeWorkId(event.target.value)}>
+              <option value="">ローカル知識を使用しない</option>
+              {localWorks.map((work) => (
+                <option key={work.work_id} value={work.work_id}>
+                  {work.work_name}（{work.document_count}ファイル）
+                </option>
+              ))}
+            </select>
+            {selectedLocalWork?.description && <small>{selectedLocalWork.description}</small>}
+          </label>
           <label>
             ページ数
             <select value={targetPages} onChange={(event) => setTargetPages(Number(event.target.value))}>
