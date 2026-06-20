@@ -130,6 +130,7 @@ def create_session_factory(database_url: str) -> sessionmaker:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, connect_args=connect_args)
     if database_url.startswith("sqlite"):
+
         @event.listens_for(engine, "connect")
         def configure_sqlite(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()

@@ -146,7 +146,9 @@ def layout_text(
     return chosen
 
 
-def _layout_at_size(text: str, area_w: float, area_h: float, vertical: bool, size: int) -> TextLayout:
+def _layout_at_size(
+    text: str, area_w: float, area_h: float, vertical: bool, size: int
+) -> TextLayout:
     cell = size * 1.06
     advance = size * 1.12
     if vertical:
@@ -241,34 +243,84 @@ def draw_layout(
             col_cx = start_right - layout.advance * (line_index + 0.5)
             for cell_index, (kind, glyph_text) in enumerate(line):
                 cell_cy = top + layout.cell * (cell_index + 0.5)
-                _draw_cell_vertical(base_rgba, full, small, kind, glyph_text, col_cx, cell_cy, layout.cell, fill, stroke_width, stroke_fill)
+                _draw_cell_vertical(
+                    base_rgba,
+                    full,
+                    small,
+                    kind,
+                    glyph_text,
+                    col_cx,
+                    cell_cy,
+                    layout.cell,
+                    fill,
+                    stroke_width,
+                    stroke_fill,
+                )
     else:
         start_top = top + max(0.0, (bottom - top - block_h) / 2)
         for line_index, line in enumerate(layout.columns):
             line_cy = start_top + layout.cell * (line_index + 0.5)
             line_w = len(line) * layout.advance
             line_left = left + max(0.0, (right - left - line_w) / 2)
-            for cell_index, (kind, glyph_text) in enumerate(line):
+            for cell_index, (_kind, glyph_text) in enumerate(line):
                 cell_cx = line_left + layout.advance * (cell_index + 0.5)
-                _draw_glyph(base_rgba, full, glyph_text, cell_cx, line_cy, fill, stroke_width, stroke_fill, rotate=False)
+                _draw_glyph(
+                    base_rgba,
+                    full,
+                    glyph_text,
+                    cell_cx,
+                    line_cy,
+                    fill,
+                    stroke_width,
+                    stroke_fill,
+                    rotate=False,
+                )
 
 
-def _draw_cell_vertical(base, full_font, small_font, kind, glyph_text, cx, cy, cell, fill, stroke_width, stroke_fill):
+def _draw_cell_vertical(
+    base, full_font, small_font, kind, glyph_text, cx, cy, cell, fill, stroke_width, stroke_fill
+):
     if kind == "tcy":
         # 縦中横: 短い英数字を横並びでセル中央へ。
-        _draw_glyph(base, small_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=False)
+        _draw_glyph(
+            base, small_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=False
+        )
         return
     if kind == "rot":
-        _draw_glyph(base, full_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=True)
+        _draw_glyph(
+            base, full_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=True
+        )
         return
     ch = glyph_text
     if ch in PUNCT_CHARS:
         # 句読点はセル右上へ置く（縦書きの自然な配置）。
-        _draw_glyph(base, full_font, ch, cx, cy, fill, stroke_width, stroke_fill, rotate=False, cell=cell, corner="tr")
+        _draw_glyph(
+            base,
+            full_font,
+            ch,
+            cx,
+            cy,
+            fill,
+            stroke_width,
+            stroke_fill,
+            rotate=False,
+            cell=cell,
+            corner="tr",
+        )
         return
     if ch in SMALL_KANA_CHARS:
         # 小書き仮名は軽く右上へ寄せる。
-        _draw_glyph(base, full_font, ch, cx + cell * 0.1, cy - cell * 0.1, fill, stroke_width, stroke_fill, rotate=False)
+        _draw_glyph(
+            base,
+            full_font,
+            ch,
+            cx + cell * 0.1,
+            cy - cell * 0.1,
+            fill,
+            stroke_width,
+            stroke_fill,
+            rotate=False,
+        )
         return
     _draw_glyph(base, full_font, ch, cx, cy, fill, stroke_width, stroke_fill, rotate=False)
 

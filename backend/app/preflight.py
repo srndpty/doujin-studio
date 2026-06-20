@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from . import layout_engine
+from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
 from .renderer import PAGE_SIZE, _panel_box_px, resolve_dialogue_layout
 from .schemas import MangaProject, Page, PreflightIssue
@@ -17,18 +18,23 @@ from .schemas import MangaProject, Page, PreflightIssue
 # 重なり・縦横比などの許容しきい値。
 BUBBLE_OVERLAP_RATIO = 0.25
 ASPECT_TOLERANCE = 0.35
-GUTTER_MIN_RATIO = 0.4   # 設定ガターのこの割合未満は「狭すぎ」
-GUTTER_MAX_ABS = 0.08    # ページ比でこれを超える隣接間は「広すぎ」
+GUTTER_MIN_RATIO = 0.4  # 設定ガターのこの割合未満は「狭すぎ」
+GUTTER_MAX_ABS = 0.08  # ページ比でこれを超える隣接間は「広すぎ」
 
 
-def preflight_project(manga: MangaProject) -> list[PreflightIssue]:
+def preflight_project(manga: MangaProject, export_dir: Path | None = None) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
     for index, page in enumerate(manga.pages):
-        issues.extend(preflight_page(manga, page, index))
+        issues.extend(preflight_page(manga, page, index, export_dir))
     return issues
 
 
-def preflight_page(manga: MangaProject, page: Page, page_index: int | None = None) -> list[PreflightIssue]:
+def preflight_page(
+    manga: MangaProject,
+    page: Page,
+    page_index: int | None = None,
+    export_dir: Path | None = None,
+) -> list[PreflightIssue]:
     if page_index is None:
         page_index = next((i for i, item in enumerate(manga.pages) if item.page == page.page), 0)
     issues: list[PreflightIssue] = []
@@ -38,9 +44,10 @@ def preflight_page(manga: MangaProject, page: Page, page_index: int | None = Non
     issues.extend(_check_reading_order(manga, page))
     issues.extend(_check_gutters(manga, page))
     issues.extend(_check_layout_repetition(manga, page, page_index))
-    issues.extend(_check_image_aspect(page))
+    issues.extend(_check_image_aspect(page, export_dir))
     issues.extend(_check_subject_mode_characters(page))
     issues.extend(_check_overlay_occlusion(page))
+    issues.extend(_check_assets(page, export_dir))
     return issues
 
 
@@ -129,6 +136,16 @@ def _check_tail_range(page: Page) -> list[PreflightIssue]:
 def _check_reading_order(manga: MangaProject, page: Page) -> list[PreflightIssue]:
     if not page.reading_order:
         return []
+    panel_ids = [panel.panel_id for panel in page.panels]
+    if len(page.reading_order) != len(panel_ids) or set(page.reading_order) != set(panel_ids):
+        return [
+            PreflightIssue(
+                level="error",
+                code="invalid_reading_order",
+                message="読み順に重複、欠落、または存在しないコマがあります",
+                page=page.page,
+            )
+        ]
     rtl = manga.reading_direction != "ltr"
     boxes = [panel.bbox for panel in page.panels]
     order_indices = layout_engine.compute_reading_order(boxes, rtl=rtl)
@@ -158,13 +175,20 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
             ax1, ay1 = ax0 + aw, ay0 + ah
             bx1, by1 = bx0 + bw, by0 + bh
             # 重なり（負のガター）。
-            if _overlap_area((int(ax0 * 1000), int(ay0 * 1000), int(ax1 * 1000), int(ay1 * 1000)),
-                             (int(bx0 * 1000), int(by0 * 1000), int(bx1 * 1000), int(by1 * 1000))) > 0:
+            if (
+                _overlap_area(
+                    (int(ax0 * 1000), int(ay0 * 1000), int(ax1 * 1000), int(ay1 * 1000)),
+                    (int(bx0 * 1000), int(by0 * 1000), int(bx1 * 1000), int(by1 * 1000)),
+                )
+                > 0
+            ):
                 issues.append(
                     PreflightIssue(
-                        level="warning", code="panels_overlap",
+                        level="warning",
+                        code="panels_overlap",
                         message=f"コマが重なっています（{panels[i].panel_id} と {panels[j].panel_id}）",
-                        page=page.page, panel_id=panels[i].panel_id,
+                        page=page.page,
+                        panel_id=panels[i].panel_id,
                     )
                 )
                 continue
@@ -180,23 +204,29 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
             if 0 < gap < gutter * GUTTER_MIN_RATIO:
                 issues.append(
                     PreflightIssue(
-                        level="warning", code="gutter_too_small",
+                        level="warning",
+                        code="gutter_too_small",
                         message=f"コマ間隔が狭すぎます（{panels[i].panel_id} と {panels[j].panel_id}）",
-                        page=page.page, panel_id=panels[i].panel_id,
+                        page=page.page,
+                        panel_id=panels[i].panel_id,
                     )
                 )
             elif gap > GUTTER_MAX_ABS:
                 issues.append(
                     PreflightIssue(
-                        level="warning", code="gutter_too_large",
+                        level="warning",
+                        code="gutter_too_large",
                         message=f"コマ間隔が広すぎます（{panels[i].panel_id} と {panels[j].panel_id}）",
-                        page=page.page, panel_id=panels[i].panel_id,
+                        page=page.page,
+                        panel_id=panels[i].panel_id,
                     )
                 )
     return issues
 
 
-def _check_layout_repetition(manga: MangaProject, page: Page, page_index: int) -> list[PreflightIssue]:
+def _check_layout_repetition(
+    manga: MangaProject, page: Page, page_index: int
+) -> list[PreflightIssue]:
     if page_index < 2 or not page.layout_family:
         return []
     prev1 = manga.pages[page_index - 1].layout_family
@@ -213,14 +243,24 @@ def _check_layout_repetition(manga: MangaProject, page: Page, page_index: int) -
     return []
 
 
-def _check_image_aspect(page: Page) -> list[PreflightIssue]:
+def _check_image_aspect(page: Page, export_dir: Path | None = None) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
     page_w, page_h = PAGE_SIZE
     for panel in page.panels:
-        if not (panel.image_asset and Path(panel.image_asset).exists()):
+        if not panel.image_asset:
             continue
         try:
-            with Image.open(panel.image_asset) as image:
+            image_path = (
+                resolve_asset_path(panel.image_asset, export_dir)
+                if export_dir is not None
+                else Path(panel.image_asset)
+            )
+        except ValueError:
+            continue
+        if not image_path.exists():
+            continue
+        try:
+            with Image.open(image_path) as image:
                 img_w, img_h = image.size
         except Exception:
             continue
@@ -272,10 +312,13 @@ def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:
             if panel_id == overlay.source_panel_id or panel_id in overlay.occluded_by_panel_ids:
                 continue
             pbox = (bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3])
-            if _overlap_area(
-                tuple(int(v * 1000) for v in obox),  # type: ignore[arg-type]
-                tuple(int(v * 1000) for v in pbox),  # type: ignore[arg-type]
-            ) <= 0:
+            if (
+                _overlap_area(
+                    tuple(int(v * 1000) for v in obox),  # type: ignore[arg-type]
+                    tuple(int(v * 1000) for v in pbox),  # type: ignore[arg-type]
+                )
+                <= 0
+            ):
                 continue
             if rank.get(panel_id, len(order)) < source_rank:
                 issues.append(
@@ -287,4 +330,34 @@ def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:
                         panel_id=panel_id,
                     )
                 )
+    return issues
+
+
+def _check_assets(page: Page, export_dir: Path | None) -> list[PreflightIssue]:
+    if export_dir is None:
+        return []
+    issues: list[PreflightIssue] = []
+    references: list[tuple[str, str | None]] = []
+    for panel in page.panels:
+        references.append((panel.panel_id, panel.image_asset))
+    for overlay in page.overlay_elements:
+        references.append((overlay.source_panel_id, overlay.asset))
+        references.append((overlay.source_panel_id, overlay.mask_asset))
+    for panel_id, asset in references:
+        if not asset:
+            continue
+        try:
+            valid = resolve_asset_path(asset, export_dir).is_file()
+        except ValueError:
+            valid = False
+        if not valid:
+            issues.append(
+                PreflightIssue(
+                    level="error",
+                    code="asset_unavailable",
+                    message=f"参照アセットを読み込めません: {asset}",
+                    page=page.page,
+                    panel_id=panel_id or None,
+                )
+            )
     return issues

@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 
 from .database import GenerationJobRecord
 
-
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 TERMINAL_JOB_STATUSES = {"done", "error", "cancelled"}
 
@@ -64,7 +63,9 @@ class JobManager:
         self.shutting_down = False
 
     def create(self, project_id: str, panel_id: str, candidate_count: int) -> GenerationJob:
-        job = GenerationJob(project_id=project_id, panel_id=panel_id, candidate_count=candidate_count)
+        job = GenerationJob(
+            project_id=project_id, panel_id=panel_id, candidate_count=candidate_count
+        )
         self.jobs[job.id] = job
         self.events[job.id] = asyncio.Event()
         self.persist(job)
@@ -136,8 +137,12 @@ class JobManager:
             node=record.node,
             message=record.message,
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
-            created_at=record.created_at.replace(tzinfo=timezone.utc) if record.created_at.tzinfo is None else record.created_at,
-            updated_at=record.updated_at.replace(tzinfo=timezone.utc) if record.updated_at.tzinfo is None else record.updated_at,
+            created_at=record.created_at.replace(tzinfo=timezone.utc)
+            if record.created_at.tzinfo is None
+            else record.created_at,
+            updated_at=record.updated_at.replace(tzinfo=timezone.utc)
+            if record.updated_at.tzinfo is None
+            else record.updated_at,
         )
 
     def start(self, job: GenerationJob, coroutine) -> None:
@@ -176,7 +181,9 @@ class JobManager:
             record.updated_at = job.updated_at
             session.commit()
 
-    async def wait_for_change(self, job_id: str, revision: int, timeout: float = 15.0) -> GenerationJob:
+    async def wait_for_change(
+        self, job_id: str, revision: int, timeout: float = 15.0
+    ) -> GenerationJob:
         job = self.jobs[job_id]
         if job.revision != revision:
             return job
@@ -202,7 +209,9 @@ class JobManager:
         for job_id, task in self.tasks.items():
             if not task.done():
                 job = self.jobs[job_id]
-                self.update(job, status="queued", progress=0, message="バックエンド停止後に再開します")
+                self.update(
+                    job, status="queued", progress=0, message="バックエンド停止後に再開します"
+                )
         for task in tasks:
             task.cancel()
         if tasks:

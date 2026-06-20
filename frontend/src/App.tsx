@@ -1,12 +1,22 @@
-import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  lazy,
+  PointerEvent as ReactPointerEvent,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
 import { KnowledgePanel } from "./KnowledgePanel";
 import { StoryPanel } from "./StoryPanel";
-import { PageEditor } from "./PageEditor";
+
+const PageEditor = lazy(() => import("./PageEditor").then((module) => ({ default: module.PageEditor })));
 
 type WorkspaceTab = "production" | "editor" | "knowledge" | "story";
 
-type Dialogue = {
+export type Dialogue = {
   speaker: string;
   text: string;
   balloon: string;
@@ -14,12 +24,30 @@ type Dialogue = {
   box: [number, number, number, number] | null;
   font_size: number;
   max_lines: number;
+  vertical?: boolean;
+  tail?: { enabled: boolean; tip: [number, number]; base: number; width: number } | null;
 };
 
-type Panel = {
+export type Sfx = {
+  text: string;
+  position: string;
+  style: string;
+  box?: [number, number] | null;
+  font_size?: number;
+  color?: string;
+  outline_color?: string;
+  rotation?: number;
+  vertical?: boolean;
+  layer?: "below" | "above";
+};
+
+export type Panel = {
   panel_id: string;
   bbox: [number, number, number, number];
   shot: string;
+  subject_mode?: "character_scene" | "reaction" | "prop_insert" | "hand_insert" | "background";
+  role?: string;
+  emphasis?: number;
   camera: string;
   location_id: string;
   characters: string[];
@@ -29,7 +57,7 @@ type Panel = {
   selected_candidate_id: string | null;
   control_references: PanelControlReference[];
   dialogue: Dialogue[];
-  sfx: { text: string; position: string; style: string }[];
+  sfx: Sfx[];
   generation: {
     backend: string;
     prompt: string;
@@ -49,17 +77,44 @@ type Panel = {
     reference_images: ReferenceImageBinding[];
     workflow_preset_id: string | null;
     workflow_preset: WorkflowPreset | null;
+    crop_scale?: number;
+    crop_offset_x?: number;
+    crop_offset_y?: number;
+    focal_x?: number | null;
+    focal_y?: number | null;
   };
 };
 
 type LoRABinding = { node_id: string; lora_name: string; strength_model: number; strength_clip: number };
 type ReferenceImageBinding = { node_id: string; asset: string; character_id: string; kind: string };
-type PanelControlReference = { id: string; kind: "pose" | "depth" | "lineart" | "background"; asset: string; load_node_id: string };
-type WorkflowPreset = {
-  id: string; name: string; checkpoint_node_id: string; checkpoint_name: string; vae_node_id: string; vae_name: string;
-  sampler_node_id: string; sampler_name: string; scheduler: string; steps: number | null; cfg: number | null; denoise: number | null;
+type PanelControlReference = {
+  id: string;
+  kind: "pose" | "depth" | "lineart" | "background";
+  asset: string;
+  load_node_id: string;
 };
-type LocationProfile = { id: string; display_name: string; prompt: string; negative_prompt: string; reference_image_asset: string | null; reference_load_node_id: string };
+type WorkflowPreset = {
+  id: string;
+  name: string;
+  checkpoint_node_id: string;
+  checkpoint_name: string;
+  vae_node_id: string;
+  vae_name: string;
+  sampler_node_id: string;
+  sampler_name: string;
+  scheduler: string;
+  steps: number | null;
+  cfg: number | null;
+  denoise: number | null;
+};
+type LocationProfile = {
+  id: string;
+  display_name: string;
+  prompt: string;
+  negative_prompt: string;
+  reference_image_asset: string | null;
+  reference_load_node_id: string;
+};
 
 type ImageCandidate = {
   id: string;
@@ -109,7 +164,34 @@ type GenerationJob = {
   candidate_ids: string[];
 };
 
-type MangaProject = {
+export type OverlayElement = {
+  id: string;
+  source_panel_id: string;
+  asset: string | null;
+  mask_asset: string | null;
+  box: [number, number, number, number];
+  scale: number;
+  opacity: number;
+  layer: "back" | "front";
+  z_index: number;
+  occluded_by_panel_ids: string[];
+};
+
+export type MangaPage = {
+  page: number;
+  theme: string;
+  layout_template: string;
+  layout_family?: string;
+  intent?: string;
+  layout_locked?: boolean;
+  reading_order?: string[];
+  overlay_elements?: OverlayElement[];
+  panels: Panel[];
+  render_status: "pending" | "done";
+  rendered_at: string | null;
+};
+
+export type MangaProject = {
   title: string;
   work_name: string;
   premise: string;
@@ -120,7 +202,8 @@ type MangaProject = {
   locations: LocationProfile[];
   workflow_presets: WorkflowPreset[];
   active_workflow_preset_id: string | null;
-  pages: { page: number; theme: string; layout_template: string; panels: Panel[]; render_status: "pending" | "done"; rendered_at: string | null }[];
+  reading_direction?: "rtl" | "ltr";
+  pages: MangaPage[];
 };
 
 type ProductionStatus = {
@@ -130,7 +213,14 @@ type ProductionStatus = {
   total_panels: number;
   rendered_pages: number;
   total_pages: number;
-  pages: { page: number; status: "incomplete" | "ready" | "complete"; adopted_panels: number; total_panels: number; rendered: boolean; blockers: string[] }[];
+  pages: {
+    page: number;
+    status: "incomplete" | "ready" | "complete";
+    adopted_panels: number;
+    total_panels: number;
+    rendered: boolean;
+    blockers: string[];
+  }[];
   blockers: string[];
 };
 
@@ -167,7 +257,8 @@ type TaskProgress = {
 };
 
 const ANIMA3_POSITIVE = "masterpiece, best quality, score_7, safe, anime";
-const ANIMA3_NEGATIVE = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo";
+const ANIMA3_NEGATIVE =
+  "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo";
 
 const api = {
   async get<T>(path: string): Promise<T> {
@@ -217,14 +308,21 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
-  const dragState = useRef<{ mode: "move" | "resize"; startX: number; startY: number; box: [number, number, number, number] } | null>(null);
+  const dragState = useRef<{
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    box: [number, number, number, number];
+  } | null>(null);
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
 
   const currentPanel = useMemo(() => {
     if (!currentPage) return null;
-    return currentPage.panels.find((panel) => panel.panel_id === selectedPanelId) ?? currentPage.panels[0] ?? null;
+    return (
+      currentPage.panels.find((panel) => panel.panel_id === selectedPanelId) ?? currentPage.panels[0] ?? null
+    );
   }, [currentPage, selectedPanelId]);
 
   const currentDialogue = currentPanel?.dialogue[0] ?? null;
@@ -250,7 +348,10 @@ export function App() {
   }, [selected?.id]);
 
   useEffect(() => {
-    if (currentPage?.panels.length && !currentPage.panels.some((panel) => panel.panel_id === selectedPanelId)) {
+    if (
+      currentPage?.panels.length &&
+      !currentPage.panels.some((panel) => panel.panel_id === selectedPanelId)
+    ) {
       setSelectedPanelId(currentPage.panels[0].panel_id);
     }
   }, [currentPage, selectedPanelId]);
@@ -331,14 +432,6 @@ export function App() {
     });
   }
 
-  async function saveJson() {
-    if (!selected) return;
-    await runTask(async () => {
-      await saveJsonDraft("Manga JSONを保存しました");
-      await refreshProductionStatus(selected.id);
-    });
-  }
-
   async function saveJsonDraft(successMessage: string): Promise<Project | null> {
     if (!selected) return null;
     const parsed = JSON.parse(jsonText) as MangaProject;
@@ -360,8 +453,14 @@ export function App() {
       for (const page of manga.pages) {
         const firstPanel = page.panels[0];
         if (!firstPanel) continue;
-        setProgress({ label: `${page.page}ページをレンダリング中`, current: page.page, total: manga.pages.length });
-        const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
+        setProgress({
+          label: `${page.page}ページをレンダリング中`,
+          current: page.page,
+          total: manga.pages.length
+        });
+        const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+          `/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`
+        );
         latestManga = response.manga_json;
         nextAssets[page.page - 1] = response.page_asset;
         setPageAssets([...nextAssets]);
@@ -384,7 +483,9 @@ export function App() {
       const job = await createAndWaitForGenerationJob(projectId, currentPanel.panel_id);
       if (job.status !== "done") throw new Error(job.message);
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
-      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json };
       setSelected(project);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
@@ -423,8 +524,14 @@ export function App() {
       let latestManga = (await api.get<Project>(`/api/projects/${projectId}`)).manga_json;
       const firstPanelId = panelIds[0];
       if (firstPanelId) {
-        setProgress({ label: `${selectedPage}ページを更新中`, current: panelIds.length + 1, total: panelIds.length + 1 });
-        const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanelId}/render-page`);
+        setProgress({
+          label: `${selectedPage}ページを更新中`,
+          current: panelIds.length + 1,
+          total: panelIds.length + 1
+        });
+        const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+          `/api/projects/${projectId}/panels/${firstPanelId}/render-page`
+        );
         latestManga = pageResponse.manga_json;
         setPageAssets((assets) => {
           const next = [...assets];
@@ -473,7 +580,11 @@ export function App() {
       jobs = await Promise.all(jobs.map((job) => api.get<GenerationJob>(`/api/generation-jobs/${job.id}`)));
       const completed = jobs.filter((job) => ["done", "error", "cancelled"].includes(job.status)).length;
       const progressTotal = jobs.reduce((sum, job) => sum + job.progress, 0);
-      setProgress({ label: `${label}（${completed}/${jobs.length}コマ完了）`, current: progressTotal, total: jobs.length * 100 });
+      setProgress({
+        label: `${label}（${completed}/${jobs.length}コマ完了）`,
+        current: progressTotal,
+        total: jobs.length * 100
+      });
       if (completed === jobs.length) break;
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
     }
@@ -488,8 +599,14 @@ export function App() {
       const page = project.manga_json.pages[index];
       const firstPanel = page.panels[0];
       if (!firstPanel) continue;
-      setProgress({ label: `${page.page}ページをレンダリング中`, current: index, total: project.manga_json.pages.length });
-      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
+      setProgress({
+        label: `${page.page}ページをレンダリング中`,
+        current: index,
+        total: project.manga_json.pages.length
+      });
+      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+        `/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`
+      );
       latestManga = response.manga_json;
       nextAssets[page.page - 1] = response.page_asset;
       setPageAssets([...nextAssets]);
@@ -527,7 +644,9 @@ export function App() {
   function watchGenerationJob(initialJob: GenerationJob): Promise<GenerationJob> {
     return new Promise((resolve) => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`);
+      const socket = new WebSocket(
+        `${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`
+      );
       let settled = false;
       let polling = false;
       const finish = (job: GenerationJob) => {
@@ -538,7 +657,9 @@ export function App() {
       };
       const update = (job: GenerationJob) => {
         setProgress({
-          label: job.node ? `${job.panel_id}: ${job.message} (${job.node})` : `${job.panel_id}: ${job.message}`,
+          label: job.node
+            ? `${job.panel_id}: ${job.message} (${job.node})`
+            : `${job.panel_id}: ${job.message}`,
           current: job.progress,
           total: 100,
           indeterminate: job.status === "queued" && job.progress === 0
@@ -568,7 +689,9 @@ export function App() {
 
   async function cancelActiveJob() {
     if (activeJobIds.length === 0) return;
-    await Promise.all(activeJobIds.map((jobId) => api.post<GenerationJob>(`/api/generation-jobs/${jobId}/cancel`)));
+    await Promise.all(
+      activeJobIds.map((jobId) => api.post<GenerationJob>(`/api/generation-jobs/${jobId}/cancel`))
+    );
     setMessage("生成キューをキャンセルしました");
   }
 
@@ -596,8 +719,12 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      const response = await api.post<{ manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`);
-      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const response = await api.post<{ manga_json: MangaProject }>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`
+      );
+      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json ?? response.manga_json };
       setSelected(project);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
@@ -617,7 +744,9 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("写植更新前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       const project = { ...(saved ?? selected), manga_json: response.manga_json };
       setSelected(project);
       setJsonText(JSON.stringify(response.manga_json, null, 2));
@@ -635,7 +764,9 @@ export function App() {
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ cbz_asset: string; absolute_path: string; warnings: string[] }>(`/api/projects/${selected.id}/export/cbz`);
+      const response = await api.post<{ cbz_asset: string; absolute_path: string; warnings: string[] }>(
+        `/api/projects/${selected.id}/export/cbz`
+      );
       const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
       setMessage(`CBZを書き出しました: ${response.absolute_path}${warning}`);
       await refreshProductionStatus(selected.id);
@@ -648,9 +779,11 @@ export function App() {
       const response = await api.post<{ folder_path: string; cbz_path: string; cbz_exists: boolean }>(
         `/api/projects/${selected.id}/export/open-folder`
       );
-      setMessage(response.cbz_exists
-        ? `保存先を開きました: ${response.cbz_path}`
-        : `出力フォルダを開きました: ${response.folder_path}`);
+      setMessage(
+        response.cbz_exists
+          ? `保存先を開きました: ${response.cbz_path}`
+          : `出力フォルダを開きました: ${response.folder_path}`
+      );
     });
   }
 
@@ -686,11 +819,44 @@ export function App() {
   }
 
   function applyFourPageDraftSettings() {
-    const pageConfigs: Record<number, { prompt: string; width: number; height: number; fit: "cover" | "contain"; anchor: "center" | "top" | "bottom" | "left" | "right" }> = {
-      1: { prompt: "establishing shot, after school room, soft daylight, calm mood", width: 1024, height: 640, fit: "cover", anchor: "center" },
-      2: { prompt: "two character conversation, expressive faces, medium shot, clean background", width: 896, height: 640, fit: "cover", anchor: "center" },
-      3: { prompt: "dynamic reaction, comedic timing, energetic pose, manga composition", width: 896, height: 672, fit: "cover", anchor: "top" },
-      4: { prompt: "punchline scene, comedic contrast, clear silhouettes, final panel emphasis", width: 1024, height: 768, fit: "cover", anchor: "center" }
+    const pageConfigs: Record<
+      number,
+      {
+        prompt: string;
+        width: number;
+        height: number;
+        fit: "cover" | "contain";
+        anchor: "center" | "top" | "bottom" | "left" | "right";
+      }
+    > = {
+      1: {
+        prompt: "establishing shot, after school room, soft daylight, calm mood",
+        width: 1024,
+        height: 640,
+        fit: "cover",
+        anchor: "center"
+      },
+      2: {
+        prompt: "two character conversation, expressive faces, medium shot, clean background",
+        width: 896,
+        height: 640,
+        fit: "cover",
+        anchor: "center"
+      },
+      3: {
+        prompt: "dynamic reaction, comedic timing, energetic pose, manga composition",
+        width: 896,
+        height: 672,
+        fit: "cover",
+        anchor: "top"
+      },
+      4: {
+        prompt: "punchline scene, comedic contrast, clear silhouettes, final panel emphasis",
+        width: 1024,
+        height: 768,
+        fit: "cover",
+        anchor: "center"
+      }
     };
     updateManga((manga) => {
       for (const page of manga.pages) {
@@ -763,9 +929,18 @@ export function App() {
       let index = manga.workflow_presets.length + 1;
       while (manga.workflow_presets.some((preset) => preset.id === `preset_${index}`)) index += 1;
       manga.workflow_presets.push({
-        id: `preset_${index}`, name: `プリセット${index}`, checkpoint_node_id: "", checkpoint_name: "",
-        vae_node_id: "", vae_name: "", sampler_node_id: "", sampler_name: "", scheduler: "",
-        steps: null, cfg: null, denoise: null
+        id: `preset_${index}`,
+        name: `プリセット${index}`,
+        checkpoint_node_id: "",
+        checkpoint_name: "",
+        vae_node_id: "",
+        vae_name: "",
+        sampler_node_id: "",
+        sampler_name: "",
+        scheduler: "",
+        steps: null,
+        cfg: null,
+        denoise: null
       });
       manga.active_workflow_preset_id ??= `preset_${index}`;
     });
@@ -783,8 +958,12 @@ export function App() {
       let index = manga.locations.length + 1;
       while (manga.locations.some((location) => location.id === `location_${index}`)) index += 1;
       manga.locations.push({
-        id: `location_${index}`, display_name: `ロケーション${index}`, prompt: "", negative_prompt: "",
-        reference_image_asset: null, reference_load_node_id: ""
+        id: `location_${index}`,
+        display_name: `ロケーション${index}`,
+        prompt: "",
+        negative_prompt: "",
+        reference_image_asset: null,
+        reference_load_node_id: ""
       });
     });
   }
@@ -813,7 +992,7 @@ export function App() {
         body: file
       });
       if (!response.ok) throw new Error(await response.text());
-      const payload = await response.json() as { manga_json: MangaProject };
+      const payload = (await response.json()) as { manga_json: MangaProject };
       setSelected({ ...selected, manga_json: payload.manga_json });
       setJsonText(JSON.stringify(payload.manga_json, null, 2));
       setAssetVersion((value) => value + 1);
@@ -823,7 +1002,11 @@ export function App() {
 
   async function uploadLocationImage(locationId: string, file: File) {
     if (!selected) return;
-    await uploadProjectImage(`/api/projects/${selected.id}/locations/${locationId}/reference-image`, file, "ロケーション参照画像を登録しました");
+    await uploadProjectImage(
+      `/api/projects/${selected.id}/locations/${locationId}/reference-image`,
+      file,
+      "ロケーション参照画像を登録しました"
+    );
   }
 
   async function uploadControlImage(kind: PanelControlReference["kind"], file: File) {
@@ -844,9 +1027,13 @@ export function App() {
   async function uploadProjectImage(path: string, file: File, successMessage: string) {
     if (!selected) return;
     await runTask(async () => {
-      const response = await fetch(path, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file
+      });
       if (!response.ok) throw new Error(await response.text());
-      const payload = await response.json() as { manga_json: MangaProject };
+      const payload = (await response.json()) as { manga_json: MangaProject };
       setSelected({ ...selected, manga_json: payload.manga_json });
       setJsonText(JSON.stringify(payload.manga_json, null, 2));
       setAssetVersion((value) => value + 1);
@@ -856,7 +1043,12 @@ export function App() {
 
   function startBalloonDrag(event: ReactPointerEvent<HTMLElement>, mode: "move" | "resize") {
     const box = currentDialogue?.box ?? [0.48, 0.06, 0.46, 0.22];
-    dragState.current = { mode, startX: event.clientX, startY: event.clientY, box: [...box] as [number, number, number, number] };
+    dragState.current = {
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      box: [...box] as [number, number, number, number]
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -919,7 +1111,11 @@ export function App() {
     for (const characterId of panel.characters) {
       const character = characterMap.get(characterId);
       if (!character) continue;
-      positive.push(character.trigger_prompt || character.display_name, character.appearance_prompt, character.outfit_prompt);
+      positive.push(
+        character.trigger_prompt || character.display_name,
+        character.appearance_prompt,
+        character.outfit_prompt
+      );
       negative.push(character.negative_prompt);
     }
     positive.push(panel.generation.prompt || panel.prompt);
@@ -950,15 +1146,28 @@ export function App() {
       <aside className="sidebar">
         <div className="sidebar-heading">
           <h1>Doujin Studio</h1>
-          <button className="icon-button" title="サイドバーを閉じる" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={18} /></button>
+          <button className="icon-button" title="サイドバーを閉じる" onClick={() => setSidebarOpen(false)}>
+            <PanelLeftClose size={18} />
+          </button>
         </div>
         <div className="project-list">
           <div className="section-heading">
             <h2>プロジェクト</h2>
-            <button className="icon-button" title="新規プロジェクト" onClick={() => setNewProjectOpen(true)} disabled={busy}><Plus size={18} /></button>
+            <button
+              className="icon-button"
+              title="新規プロジェクト"
+              onClick={() => setNewProjectOpen(true)}
+              disabled={busy}
+            >
+              <Plus size={18} />
+            </button>
           </div>
           {projects.map((project) => (
-            <button key={project.id} className={selected?.id === project.id ? "selected" : ""} onClick={() => void loadProject(project.id)}>
+            <button
+              key={project.id}
+              className={selected?.id === project.id ? "selected" : ""}
+              onClick={() => void loadProject(project.id)}
+            >
               <span>{project.title}</span>
               <small>{project.work_name || "作品名未設定"}</small>
             </button>
@@ -968,101 +1177,170 @@ export function App() {
 
       <main className="workspace">
         <header className="toolbar">
-          <button className="icon-button" title="プロジェクト一覧" onClick={() => setSidebarOpen((value) => !value)}><Menu size={20} /></button>
+          <button
+            className="icon-button"
+            title="プロジェクト一覧"
+            onClick={() => setSidebarOpen((value) => !value)}
+          >
+            <Menu size={20} />
+          </button>
           <div className="project-heading">
             {selected ? (
               <input
                 className="project-title-input"
                 aria-label="本のタイトル"
                 value={selected.manga_json.title}
-                onChange={(event) => updateManga((manga) => { manga.title = event.target.value; })}
+                onChange={(event) =>
+                  updateManga((manga) => {
+                    manga.title = event.target.value;
+                  })
+                }
               />
-            ) : <strong>プロジェクト未選択</strong>}
+            ) : (
+              <strong>プロジェクト未選択</strong>
+            )}
             <span>{message}</span>
           </div>
           <div className="actions">
-            <button className="icon-button" title="接続確認" onClick={() => void refreshComfyStatus()} disabled={busy}><RefreshCw size={18} /></button>
-            <button title="タイトルと編集内容を保存" onClick={saveProjectTitle} disabled={!selected || busy}><Save size={17} />保存</button>
-            <button title="全ページを生成" onClick={generateAllPageImages} disabled={!selected || busy}><Images size={17} />全ページ生成</button>
-            <button title="全ページをレンダリング" onClick={renderPages} disabled={!selected || busy}><RefreshCw size={17} />レンダリング</button>
-            <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}><Download size={17} />CBZ</button>
-            <button title="保存先を開く" onClick={openExportFolder} disabled={!selected || busy}><FolderOpen size={17} />保存先</button>
+            <button
+              className="icon-button"
+              title="接続確認"
+              onClick={() => void refreshComfyStatus()}
+              disabled={busy}
+            >
+              <RefreshCw size={18} />
+            </button>
+            <button title="タイトルと編集内容を保存" onClick={saveProjectTitle} disabled={!selected || busy}>
+              <Save size={17} />
+              保存
+            </button>
+            <button title="全ページを生成" onClick={generateAllPageImages} disabled={!selected || busy}>
+              <Images size={17} />
+              全ページ生成
+            </button>
+            <button title="全ページをレンダリング" onClick={renderPages} disabled={!selected || busy}>
+              <RefreshCw size={17} />
+              レンダリング
+            </button>
+            <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}>
+              <Download size={17} />
+              CBZ
+            </button>
+            <button title="保存先を開く" onClick={openExportFolder} disabled={!selected || busy}>
+              <FolderOpen size={17} />
+              保存先
+            </button>
           </div>
         </header>
 
         <nav className="workspace-tabs">
-          <button className={activeTab === "production" ? "active" : ""} onClick={() => setActiveTab("production")}>制作</button>
-          <button className={activeTab === "editor" ? "active" : ""} onClick={() => setActiveTab("editor")} disabled={!selected}>ページ編集</button>
-          <button className={activeTab === "knowledge" ? "active" : ""} onClick={() => setActiveTab("knowledge")}>作品知識</button>
-          <button className={activeTab === "story" ? "active" : ""} onClick={() => setActiveTab("story")} disabled={!selected}>ストーリー生成</button>
+          <button
+            className={activeTab === "production" ? "active" : ""}
+            onClick={() => setActiveTab("production")}
+          >
+            制作
+          </button>
+          <button
+            className={activeTab === "editor" ? "active" : ""}
+            onClick={() => setActiveTab("editor")}
+            disabled={!selected}
+          >
+            ページ編集
+          </button>
+          <button
+            className={activeTab === "knowledge" ? "active" : ""}
+            onClick={() => setActiveTab("knowledge")}
+          >
+            作品知識
+          </button>
+          <button
+            className={activeTab === "story" ? "active" : ""}
+            onClick={() => setActiveTab("story")}
+            disabled={!selected}
+          >
+            ストーリー生成
+          </button>
         </nav>
 
         {progress && (
           <section className="progress-band" role="status" aria-live="polite">
             <div>
               <strong>{progress.label}</strong>
-              <span>{progress.current} / {progress.total}</span>
+              <span>
+                {progress.current} / {progress.total}
+              </span>
             </div>
-            <progress className={progress.indeterminate ? "indeterminate" : ""} value={progress.indeterminate ? undefined : progressPercent} max="100" />
+            <progress
+              className={progress.indeterminate ? "indeterminate" : ""}
+              value={progress.indeterminate ? undefined : progressPercent}
+              max="100"
+            />
             {activeJobIds.length > 0 && <button onClick={cancelActiveJob}>キャンセル</button>}
           </section>
         )}
 
         {activeTab === "editor" && selected && (
-          <PageEditor
-            projectId={selected.id}
-            manga={selected.manga_json}
-            pageNumber={selectedPage}
-            assetVersion={assetVersion}
-            busy={busy}
-            setMessage={setMessage}
-            onChange={(manga) => {
-              setSelected({ ...selected, manga_json: manga });
-              setJsonText(JSON.stringify(manga, null, 2));
-            }}
-            onSave={async () => {
-              if (!selected) return;
-              setBusy(true);
-              try {
-                const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
-                setSelected(project);
-                setJsonText(JSON.stringify(project.manga_json, null, 2));
-                setMessage("レイアウトを保存しました");
-              } catch (error) {
-                setMessage(`保存に失敗しました: ${(error as Error).message}`);
-              } finally {
-                setBusy(false);
-              }
-            }}
-            onSuggest={async (family) => {
-              if (!selected) return;
-              setBusy(true);
-              try {
-                const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
-                  `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
-                  { family }
-                );
-                setSelected({ ...selected, manga_json: response.manga_json });
-                setJsonText(JSON.stringify(response.manga_json, null, 2));
-                setMessage(`レイアウトを再提案しました（${response.layout_family}）`);
-              } catch (error) {
-                setMessage(`再提案に失敗しました: ${(error as Error).message}`);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          />
+          <Suspense fallback={<p className="hint">ページ編集機能を読み込んでいます...</p>}>
+            <PageEditor
+              projectId={selected.id}
+              manga={selected.manga_json}
+              pageNumber={selectedPage}
+              assetVersion={assetVersion}
+              busy={busy}
+              setMessage={setMessage}
+              onChange={(manga) => {
+                setSelected({ ...selected, manga_json: manga });
+                setJsonText(JSON.stringify(manga, null, 2));
+              }}
+              onSave={async (manga) => {
+                if (!selected) return;
+                setBusy(true);
+                try {
+                  const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, manga);
+                  const rendered = await api.post<{ manga_json: MangaProject }>(
+                    `/api/projects/${selected.id}/pages/${selectedPage}/render`
+                  );
+                  const updated = { ...project, manga_json: rendered.manga_json };
+                  setSelected(updated);
+                  setJsonText(JSON.stringify(updated.manga_json, null, 2));
+                  setAssetVersion((value) => value + 1);
+                  setMessage("レイアウトを保存し、ページ画像を更新しました");
+                } catch (error) {
+                  setMessage(`保存に失敗しました: ${(error as Error).message}`);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onSuggest={async (family) => {
+                if (!selected) return;
+                setBusy(true);
+                try {
+                  const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
+                    `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
+                    { family }
+                  );
+                  setSelected({ ...selected, manga_json: response.manga_json });
+                  setJsonText(JSON.stringify(response.manga_json, null, 2));
+                  setMessage(`レイアウトを再提案しました（${response.layout_family}）`);
+                } catch (error) {
+                  setMessage(`再提案に失敗しました: ${(error as Error).message}`);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            />
+          </Suspense>
         )}
 
-        {activeTab === "knowledge" && (
-          <KnowledgePanel defaultWorkName={selected?.work_name ?? ""} />
-        )}
+        {activeTab === "knowledge" && <KnowledgePanel defaultWorkName={selected?.work_name ?? ""} />}
 
         {activeTab === "story" && selected && (
           <StoryPanel
             projectId={selected.id}
             workName={selected.work_name}
-            onApplied={() => { void loadProject(selected.id); }}
+            onApplied={() => {
+              void loadProject(selected.id);
+            }}
             onBusyChange={(working, label) => {
               setBusy(working);
               setProgress(working ? { label, current: 0, total: 100, indeterminate: true } : null);
@@ -1071,599 +1349,1064 @@ export function App() {
         )}
 
         {activeTab === "production" && (
-        <>
-        <section className="status-band">
-          <strong>{comfyStatus?.backend === "comfyui" ? "ComfyUI" : "stub"}</strong>
-          <span>{comfyStatus?.message ?? "接続状態を確認中"}</span>
-          <small>
-            workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node: {comfyStatus?.workflow_valid ? "OK" : "未検証"}
-          </small>
-        </section>
-
-        {productionStatus && (
-          <section className={`production-band ${productionStatus.status}`}>
-            <strong>{productionStatus.status === "complete" ? "制作完了" : productionStatus.status === "ready" ? "レンダリング待ち" : "制作中"}</strong>
-            <span>採用 {productionStatus.adopted_panels}/{productionStatus.total_panels}コマ</span>
-            <span>ページ {productionStatus.rendered_pages}/{productionStatus.total_pages}</span>
-            {productionStatus.blockers.length > 0 && (
-              <details>
-                <summary>未完了 {productionStatus.blockers.length}件</summary>
-                <ul>{productionStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
-              </details>
-            )}
-            {jobHistory.length > 0 && (
-              <details className="job-history">
-                <summary>生成履歴</summary>
-                <ul>
-                  {jobHistory.slice(0, 10).map((job) => (
-                    <li key={job.id}>{job.panel_id}: {job.status} {job.progress}%</li>
-                  ))}
-                </ul>
-              </details>
-            )}
-          </section>
-        )}
-
-        {selected && (
-          <details className="common-prompts">
-            <summary>共通プロンプト</summary>
-            <div className="common-prompt-grid">
-            <label>
-              全コマ共通positive
-              <textarea
-                value={selected.manga_json.common_positive_prompt}
-                onChange={(event) => updateManga((manga) => {
-                  manga.common_positive_prompt = event.target.value;
-                })}
-                spellCheck={false}
-              />
-            </label>
-            <label>
-              全コマ共通negative
-              <textarea
-                value={selected.manga_json.common_negative_prompt}
-                onChange={(event) => updateManga((manga) => {
-                  manga.common_negative_prompt = event.target.value;
-                })}
-                spellCheck={false}
-              />
-            </label>
-            <div className="actions">
-              <button onClick={applyAnimePreviewDefaults} disabled={busy}>Anima 3向け初期値</button>
-              <button onClick={applyFourPageDraftSettings} disabled={busy}>4ページ仮設定</button>
-            </div>
-            </div>
-          </details>
-        )}
-
-        {selected && (
-          <details className="advanced-settings">
-            <summary>生成環境・ロケーション</summary>
-            <section className="workflow-settings">
-              <div className="section-heading">
-                <h2>workflowプリセット</h2>
-                <button onClick={addWorkflowPreset} disabled={busy}>追加</button>
-              </div>
-              <label>
-                プロジェクト既定
-                <select value={selected.manga_json.active_workflow_preset_id ?? ""} onChange={(event) => updateManga((manga) => { manga.active_workflow_preset_id = event.target.value || null; })}>
-                  <option value="">workflow設定を維持</option>
-                  {selected.manga_json.workflow_presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-                </select>
-              </label>
-              <div className="preset-list">
-                {selected.manga_json.workflow_presets.map((preset) => (
-                  <article key={preset.id}>
-                    <label>名前<input value={preset.name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.name = event.target.value; })} /></label>
-                    <label>checkpointノード<input value={preset.checkpoint_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.checkpoint_node_id = event.target.value; })} /></label>
-                    <label>checkpoint名<input value={preset.checkpoint_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.checkpoint_name = event.target.value; })} /></label>
-                    <label>VAEノード<input value={preset.vae_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.vae_node_id = event.target.value; })} /></label>
-                    <label>VAE名<input value={preset.vae_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.vae_name = event.target.value; })} /></label>
-                    <label>samplerノード<input value={preset.sampler_node_id} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.sampler_node_id = event.target.value; })} /></label>
-                    <label>sampler<input value={preset.sampler_name} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.sampler_name = event.target.value; })} /></label>
-                    <label>scheduler<input value={preset.scheduler} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.scheduler = event.target.value; })} /></label>
-                    <label>steps<input type="number" value={preset.steps ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.steps = event.target.value ? Number(event.target.value) : null; })} /></label>
-                    <label>CFG<input type="number" step="0.1" value={preset.cfg ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.cfg = event.target.value ? Number(event.target.value) : null; })} /></label>
-                    <label>denoise<input type="number" step="0.05" min="0" max="1" value={preset.denoise ?? ""} onChange={(event) => updateWorkflowPreset(preset.id, (item) => { item.denoise = event.target.value ? Number(event.target.value) : null; })} /></label>
-                  </article>
-                ))}
-              </div>
+          <>
+            <section className="status-band">
+              <strong>{comfyStatus?.backend === "comfyui" ? "ComfyUI" : "stub"}</strong>
+              <span>{comfyStatus?.message ?? "接続状態を確認中"}</span>
+              <small>
+                workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node:{" "}
+                {comfyStatus?.workflow_valid ? "OK" : "未検証"}
+              </small>
             </section>
-            <section className="location-settings">
-              <div className="section-heading"><h2>ロケーション</h2><button onClick={addLocation} disabled={busy}>追加</button></div>
-              <div className="location-list">
-                {selected.manga_json.locations.map((location) => (
-                  <article key={location.id}>
-                    <div className="character-title"><strong>{location.display_name}</strong><small>{location.id}</small></div>
-                    <label>表示名<input value={location.display_name} onChange={(event) => updateLocation(location.id, (item) => { item.display_name = event.target.value; })} /></label>
-                    <label>背景prompt<textarea value={location.prompt} onChange={(event) => updateLocation(location.id, (item) => { item.prompt = event.target.value; })} /></label>
-                    <label>negative<textarea value={location.negative_prompt} onChange={(event) => updateLocation(location.id, (item) => { item.negative_prompt = event.target.value; })} /></label>
-                    <label>LoadImageノード<input value={location.reference_load_node_id} onChange={(event) => updateLocation(location.id, (item) => { item.reference_load_node_id = event.target.value; })} /></label>
-                    <label>参照画像<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadLocationImage(location.id, file); }} /></label>
-                    {location.reference_image_asset && <img className="reference-image" src={assetUrl(location.reference_image_asset)} alt={`${location.display_name}参照`} />}
-                  </article>
-                ))}
-              </div>
-            </section>
-          </details>
-        )}
 
-        {selected && (
-          <details className="character-profiles">
-            <summary>キャラクタープロファイル（{selected.manga_json.characters.length}人）</summary>
-            <div className="section-heading">
-              <h2>キャラクター設定</h2>
-              <button onClick={addCharacter} disabled={busy}>キャラ追加</button>
-            </div>
-            <div className="character-profile-list">
-              {selected.manga_json.characters.map((character) => (
-                <article key={character.id}>
-                  <div className="character-title">
-                    <strong>{character.display_name}</strong>
-                    <small>{character.id}</small>
-                  </div>
-                  <label>
-                    表示名
-                    <input
-                      value={character.display_name}
-                      onChange={(event) => updateCharacter(character.id, (item) => { item.display_name = event.target.value; })}
-                    />
-                  </label>
-                  <label>
-                    trigger prompt
-                    <input
-                      value={character.trigger_prompt}
-                      onChange={(event) => updateCharacter(character.id, (item) => { item.trigger_prompt = event.target.value; })}
-                    />
-                  </label>
-                  <label>
-                    外見タグ
-                    <textarea
-                      value={character.appearance_prompt}
-                      onChange={(event) => updateCharacter(character.id, (item) => { item.appearance_prompt = event.target.value; })}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label>
-                    衣装タグ
-                    <textarea
-                      value={character.outfit_prompt}
-                      onChange={(event) => updateCharacter(character.id, (item) => { item.outfit_prompt = event.target.value; })}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label>
-                    個別negative
-                    <input
-                      value={character.negative_prompt}
-                      onChange={(event) => updateCharacter(character.id, (item) => { item.negative_prompt = event.target.value; })}
-                    />
-                  </label>
-                  <label>
-                    LoRAノードID
-                    <input value={character.lora_node_id} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_node_id = event.target.value; })} />
-                  </label>
-                  <label>
-                    LoRA名
-                    <input value={character.lora_name} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_name = event.target.value; })} />
-                  </label>
-                  <label>
-                    model強度
-                    <input type="number" step="0.05" min="-2" max="2" value={character.lora_strength_model} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_strength_model = Number(event.target.value); })} />
-                  </label>
-                  <label>
-                    CLIP強度
-                    <input type="number" step="0.05" min="-2" max="2" value={character.lora_strength_clip} onChange={(event) => updateCharacter(character.id, (item) => { item.lora_strength_clip = Number(event.target.value); })} />
-                  </label>
-                  <label>
-                    参照画像ノードID
-                    <input value={character.reference_load_node_id} onChange={(event) => updateCharacter(character.id, (item) => { item.reference_load_node_id = event.target.value; })} />
-                  </label>
-                  <label>
-                    参照画像
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) void uploadReferenceImage(character.id, file);
-                      }}
-                    />
-                  </label>
-                  {character.reference_image_asset && (
-                    <img className="reference-image" src={assetUrl(character.reference_image_asset)} alt={`${character.display_name}参照画像`} />
-                  )}
-                </article>
-              ))}
-            </div>
-          </details>
-        )}
-
-        <section className="content-grid">
-          <div className="preview">
-            <div className="page-workbench">
-            <div className="tabs">
-              {(selected?.manga_json.pages ?? []).map(({ page }) => (
-                <button key={page} className={selectedPage === page ? "active" : ""} onClick={() => setSelectedPage(page)}>
-                  {page}p {productionStatus?.pages.find((item) => item.page === page)?.status === "complete" ? "完了" : ""}
-                </button>
-              ))}
-            </div>
-            <label className="incomplete-filter">
-              <input type="checkbox" checked={showIncompleteOnly} onChange={(event) => setShowIncompleteOnly(event.target.checked)} />
-              未完成のみ
-            </label>
-            <div className="page-frame">
-              {pageAssets[selectedPage - 1] ? (
-                <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
-              ) : (
-                <div className="page-placeholder">
-                  <strong>{currentPage ? `${currentPage.page}ページ` : "未生成"}</strong>
-                  <span>{currentPage?.theme ?? "ネーム生成後にプレビューできます"}</span>
-                </div>
-              )}
-            </div>
-            <div className="panel-list">
-              {visiblePanels.map((panel) => (
-                <article
-                  key={panel.panel_id}
-                  className={currentPanel?.panel_id === panel.panel_id ? "active-panel" : ""}
-                  onClick={() => setSelectedPanelId(panel.panel_id)}
-                >
-                  <strong>{panel.panel_id}</strong>
-                  <span>{panel.shot}</span>
-                  <small>{panel.generation.backend} / {panel.generation.status}</small>
-                </article>
-              ))}
-            </div>
-            </div>
-            {currentPanel && (
-              <div className="panel-editor">
-                <h2>選択中のコマ</h2>
-                <div className="panel-meta">
-                  <strong>{currentPanel.panel_id}</strong>
-                  <span>{currentPanel.generation.message || "生成メッセージなし"}</span>
-                  {currentPanel.generation.prompt_id && <small>prompt_id: {currentPanel.generation.prompt_id}</small>}
-                </div>
-                {selected && selected.manga_json.characters.length > 0 && (
-                  <fieldset className="panel-characters">
-                    <legend>登場キャラ</legend>
-                    {selected.manga_json.characters.map((character) => (
-                      <label key={character.id}>
-                        <input
-                          type="checkbox"
-                          checked={currentPanel.characters.includes(character.id)}
-                          onChange={() => toggleCurrentPanelCharacter(character.id)}
-                        />
-                        {character.display_name}
-                      </label>
-                    ))}
-                  </fieldset>
-                )}
-                {selected && (
-                  <div className="settings-grid">
-                    <label>
-                      ロケーション
-                      <select value={currentPanel.location_id} onChange={(event) => updateCurrentPanel((panel) => { panel.location_id = event.target.value; })}>
-                        <option value="">指定なし</option>
-                        {selected.manga_json.locations.map((location) => <option key={location.id} value={location.id}>{location.display_name}</option>)}
-                      </select>
-                    </label>
-                    <label>
-                      workflowプリセット
-                      <select value={currentPanel.generation.workflow_preset_id ?? ""} onChange={(event) => updateCurrentPanel((panel) => { panel.generation.workflow_preset_id = event.target.value || null; })}>
-                        <option value="">プロジェクト既定</option>
-                        {selected.manga_json.workflow_presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-                      </select>
-                    </label>
-                  </div>
-                )}
-                <details className="control-settings">
-                  <summary>Control参照</summary>
-                  <div className="control-grid">
-                    {(["pose", "depth", "lineart", "background"] as const).map((kind) => {
-                      const control = currentPanel.control_references.find((item) => item.kind === kind);
-                      return (
-                        <div key={kind}>
-                          <strong>{kind}</strong>
-                          <input
-                            placeholder="LoadImageノードID"
-                            value={control?.load_node_id ?? controlNodeDrafts[kind] ?? ""}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              if (control) updateCurrentPanel((panel) => { const item = panel.control_references.find((entry) => entry.id === control.id); if (item) item.load_node_id = value; });
-                              else setControlNodeDrafts((drafts) => ({ ...drafts, [kind]: value }));
-                            }}
-                          />
-                          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadControlImage(kind, file); }} />
-                          {control && <img src={assetUrl(control.asset)} alt={`${kind}参照`} />}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </details>
-                <label>
-                  positive prompt
-                  <textarea
-                    value={currentPanel.generation.prompt || currentPanel.prompt}
-                    onChange={(event) => updateCurrentPanel((panel) => {
-                      panel.generation.prompt = event.target.value;
-                    })}
-                    spellCheck={false}
-                  />
-                </label>
-                <label>
-                  negative prompt
-                  <input
-                    value={currentPanel.generation.negative_prompt}
-                    onChange={(event) => updateCurrentPanel((panel) => {
-                      panel.generation.negative_prompt = event.target.value;
-                    })}
-                  />
-                </label>
-                <details className="prompt-preview">
-                  <summary>実生成prompt</summary>
-                  <label>
-                    positive
-                    <textarea value={effectivePrompts.positive} readOnly spellCheck={false} />
-                  </label>
-                  <label>
-                    negative
-                    <textarea value={effectivePrompts.negative} readOnly spellCheck={false} />
-                  </label>
-                </details>
-                <label>
-                  seed
-                  <input
-                    type="number"
-                    value={currentPanel.generation.seed}
-                    onChange={(event) => updateCurrentPanel((panel) => {
-                      panel.generation.seed = Number(event.target.value);
-                    })}
-                  />
-                </label>
-                <div className="settings-grid">
-                  <label>
-                    生成幅
-                    <input
-                      type="number"
-                      min={64}
-                      max={4096}
-                      value={currentPanel.generation.width ?? ""}
-                      placeholder="workflow既定"
-                      onChange={(event) => updateCurrentPanel((panel) => {
-                        panel.generation.width = event.target.value ? Number(event.target.value) : null;
-                      })}
-                    />
-                  </label>
-                  <label>
-                    生成高さ
-                    <input
-                      type="number"
-                      min={64}
-                      max={4096}
-                      value={currentPanel.generation.height ?? ""}
-                      placeholder="workflow既定"
-                      onChange={(event) => updateCurrentPanel((panel) => {
-                        panel.generation.height = event.target.value ? Number(event.target.value) : null;
-                      })}
-                    />
-                  </label>
-                  <label>
-                    配置
-                    <select
-                      value={currentPanel.generation.fit_mode}
-                      onChange={(event) => updateCurrentPanel((panel) => {
-                        panel.generation.fit_mode = event.target.value as "cover" | "contain";
-                      })}
-                    >
-                      <option value="cover">cover</option>
-                      <option value="contain">contain</option>
-                    </select>
-                  </label>
-                  <label>
-                    crop基準
-                    <select
-                      value={currentPanel.generation.crop_anchor}
-                      onChange={(event) => updateCurrentPanel((panel) => {
-                        panel.generation.crop_anchor = event.target.value as "center" | "top" | "bottom" | "left" | "right";
-                      })}
-                    >
-                      <option value="center">center</option>
-                      <option value="top">top</option>
-                      <option value="bottom">bottom</option>
-                      <option value="left">left</option>
-                      <option value="right">right</option>
-                    </select>
-                    <span className="anchor-controls">
-                      {(["top", "left", "center", "right", "bottom"] as const).map((anchor) => (
-                        <button
-                          key={anchor}
-                          type="button"
-                          title={`crop ${anchor}`}
-                          className={currentPanel.generation.crop_anchor === anchor ? "active" : ""}
-                          onClick={() => updateCurrentPanel((panel) => { panel.generation.crop_anchor = anchor; })}
-                        >{anchor === "top" ? "↑" : anchor === "bottom" ? "↓" : anchor === "left" ? "←" : anchor === "right" ? "→" : "•"}</button>
+            {productionStatus && (
+              <section className={`production-band ${productionStatus.status}`}>
+                <strong>
+                  {productionStatus.status === "complete"
+                    ? "制作完了"
+                    : productionStatus.status === "ready"
+                      ? "レンダリング待ち"
+                      : "制作中"}
+                </strong>
+                <span>
+                  採用 {productionStatus.adopted_panels}/{productionStatus.total_panels}コマ
+                </span>
+                <span>
+                  ページ {productionStatus.rendered_pages}/{productionStatus.total_pages}
+                </span>
+                {productionStatus.blockers.length > 0 && (
+                  <details>
+                    <summary>未完了 {productionStatus.blockers.length}件</summary>
+                    <ul>
+                      {productionStatus.blockers.map((blocker) => (
+                        <li key={blocker}>{blocker}</li>
                       ))}
-                    </span>
-                  </label>
-                </div>
-                <div className="dialogue-editor">
-                  <h3>写植</h3>
+                    </ul>
+                  </details>
+                )}
+                {jobHistory.length > 0 && (
+                  <details className="job-history">
+                    <summary>生成履歴</summary>
+                    <ul>
+                      {jobHistory.slice(0, 10).map((job) => (
+                        <li key={job.id}>
+                          {job.panel_id}: {job.status} {job.progress}%
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </section>
+            )}
+
+            {selected && (
+              <details className="common-prompts">
+                <summary>共通プロンプト</summary>
+                <div className="common-prompt-grid">
                   <label>
-                    台詞
+                    全コマ共通positive
                     <textarea
-                      value={currentDialogue?.text ?? ""}
-                      onChange={(event) => updateCurrentDialogue((dialogue) => {
-                        dialogue.text = event.target.value;
-                      })}
+                      value={selected.manga_json.common_positive_prompt}
+                      onChange={(event) =>
+                        updateManga((manga) => {
+                          manga.common_positive_prompt = event.target.value;
+                        })
+                      }
+                      spellCheck={false}
                     />
                   </label>
-                  <div className="settings-grid">
-                    <label>
-                      x
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="1"
-                        value={currentDialogue?.box?.[0] ?? 0.48}
-                        onChange={(event) => updateDialogueBox(0, Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      y
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="1"
-                        value={currentDialogue?.box?.[1] ?? 0.06}
-                        onChange={(event) => updateDialogueBox(1, Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      幅
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0.05"
-                        max="1"
-                        value={currentDialogue?.box?.[2] ?? 0.46}
-                        onChange={(event) => updateDialogueBox(2, Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      高さ
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0.05"
-                        max="1"
-                        value={currentDialogue?.box?.[3] ?? 0.22}
-                        onChange={(event) => updateDialogueBox(3, Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      フォント
-                      <input
-                        type="number"
-                        min="10"
-                        max="72"
-                        value={currentDialogue?.font_size ?? 24}
-                        onChange={(event) => updateCurrentDialogue((dialogue) => {
-                          dialogue.font_size = Number(event.target.value);
-                        })}
-                      />
-                    </label>
-                    <label>
-                      最大行
-                      <input
-                        type="number"
-                        min="1"
-                        max="8"
-                        value={currentDialogue?.max_lines ?? 3}
-                        onChange={(event) => updateCurrentDialogue((dialogue) => {
-                          dialogue.max_lines = Number(event.target.value);
-                        })}
-                      />
-                    </label>
+                  <label>
+                    全コマ共通negative
+                    <textarea
+                      value={selected.manga_json.common_negative_prompt}
+                      onChange={(event) =>
+                        updateManga((manga) => {
+                          manga.common_negative_prompt = event.target.value;
+                        })
+                      }
+                      spellCheck={false}
+                    />
+                  </label>
+                  <div className="actions">
+                    <button onClick={applyAnimePreviewDefaults} disabled={busy}>
+                      Anima 3向け初期値
+                    </button>
+                    <button onClick={applyFourPageDraftSettings} disabled={busy}>
+                      4ページ仮設定
+                    </button>
                   </div>
                 </div>
-                {currentPanel.image_asset && (
-                  <div className="panel-visual-editor">
-                    <img className="panel-image" src={assetUrl(currentPanel.image_asset)} alt={`${currentPanel.panel_id}画像`} />
-                    {currentDialogue && (
-                      <div
-                        className="balloon-overlay"
-                        style={{
-                          left: `${(currentDialogue.box?.[0] ?? 0.48) * 100}%`,
-                          top: `${(currentDialogue.box?.[1] ?? 0.06) * 100}%`,
-                          width: `${(currentDialogue.box?.[2] ?? 0.46) * 100}%`,
-                          height: `${(currentDialogue.box?.[3] ?? 0.22) * 100}%`
-                        }}
-                        onPointerDown={(event) => startBalloonDrag(event, "move")}
-                        onPointerMove={moveBalloon}
-                        onPointerUp={() => { dragState.current = null; }}
-                      >
-                        <span>{currentDialogue.text}</span>
-                        <i onPointerDown={(event) => { event.stopPropagation(); startBalloonDrag(event, "resize"); }} />
-                      </div>
-                    )}
+              </details>
+            )}
+
+            {selected && (
+              <details className="advanced-settings">
+                <summary>生成環境・ロケーション</summary>
+                <section className="workflow-settings">
+                  <div className="section-heading">
+                    <h2>workflowプリセット</h2>
+                    <button onClick={addWorkflowPreset} disabled={busy}>
+                      追加
+                    </button>
                   </div>
-                )}
-                <div className="candidate-header">
-                  <h3>画像候補</h3>
                   <label>
-                    一度に生成
-                    <select value={candidateCount} onChange={(event) => setCandidateCount(Number(event.target.value))} disabled={busy}>
-                      {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}件</option>)}
+                    プロジェクト既定
+                    <select
+                      value={selected.manga_json.active_workflow_preset_id ?? ""}
+                      onChange={(event) =>
+                        updateManga((manga) => {
+                          manga.active_workflow_preset_id = event.target.value || null;
+                        })
+                      }
+                    >
+                      <option value="">workflow設定を維持</option>
+                      {selected.manga_json.workflow_presets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.name}
+                        </option>
+                      ))}
                     </select>
                   </label>
-                </div>
-                {currentPanel.image_candidates.length > 0 ? (
-                  <div className="candidate-gallery">
-                    {currentPanel.image_candidates.map((candidate) => (
-                      <article key={candidate.id} className={currentPanel.selected_candidate_id === candidate.id ? "selected-candidate" : ""}>
-                        <img src={assetUrl(candidate.asset)} alt={`seed ${candidate.seed}の候補`} />
-                        <div>
-                          <strong>seed {candidate.seed}</strong>
-                          <small>{candidate.backend} / {candidate.status}</small>
-                        </div>
-                        <details>
-                          <summary>生成条件</summary>
-                          <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
-                          {candidate.loras.map((lora) => <small key={`${candidate.id}-${lora.node_id}`}>LoRA {lora.node_id}: {lora.lora_name}</small>)}
-                          {candidate.reference_images.map((reference) => <small key={`${candidate.id}-${reference.node_id}`}>参照 {reference.node_id}: {reference.character_id}</small>)}
-                          <p>{candidate.prompt}</p>
-                          <p>{candidate.negative_prompt}</p>
-                        </details>
-                        <button
-                          onClick={() => void selectCandidate(candidate.id)}
-                          disabled={busy || currentPanel.selected_candidate_id === candidate.id}
-                        >
-                          {currentPanel.selected_candidate_id === candidate.id ? "採用中" : "採用"}
-                        </button>
+                  <div className="preset-list">
+                    {selected.manga_json.workflow_presets.map((preset) => (
+                      <article key={preset.id}>
+                        <label>
+                          名前
+                          <input
+                            value={preset.name}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.name = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          checkpointノード
+                          <input
+                            value={preset.checkpoint_node_id}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.checkpoint_node_id = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          checkpoint名
+                          <input
+                            value={preset.checkpoint_name}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.checkpoint_name = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          VAEノード
+                          <input
+                            value={preset.vae_node_id}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.vae_node_id = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          VAE名
+                          <input
+                            value={preset.vae_name}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.vae_name = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          samplerノード
+                          <input
+                            value={preset.sampler_node_id}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.sampler_node_id = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          sampler
+                          <input
+                            value={preset.sampler_name}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.sampler_name = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          scheduler
+                          <input
+                            value={preset.scheduler}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.scheduler = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          steps
+                          <input
+                            type="number"
+                            value={preset.steps ?? ""}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.steps = event.target.value ? Number(event.target.value) : null;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          CFG
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={preset.cfg ?? ""}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.cfg = event.target.value ? Number(event.target.value) : null;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          denoise
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0"
+                            max="1"
+                            value={preset.denoise ?? ""}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.denoise = event.target.value ? Number(event.target.value) : null;
+                              })
+                            }
+                          />
+                        </label>
                       </article>
                     ))}
                   </div>
-                ) : (
-                  <small className="empty-candidates">生成すると候補がここに保存されます</small>
-                )}
-                <div className="actions">
-                  <button onClick={generateCurrentPanelImage} disabled={busy}>画像生成</button>
-                  <button onClick={generateCurrentPanelImage} disabled={busy}>再生成</button>
-                  <button onClick={generateCurrentPageImages} disabled={busy}>ページ内全コマ生成</button>
-                  <button onClick={generateAllPageImages} disabled={busy}>全ページ生成</button>
-                  <button onClick={renderCurrentPanelPage} disabled={busy}>写植更新</button>
-                  <button onClick={renderCurrentPanelPage} disabled={busy}>ページ更新</button>
-                  <button onClick={useStubForCurrentPanel} disabled={busy}>stubへ戻す</button>
-                </div>
-              </div>
+                </section>
+                <section className="location-settings">
+                  <div className="section-heading">
+                    <h2>ロケーション</h2>
+                    <button onClick={addLocation} disabled={busy}>
+                      追加
+                    </button>
+                  </div>
+                  <div className="location-list">
+                    {selected.manga_json.locations.map((location) => (
+                      <article key={location.id}>
+                        <div className="character-title">
+                          <strong>{location.display_name}</strong>
+                          <small>{location.id}</small>
+                        </div>
+                        <label>
+                          表示名
+                          <input
+                            value={location.display_name}
+                            onChange={(event) =>
+                              updateLocation(location.id, (item) => {
+                                item.display_name = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          背景prompt
+                          <textarea
+                            value={location.prompt}
+                            onChange={(event) =>
+                              updateLocation(location.id, (item) => {
+                                item.prompt = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          negative
+                          <textarea
+                            value={location.negative_prompt}
+                            onChange={(event) =>
+                              updateLocation(location.id, (item) => {
+                                item.negative_prompt = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          LoadImageノード
+                          <input
+                            value={location.reference_load_node_id}
+                            onChange={(event) =>
+                              updateLocation(location.id, (item) => {
+                                item.reference_load_node_id = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          参照画像
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) void uploadLocationImage(location.id, file);
+                            }}
+                          />
+                        </label>
+                        {location.reference_image_asset && (
+                          <img
+                            className="reference-image"
+                            src={assetUrl(location.reference_image_asset)}
+                            alt={`${location.display_name}参照`}
+                          />
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </details>
             )}
-          </div>
-        </section>
-        <details className="json-pane">
-          <summary>Manga JSON</summary>
-          <textarea value={jsonText} onChange={(event) => setJsonText(event.target.value)} spellCheck={false} />
-        </details>
-        </>
+
+            {selected && (
+              <details className="character-profiles">
+                <summary>キャラクタープロファイル（{selected.manga_json.characters.length}人）</summary>
+                <div className="section-heading">
+                  <h2>キャラクター設定</h2>
+                  <button onClick={addCharacter} disabled={busy}>
+                    キャラ追加
+                  </button>
+                </div>
+                <div className="character-profile-list">
+                  {selected.manga_json.characters.map((character) => (
+                    <article key={character.id}>
+                      <div className="character-title">
+                        <strong>{character.display_name}</strong>
+                        <small>{character.id}</small>
+                      </div>
+                      <label>
+                        表示名
+                        <input
+                          value={character.display_name}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.display_name = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        trigger prompt
+                        <input
+                          value={character.trigger_prompt}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.trigger_prompt = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        外見タグ
+                        <textarea
+                          value={character.appearance_prompt}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.appearance_prompt = event.target.value;
+                            })
+                          }
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label>
+                        衣装タグ
+                        <textarea
+                          value={character.outfit_prompt}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.outfit_prompt = event.target.value;
+                            })
+                          }
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label>
+                        個別negative
+                        <input
+                          value={character.negative_prompt}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.negative_prompt = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        LoRAノードID
+                        <input
+                          value={character.lora_node_id}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.lora_node_id = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        LoRA名
+                        <input
+                          value={character.lora_name}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.lora_name = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        model強度
+                        <input
+                          type="number"
+                          step="0.05"
+                          min="-2"
+                          max="2"
+                          value={character.lora_strength_model}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.lora_strength_model = Number(event.target.value);
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        CLIP強度
+                        <input
+                          type="number"
+                          step="0.05"
+                          min="-2"
+                          max="2"
+                          value={character.lora_strength_clip}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.lora_strength_clip = Number(event.target.value);
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        参照画像ノードID
+                        <input
+                          value={character.reference_load_node_id}
+                          onChange={(event) =>
+                            updateCharacter(character.id, (item) => {
+                              item.reference_load_node_id = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        参照画像
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (file) void uploadReferenceImage(character.id, file);
+                          }}
+                        />
+                      </label>
+                      {character.reference_image_asset && (
+                        <img
+                          className="reference-image"
+                          src={assetUrl(character.reference_image_asset)}
+                          alt={`${character.display_name}参照画像`}
+                        />
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
+
+            <section className="content-grid">
+              <div className="preview">
+                <div className="page-workbench">
+                  <div className="tabs">
+                    {(selected?.manga_json.pages ?? []).map(({ page }) => (
+                      <button
+                        key={page}
+                        className={selectedPage === page ? "active" : ""}
+                        onClick={() => setSelectedPage(page)}
+                      >
+                        {page}p{" "}
+                        {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
+                          ? "完了"
+                          : ""}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="incomplete-filter">
+                    <input
+                      type="checkbox"
+                      checked={showIncompleteOnly}
+                      onChange={(event) => setShowIncompleteOnly(event.target.checked)}
+                    />
+                    未完成のみ
+                  </label>
+                  <div className="page-frame">
+                    {pageAssets[selectedPage - 1] ? (
+                      <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
+                    ) : (
+                      <div className="page-placeholder">
+                        <strong>{currentPage ? `${currentPage.page}ページ` : "未生成"}</strong>
+                        <span>{currentPage?.theme ?? "ネーム生成後にプレビューできます"}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="panel-list">
+                    {visiblePanels.map((panel) => (
+                      <button
+                        type="button"
+                        key={panel.panel_id}
+                        className={currentPanel?.panel_id === panel.panel_id ? "active-panel" : ""}
+                        onClick={() => setSelectedPanelId(panel.panel_id)}
+                      >
+                        <strong>{panel.panel_id}</strong>
+                        <span>{panel.shot}</span>
+                        <small>
+                          {panel.generation.backend} / {panel.generation.status}
+                        </small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {currentPanel && (
+                  <div className="panel-editor">
+                    <h2>選択中のコマ</h2>
+                    <div className="panel-meta">
+                      <strong>{currentPanel.panel_id}</strong>
+                      <span>{currentPanel.generation.message || "生成メッセージなし"}</span>
+                      {currentPanel.generation.prompt_id && (
+                        <small>prompt_id: {currentPanel.generation.prompt_id}</small>
+                      )}
+                    </div>
+                    {selected && selected.manga_json.characters.length > 0 && (
+                      <fieldset className="panel-characters">
+                        <legend>登場キャラ</legend>
+                        {selected.manga_json.characters.map((character) => (
+                          <label key={character.id}>
+                            <input
+                              type="checkbox"
+                              checked={currentPanel.characters.includes(character.id)}
+                              onChange={() => toggleCurrentPanelCharacter(character.id)}
+                            />
+                            {character.display_name}
+                          </label>
+                        ))}
+                      </fieldset>
+                    )}
+                    {selected && (
+                      <div className="settings-grid">
+                        <label>
+                          ロケーション
+                          <select
+                            value={currentPanel.location_id}
+                            onChange={(event) =>
+                              updateCurrentPanel((panel) => {
+                                panel.location_id = event.target.value;
+                              })
+                            }
+                          >
+                            <option value="">指定なし</option>
+                            {selected.manga_json.locations.map((location) => (
+                              <option key={location.id} value={location.id}>
+                                {location.display_name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          workflowプリセット
+                          <select
+                            value={currentPanel.generation.workflow_preset_id ?? ""}
+                            onChange={(event) =>
+                              updateCurrentPanel((panel) => {
+                                panel.generation.workflow_preset_id = event.target.value || null;
+                              })
+                            }
+                          >
+                            <option value="">プロジェクト既定</option>
+                            {selected.manga_json.workflow_presets.map((preset) => (
+                              <option key={preset.id} value={preset.id}>
+                                {preset.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
+                    <details className="control-settings">
+                      <summary>Control参照</summary>
+                      <div className="control-grid">
+                        {(["pose", "depth", "lineart", "background"] as const).map((kind) => {
+                          const control = currentPanel.control_references.find((item) => item.kind === kind);
+                          return (
+                            <div key={kind}>
+                              <strong>{kind}</strong>
+                              <input
+                                placeholder="LoadImageノードID"
+                                value={control?.load_node_id ?? controlNodeDrafts[kind] ?? ""}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  if (control)
+                                    updateCurrentPanel((panel) => {
+                                      const item = panel.control_references.find(
+                                        (entry) => entry.id === control.id
+                                      );
+                                      if (item) item.load_node_id = value;
+                                    });
+                                  else setControlNodeDrafts((drafts) => ({ ...drafts, [kind]: value }));
+                                }}
+                              />
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/webp"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0];
+                                  if (file) void uploadControlImage(kind, file);
+                                }}
+                              />
+                              {control && <img src={assetUrl(control.asset)} alt={`${kind}参照`} />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                    <label>
+                      positive prompt
+                      <textarea
+                        value={currentPanel.generation.prompt || currentPanel.prompt}
+                        onChange={(event) =>
+                          updateCurrentPanel((panel) => {
+                            panel.generation.prompt = event.target.value;
+                          })
+                        }
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label>
+                      negative prompt
+                      <input
+                        value={currentPanel.generation.negative_prompt}
+                        onChange={(event) =>
+                          updateCurrentPanel((panel) => {
+                            panel.generation.negative_prompt = event.target.value;
+                          })
+                        }
+                      />
+                    </label>
+                    <details className="prompt-preview">
+                      <summary>実生成prompt</summary>
+                      <label>
+                        positive
+                        <textarea value={effectivePrompts.positive} readOnly spellCheck={false} />
+                      </label>
+                      <label>
+                        negative
+                        <textarea value={effectivePrompts.negative} readOnly spellCheck={false} />
+                      </label>
+                    </details>
+                    <label>
+                      seed
+                      <input
+                        type="number"
+                        value={currentPanel.generation.seed}
+                        onChange={(event) =>
+                          updateCurrentPanel((panel) => {
+                            panel.generation.seed = Number(event.target.value);
+                          })
+                        }
+                      />
+                    </label>
+                    <div className="settings-grid">
+                      <label>
+                        生成幅
+                        <input
+                          type="number"
+                          min={64}
+                          max={4096}
+                          value={currentPanel.generation.width ?? ""}
+                          placeholder="workflow既定"
+                          onChange={(event) =>
+                            updateCurrentPanel((panel) => {
+                              panel.generation.width = event.target.value ? Number(event.target.value) : null;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        生成高さ
+                        <input
+                          type="number"
+                          min={64}
+                          max={4096}
+                          value={currentPanel.generation.height ?? ""}
+                          placeholder="workflow既定"
+                          onChange={(event) =>
+                            updateCurrentPanel((panel) => {
+                              panel.generation.height = event.target.value
+                                ? Number(event.target.value)
+                                : null;
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        配置
+                        <select
+                          value={currentPanel.generation.fit_mode}
+                          onChange={(event) =>
+                            updateCurrentPanel((panel) => {
+                              panel.generation.fit_mode = event.target.value as "cover" | "contain";
+                            })
+                          }
+                        >
+                          <option value="cover">cover</option>
+                          <option value="contain">contain</option>
+                        </select>
+                      </label>
+                      <label>
+                        crop基準
+                        <select
+                          value={currentPanel.generation.crop_anchor}
+                          onChange={(event) =>
+                            updateCurrentPanel((panel) => {
+                              panel.generation.crop_anchor = event.target.value as
+                                | "center"
+                                | "top"
+                                | "bottom"
+                                | "left"
+                                | "right";
+                            })
+                          }
+                        >
+                          <option value="center">center</option>
+                          <option value="top">top</option>
+                          <option value="bottom">bottom</option>
+                          <option value="left">left</option>
+                          <option value="right">right</option>
+                        </select>
+                        <span className="anchor-controls">
+                          {(["top", "left", "center", "right", "bottom"] as const).map((anchor) => (
+                            <button
+                              key={anchor}
+                              type="button"
+                              title={`crop ${anchor}`}
+                              className={currentPanel.generation.crop_anchor === anchor ? "active" : ""}
+                              onClick={() =>
+                                updateCurrentPanel((panel) => {
+                                  panel.generation.crop_anchor = anchor;
+                                })
+                              }
+                            >
+                              {anchor === "top"
+                                ? "↑"
+                                : anchor === "bottom"
+                                  ? "↓"
+                                  : anchor === "left"
+                                    ? "←"
+                                    : anchor === "right"
+                                      ? "→"
+                                      : "•"}
+                            </button>
+                          ))}
+                        </span>
+                      </label>
+                    </div>
+                    <div className="dialogue-editor">
+                      <h3>写植</h3>
+                      <label>
+                        台詞
+                        <textarea
+                          value={currentDialogue?.text ?? ""}
+                          onChange={(event) =>
+                            updateCurrentDialogue((dialogue) => {
+                              dialogue.text = event.target.value;
+                            })
+                          }
+                        />
+                      </label>
+                      <div className="settings-grid">
+                        <label>
+                          x
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="1"
+                            value={currentDialogue?.box?.[0] ?? 0.48}
+                            onChange={(event) => updateDialogueBox(0, Number(event.target.value))}
+                          />
+                        </label>
+                        <label>
+                          y
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="1"
+                            value={currentDialogue?.box?.[1] ?? 0.06}
+                            onChange={(event) => updateDialogueBox(1, Number(event.target.value))}
+                          />
+                        </label>
+                        <label>
+                          幅
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.05"
+                            max="1"
+                            value={currentDialogue?.box?.[2] ?? 0.46}
+                            onChange={(event) => updateDialogueBox(2, Number(event.target.value))}
+                          />
+                        </label>
+                        <label>
+                          高さ
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.05"
+                            max="1"
+                            value={currentDialogue?.box?.[3] ?? 0.22}
+                            onChange={(event) => updateDialogueBox(3, Number(event.target.value))}
+                          />
+                        </label>
+                        <label>
+                          フォント
+                          <input
+                            type="number"
+                            min="10"
+                            max="72"
+                            value={currentDialogue?.font_size ?? 24}
+                            onChange={(event) =>
+                              updateCurrentDialogue((dialogue) => {
+                                dialogue.font_size = Number(event.target.value);
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          最大行
+                          <input
+                            type="number"
+                            min="1"
+                            max="8"
+                            value={currentDialogue?.max_lines ?? 3}
+                            onChange={(event) =>
+                              updateCurrentDialogue((dialogue) => {
+                                dialogue.max_lines = Number(event.target.value);
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    {currentPanel.image_asset && (
+                      <div className="panel-visual-editor">
+                        <img
+                          className="panel-image"
+                          src={assetUrl(currentPanel.image_asset)}
+                          alt={`${currentPanel.panel_id}画像`}
+                        />
+                        {currentDialogue && (
+                          <div
+                            className="balloon-overlay"
+                            style={{
+                              left: `${(currentDialogue.box?.[0] ?? 0.48) * 100}%`,
+                              top: `${(currentDialogue.box?.[1] ?? 0.06) * 100}%`,
+                              width: `${(currentDialogue.box?.[2] ?? 0.46) * 100}%`,
+                              height: `${(currentDialogue.box?.[3] ?? 0.22) * 100}%`
+                            }}
+                            onPointerDown={(event) => startBalloonDrag(event, "move")}
+                            onPointerMove={moveBalloon}
+                            onPointerUp={() => {
+                              dragState.current = null;
+                            }}
+                          >
+                            <span>{currentDialogue.text}</span>
+                            <i
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                                startBalloonDrag(event, "resize");
+                              }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="candidate-header">
+                      <h3>画像候補</h3>
+                      <label>
+                        一度に生成
+                        <select
+                          value={candidateCount}
+                          onChange={(event) => setCandidateCount(Number(event.target.value))}
+                          disabled={busy}
+                        >
+                          {[1, 2, 3, 4].map((count) => (
+                            <option key={count} value={count}>
+                              {count}件
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    {currentPanel.image_candidates.length > 0 ? (
+                      <div className="candidate-gallery">
+                        {currentPanel.image_candidates.map((candidate) => (
+                          <article
+                            key={candidate.id}
+                            className={
+                              currentPanel.selected_candidate_id === candidate.id ? "selected-candidate" : ""
+                            }
+                          >
+                            <img src={assetUrl(candidate.asset)} alt={`seed ${candidate.seed}の候補`} />
+                            <div>
+                              <strong>seed {candidate.seed}</strong>
+                              <small>
+                                {candidate.backend} / {candidate.status}
+                              </small>
+                            </div>
+                            <details>
+                              <summary>生成条件</summary>
+                              <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
+                              {candidate.loras.map((lora) => (
+                                <small key={`${candidate.id}-${lora.node_id}`}>
+                                  LoRA {lora.node_id}: {lora.lora_name}
+                                </small>
+                              ))}
+                              {candidate.reference_images.map((reference) => (
+                                <small key={`${candidate.id}-${reference.node_id}`}>
+                                  参照 {reference.node_id}: {reference.character_id}
+                                </small>
+                              ))}
+                              <p>{candidate.prompt}</p>
+                              <p>{candidate.negative_prompt}</p>
+                            </details>
+                            <button
+                              onClick={() => void selectCandidate(candidate.id)}
+                              disabled={busy || currentPanel.selected_candidate_id === candidate.id}
+                            >
+                              {currentPanel.selected_candidate_id === candidate.id ? "採用中" : "採用"}
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <small className="empty-candidates">生成すると候補がここに保存されます</small>
+                    )}
+                    <div className="actions">
+                      <button onClick={generateCurrentPanelImage} disabled={busy}>
+                        画像生成
+                      </button>
+                      <button onClick={generateCurrentPanelImage} disabled={busy}>
+                        再生成
+                      </button>
+                      <button onClick={generateCurrentPageImages} disabled={busy}>
+                        ページ内全コマ生成
+                      </button>
+                      <button onClick={generateAllPageImages} disabled={busy}>
+                        全ページ生成
+                      </button>
+                      <button onClick={renderCurrentPanelPage} disabled={busy}>
+                        写植更新
+                      </button>
+                      <button onClick={renderCurrentPanelPage} disabled={busy}>
+                        ページ更新
+                      </button>
+                      <button onClick={useStubForCurrentPanel} disabled={busy}>
+                        stubへ戻す
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+            <details className="json-pane">
+              <summary>Manga JSON</summary>
+              <textarea
+                value={jsonText}
+                onChange={(event) => setJsonText(event.target.value)}
+                spellCheck={false}
+              />
+            </details>
+          </>
         )}
       </main>
       {newProjectOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setNewProjectOpen(false)}>
-          <form className="project-dialog" onSubmit={createProject} onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          role="button"
+          tabIndex={0}
+          aria-label="ダイアログを閉じる"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setNewProjectOpen(false);
+          }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setNewProjectOpen(false);
+          }}
+        >
+          <form
+            className="project-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-project-heading"
+            onSubmit={createProject}
+          >
             <div className="dialog-heading">
-              <h2>新しい本</h2>
-              <button type="button" className="icon-button" title="閉じる" onClick={() => setNewProjectOpen(false)}><X size={18} /></button>
+              <h2 id="new-project-heading">新しい本</h2>
+              <button
+                type="button"
+                className="icon-button"
+                title="閉じる"
+                onClick={() => setNewProjectOpen(false)}
+              >
+                <X size={18} />
+              </button>
             </div>
             <label>
               タイトル
-              <input autoFocus value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} maxLength={120} />
+              <input
+                value={newProjectTitle}
+                onChange={(event) => setNewProjectTitle(event.target.value)}
+                maxLength={120}
+              />
             </label>
             <div className="actions dialog-actions">
-              <button type="button" onClick={() => setNewProjectOpen(false)}>キャンセル</button>
-              <button className="primary" disabled={busy || !newProjectTitle.trim()}><Plus size={17} />作成</button>
+              <button type="button" onClick={() => setNewProjectOpen(false)}>
+                キャンセル
+              </button>
+              <button className="primary" disabled={busy || !newProjectTitle.trim()}>
+                <Plus size={17} />
+                作成
+              </button>
             </div>
           </form>
         </div>

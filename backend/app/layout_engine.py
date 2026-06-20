@@ -118,7 +118,7 @@ def build_page_layout(
 
     boxes: list[Box] = []
     y = margin
-    for cols, weight in zip(rows, weights):
+    for cols, weight in zip(rows, weights, strict=True):
         row_h = usable_h * (weight / total_weight)
         usable_w = 1.0 - 2 * margin - gutter * (cols - 1)
         col_w = usable_w / cols
@@ -218,7 +218,9 @@ def _alternate_family(family: str, panel_count: int) -> str:
     return alternatives.get(family, "dialogue")
 
 
-def derive_role(panel_index: int, panel_count: int, page_index: int, total_pages: int, has_dialogue: bool) -> str:
+def derive_role(
+    panel_index: int, panel_count: int, page_index: int, total_pages: int, has_dialogue: bool
+) -> str:
     """コマの役割を位置と台詞有無から推定する（構図メタデータ）。"""
     if panel_count == 1:
         return "reveal"
@@ -253,7 +255,7 @@ def relayout_page(
             page.layout_family or "", page_index, total_pages, panel_count, previous_family
         )
     boxes = build_page_layout(panel_count, chosen, settings, rtl=rtl)
-    for panel, box in zip(page.panels, boxes):
+    for panel, box in zip(page.panels, boxes, strict=True):
         panel.bbox = box
         width, height = compute_generation_size(box)
         panel.generation.width = width

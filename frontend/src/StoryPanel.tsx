@@ -84,7 +84,12 @@ export function StoryPanel({
   const [knowledgeWorkId, setKnowledgeWorkId] = useState("");
   const [targetPages, setTargetPages] = useState(4);
   const [instruction, setInstruction] = useState("");
-  const [drafts, setDrafts] = useState<Record<StageName, string>>({ brief: "", plot: "", pages: "", script: "" });
+  const [drafts, setDrafts] = useState<Record<StageName, string>>({
+    brief: "",
+    plot: "",
+    pages: "",
+    script: ""
+  });
   const [message, setMessage] = useState("ストーリー生成セッションを作成してください");
   const [busy, setBusy] = useState(false);
 
@@ -110,7 +115,9 @@ export function StoryPanel({
   }
 
   useEffect(() => {
-    void getJson<LlmStatus>("/api/llm/status").then(setLlm).catch(() => setLlm(null));
+    void getJson<LlmStatus>("/api/llm/status")
+      .then(setLlm)
+      .catch(() => setLlm(null));
     void getJson<LocalKnowledgeWork[]>("/api/knowledge/local-works")
       .then((works) => {
         setLocalWorks(works);
@@ -148,9 +155,11 @@ export function StoryPanel({
         instruction
       });
       syncDrafts(created);
-      setMessage(knowledgeWorkId
-        ? `「${created.work_name}」のローカル知識を同期してセッションを作成しました`
-        : "セッションを作成しました。企画から生成してください");
+      setMessage(
+        knowledgeWorkId
+          ? `「${created.work_name}」のローカル知識を同期してセッションを作成しました`
+          : "セッションを作成しました。企画から生成してください"
+      );
       await refreshSessions();
       if (knowledgeWorkId) onApplied();
     });
@@ -173,7 +182,9 @@ export function StoryPanel({
         { instruction: "" }
       );
       syncDrafts(next);
-      setMessage(next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`);
+      setMessage(
+        next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`
+      );
     });
   }
 
@@ -197,7 +208,10 @@ export function StoryPanel({
   async function approveStage(stage: StageName) {
     if (!session) return;
     await run(async () => {
-      const next = await sendJson<StorySession>(`/api/story-sessions/${session.id}/stages/${stage}/approve`, "POST");
+      const next = await sendJson<StorySession>(
+        `/api/story-sessions/${session.id}/stages/${stage}/approve`,
+        "POST"
+      );
       syncDrafts(next);
       setMessage(`${stage}を承認しました`);
     });
@@ -239,7 +253,10 @@ export function StoryPanel({
       <div className="panel-message">{message}</div>
       {llm && (
         <div className={`llm-band ${llm.connected ? "ok" : "ng"}`}>
-          <strong>LLM: {llm.provider}{llm.model ? ` / ${llm.model}` : ""}</strong>
+          <strong>
+            LLM: {llm.provider}
+            {llm.model ? ` / ${llm.model}` : ""}
+          </strong>
           <span>{llm.message}</span>
         </div>
       )}
@@ -268,10 +285,16 @@ export function StoryPanel({
           </label>
           <label>
             全体方針
-            <input value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="作りたい話の方向" />
+            <input
+              value={instruction}
+              onChange={(event) => setInstruction(event.target.value)}
+              placeholder="作りたい話の方向"
+            />
           </label>
         </div>
-        <button onClick={createSession} disabled={busy}>新規セッション</button>
+        <button onClick={createSession} disabled={busy}>
+          新規セッション
+        </button>
         {sessions.length > 0 && (
           <select
             value={session?.id ?? ""}
@@ -280,7 +303,8 @@ export function StoryPanel({
             <option value="">既存セッションを選択</option>
             {sessions.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.target_pages}p / {item.instruction || "方針なし"} / {new Date(item.updated_at).toLocaleString()}
+                {item.target_pages}p / {item.instruction || "方針なし"} /{" "}
+                {new Date(item.updated_at).toLocaleString()}
               </option>
             ))}
           </select>
@@ -313,13 +337,18 @@ export function StoryPanel({
                     spellCheck={false}
                     rows={10}
                   />
-                  <button onClick={() => void saveStage(name)} disabled={busy}>保存</button>
+                  <button onClick={() => void saveStage(name)} disabled={busy}>
+                    保存
+                  </button>
                 </details>
                 <div className="actions">
                   <button onClick={() => void generateStage(name)} disabled={busy || !canGenerate[name]}>
                     {stage.status === "empty" ? "生成" : "再生成"}
                   </button>
-                  <button onClick={() => void approveStage(name)} disabled={busy || !stage.data || stage.status === "approved"}>
+                  <button
+                    onClick={() => void approveStage(name)}
+                    disabled={busy || !stage.data || stage.status === "approved"}
+                  >
                     承認
                   </button>
                 </div>
@@ -347,7 +376,9 @@ export function StoryPanel({
               <strong>{revision.label}</strong>
               <small>{new Date(revision.created_at).toLocaleString()}</small>
             </div>
-            <button onClick={() => void restoreRevision(revision.id)} disabled={busy}>復元</button>
+            <button onClick={() => void restoreRevision(revision.id)} disabled={busy}>
+              復元
+            </button>
           </article>
         ))}
       </div>
@@ -362,7 +393,9 @@ function StageSummary({ name, data }: { name: StageName; data: Record<string, un
       <div className="stage-summary">
         <p>{String(data.synopsis ?? "")}</p>
         <small>トーン: {String(data.tone ?? "")}</small>
-        <small>キャラ: {(data.characters as { name: string }[] | undefined)?.map((c) => c.name).join("、")}</small>
+        <small>
+          キャラ: {(data.characters as { name: string }[] | undefined)?.map((c) => c.name).join("、")}
+        </small>
       </div>
     );
   }
@@ -381,7 +414,9 @@ function StageSummary({ name, data }: { name: StageName; data: Record<string, un
     return (
       <div className="stage-summary">
         {pages.map((page) => (
-          <small key={page.page}>{page.page}p: {page.purpose}</small>
+          <small key={page.page}>
+            {page.page}p: {page.purpose}
+          </small>
         ))}
       </div>
     );
@@ -390,7 +425,9 @@ function StageSummary({ name, data }: { name: StageName; data: Record<string, un
   return (
     <div className="stage-summary">
       {pages.map((page) => (
-        <small key={page.page}>{page.page}p: {page.panels.length}コマ</small>
+        <small key={page.page}>
+          {page.page}p: {page.panels.length}コマ
+        </small>
       ))}
     </div>
   );

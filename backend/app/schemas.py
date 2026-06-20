@@ -5,7 +5,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 # 旧balloon値から新しい吹き出し種別への対応表。
 BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
 BalloonKind = Literal["oval", "cloud", "burst", "caption", "none"]
@@ -58,7 +57,9 @@ class Dialogue(BaseModel):
 
     @field_validator("box")
     @classmethod
-    def validate_box(cls, value: tuple[float, float, float, float] | None) -> tuple[float, float, float, float] | None:
+    def validate_box(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
         if value is None:
             return value
         left, top, width, height = value
@@ -163,7 +164,9 @@ class GenerationInfo(BaseModel):
     focal_y: float | None = Field(default=None, ge=0.0, le=1.0)
     text_policy: Literal["no_text"] = "no_text"
     model_notes: str = ""
-    status: Literal["pending", "running", "queued", "done", "fallback", "skipped", "error"] = "pending"
+    status: Literal["pending", "running", "queued", "done", "fallback", "skipped", "error"] = (
+        "pending"
+    )
     message: str = ""
     loras: list[LoRABinding] = Field(default_factory=list)
     reference_images: list[ReferenceImageBinding] = Field(default_factory=list)
@@ -218,7 +221,9 @@ class Panel(BaseModel):
 
     @field_validator("bbox")
     @classmethod
-    def validate_bbox(cls, value: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    def validate_bbox(
+        cls, value: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
         left, top, width, height = value
         if min(value) < 0 or left + width > 1 or top + height > 1:
             raise ValueError("bboxは0から1の範囲に収めてください")
@@ -256,7 +261,9 @@ class OverlayElement(BaseModel):
 
     @field_validator("box")
     @classmethod
-    def validate_box(cls, value: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    def validate_box(
+        cls, value: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
         left, top, width, height = value
         if width <= 0 or height <= 0:
             raise ValueError("overlayのboxは正の幅・高さにしてください")
@@ -554,6 +561,7 @@ class OpenExportFolderResponse(BaseModel):
 
 # --- LLM ---
 
+
 class LLMStatusResponse(BaseModel):
     provider: str
     base_url: str
@@ -645,6 +653,7 @@ class KnowledgeSearchResponse(BaseModel):
 
 
 # --- 段階生成のステージデータ ---
+
 
 class BriefCharacter(BaseModel):
     model_config = ConfigDict(extra="ignore")

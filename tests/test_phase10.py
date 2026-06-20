@@ -31,7 +31,9 @@ def make_client(tmp_path: Path) -> TestClient:
 
 
 def create_generated_project(client: TestClient) -> str:
-    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()["id"]
+    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
+        "id"
+    ]
     client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
@@ -91,7 +93,9 @@ def test_preflight_flags_dialogue_overflow_as_warning() -> None:
         title="overflow",
         pages=[
             Page(
-                page=1, theme="t", layout_template="one",
+                page=1,
+                theme="t",
+                layout_template="one",
                 panels=[
                     Panel(
                         panel_id="p01_01",
@@ -114,7 +118,9 @@ def test_preflight_tail_out_of_range_and_insert_characters() -> None:
         title="warn",
         pages=[
             Page(
-                page=1, theme="t", layout_template="one",
+                page=1,
+                theme="t",
+                layout_template="one",
                 panels=[
                     Panel(
                         panel_id="p01_01",
@@ -122,7 +128,9 @@ def test_preflight_tail_out_of_range_and_insert_characters() -> None:
                         shot="t",
                         subject_mode="prop_insert",
                         characters=["hero"],
-                        dialogue=[Dialogue(speaker="a", text="やあ", tail=BalloonTail(tip=(1.15, 0.5)))],
+                        dialogue=[
+                            Dialogue(speaker="a", text="やあ", tail=BalloonTail(tip=(1.15, 0.5)))
+                        ],
                     )
                 ],
             )
@@ -132,7 +140,11 @@ def test_preflight_tail_out_of_range_and_insert_characters() -> None:
     codes = {issue.code for issue in issues}
     assert "tail_out_of_range" in codes
     assert "insert_panel_has_characters" in codes
-    assert all(issue.level == "warning" for issue in issues if issue.code in {"tail_out_of_range", "insert_panel_has_characters"})
+    assert all(
+        issue.level == "warning"
+        for issue in issues
+        if issue.code in {"tail_out_of_range", "insert_panel_has_characters"}
+    )
 
 
 def test_preflight_reading_order_reversal_and_overlay_occlusion() -> None:
@@ -157,8 +169,13 @@ def test_preflight_layout_repetition() -> None:
     for page_number in range(1, 4):
         pages.append(
             Page(
-                page=page_number, theme="t", layout_template="grid", layout_family="dialogue",
-                panels=[Panel(panel_id=f"p{page_number:02d}_01", bbox=(0.05, 0.05, 0.9, 0.9), shot="t")],
+                page=page_number,
+                theme="t",
+                layout_template="grid",
+                layout_family="dialogue",
+                panels=[
+                    Panel(panel_id=f"p{page_number:02d}_01", bbox=(0.05, 0.05, 0.9, 0.9), shot="t")
+                ],
             )
         )
     manga = MangaProject(title="rep", pages=pages)

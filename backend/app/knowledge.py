@@ -114,7 +114,9 @@ def sync_local_work(session: Session, work: LocalKnowledgeWork) -> list[Knowledg
         try:
             content = document.path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise LocalKnowledgeError(f"知識ファイルを読み込めません: {document.path.name}") from exc
+            raise LocalKnowledgeError(
+                f"知識ファイルを読み込めません: {document.path.name}"
+            ) from exc
         imported.append(
             import_source(
                 session,
@@ -217,7 +219,9 @@ def chunk_markdown(content: str, default_title: str) -> list[ChunkData]:
     return chunks
 
 
-def chunk_txt(content: str, default_title: str, chunk_chars: int = TXT_CHUNK_CHARS) -> list[ChunkData]:
+def chunk_txt(
+    content: str, default_title: str, chunk_chars: int = TXT_CHUNK_CHARS
+) -> list[ChunkData]:
     text_content = content.strip()
     if not text_content:
         return []
@@ -279,7 +283,12 @@ def insert_fts(session: Session, record: KnowledgeChunkRecord) -> None:
             "INSERT INTO knowledge_chunks_fts (chunk_id, title, content, tags) "
             "VALUES (:chunk_id, :title, :content, :tags)"
         ),
-        {"chunk_id": record.id, "title": record.title, "content": record.content, "tags": record.tags},
+        {
+            "chunk_id": record.id,
+            "title": record.title,
+            "content": record.content,
+            "tags": record.tags,
+        },
     )
 
 
@@ -289,7 +298,9 @@ def delete_source(session: Session, source_id: str) -> bool:
         return False
     chunk_ids = [
         row[0]
-        for row in session.query(KnowledgeChunkRecord.id).filter(KnowledgeChunkRecord.source_id == source_id).all()
+        for row in session.query(KnowledgeChunkRecord.id)
+        .filter(KnowledgeChunkRecord.source_id == source_id)
+        .all()
     ]
     if database.FTS5_AVAILABLE and chunk_ids:
         session.execute(
@@ -317,8 +328,14 @@ def get_character_chunks(session: Session, work_name: str) -> list[KnowledgeChun
         return []
     chunks = (
         session.query(KnowledgeChunkRecord)
-        .filter(KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.kind == "character")
-        .order_by(KnowledgeChunkRecord.usage, KnowledgeChunkRecord.source_id, KnowledgeChunkRecord.position)
+        .filter(
+            KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.kind == "character"
+        )
+        .order_by(
+            KnowledgeChunkRecord.usage,
+            KnowledgeChunkRecord.source_id,
+            KnowledgeChunkRecord.position,
+        )
         .all()
     )
     # required(usage昇順で先頭)を優先しつつ、同名キャラの重複は最初の1件に絞る。
@@ -348,7 +365,9 @@ def parse_chunk_image(chunk: KnowledgeChunkRecord) -> dict:
 def get_required_chunks(session: Session, work_name: str) -> list[KnowledgeChunkRecord]:
     return (
         session.query(KnowledgeChunkRecord)
-        .filter(KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.usage == "required")
+        .filter(
+            KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.usage == "required"
+        )
         .order_by(KnowledgeChunkRecord.source_id, KnowledgeChunkRecord.position)
         .all()
     )
@@ -393,7 +412,9 @@ def search_chunks(
                 return results
 
     # 短い語やtrigramで拾えない語をLIKEで補完する。
-    like_query = session.query(KnowledgeChunkRecord).filter(KnowledgeChunkRecord.work_name == work_name)
+    like_query = session.query(KnowledgeChunkRecord).filter(
+        KnowledgeChunkRecord.work_name == work_name
+    )
     if usage:
         like_query = like_query.filter(KnowledgeChunkRecord.usage == usage)
     pattern = f"%{escape_like(query)}%"
@@ -402,11 +423,15 @@ def search_chunks(
         | KnowledgeChunkRecord.title.like(pattern, escape="\\")
         | KnowledgeChunkRecord.tags.like(pattern, escape="\\")
     )
-    for record in like_query.order_by(KnowledgeChunkRecord.source_id, KnowledgeChunkRecord.position).limit(limit * 4):
+    for record in like_query.order_by(
+        KnowledgeChunkRecord.source_id, KnowledgeChunkRecord.position
+    ).limit(limit * 4):
         if record.id in seen:
             continue
         seen.add(record.id)
-        score = float(record.content.count(query) + record.title.count(query) + record.tags.count(query))
+        score = float(
+            record.content.count(query) + record.title.count(query) + record.tags.count(query)
+        )
         results.append((record, score, "like"))
         if len(results) >= limit:
             break

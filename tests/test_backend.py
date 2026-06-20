@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
-import asyncio
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -14,7 +14,11 @@ import backend.app.main as main_module
 from backend.app.config import Settings
 from backend.app.database import create_session_factory
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
-from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_workflow, apply_reference_images_to_workflow
+from backend.app.image_backends import (
+    ComfyUIWorkflowConfig,
+    apply_panel_to_workflow,
+    apply_reference_images_to_workflow,
+)
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
@@ -22,7 +26,9 @@ from backend.app.renderer import fit_image_to_box, sanitize_export_filename
 from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
 
 
-def make_client(tmp_path: Path, image_backend: str = "stub", workflow_path: Path | None = None) -> TestClient:
+def make_client(
+    tmp_path: Path, image_backend: str = "stub", workflow_path: Path | None = None
+) -> TestClient:
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         export_dir=tmp_path / "exports",
@@ -94,7 +100,12 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
         assert cbz_path.name.endswith(".cbz")
         assert Path(response.json()["absolute_path"]) == cbz_path.resolve()
         with ZipFile(cbz_path) as archive:
-            assert archive.namelist() == ["page_001.png", "page_002.png", "page_003.png", "page_004.png"]
+            assert archive.namelist() == [
+                "page_001.png",
+                "page_002.png",
+                "page_003.png",
+                "page_004.png",
+            ]
         assert response.json()["warnings"] == []
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["status"] == "complete"
@@ -116,7 +127,7 @@ def test_open_export_folder_selects_cbz(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_export_filename_is_safe_for_windows() -> None:
-    assert sanitize_export_filename(' 本:第1話/「始まり」? ') == "本_第1話_「始まり」_"
+    assert sanitize_export_filename(" 本:第1話/「始まり」? ") == "本_第1話_「始まり」_"
     assert sanitize_export_filename(" . ") == "名称未設定"
 
 
@@ -138,7 +149,11 @@ def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
         project_id = response.json()["id"]
         response = client.put(
             f"/api/projects/{project_id}/manga-json",
-            json={"title": "不正", "target_pages": 4, "pages": [{"page": 1, "theme": "x", "layout_template": "x", "panels": []}]},
+            json={
+                "title": "不正",
+                "target_pages": 4,
+                "pages": [{"page": 1, "theme": "x", "layout_template": "x", "panels": []}],
+            },
         )
         assert response.status_code == 422
 
@@ -151,10 +166,15 @@ def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
         bbox=(0.0, 0.0, 1.0, 1.0),
         shot="テスト",
         prompt="元prompt",
-        generation=GenerationInfo(prompt="差し替えprompt", negative_prompt="bad", seed=42, width=960, height=540),
+        generation=GenerationInfo(
+            prompt="差し替えprompt", negative_prompt="bad", seed=42, width=960, height=540
+        ),
     )
     patched = apply_panel_to_workflow(workflow, config, panel, "prefix/test")
-    assert patched["6"]["inputs"]["text"] == "差し替えprompt, no text, no speech bubble, no watermark, no manga panel text"
+    assert (
+        patched["6"]["inputs"]["text"]
+        == "差し替えprompt, no text, no speech bubble, no watermark, no manga panel text"
+    )
     assert patched["7"]["inputs"]["text"] == "bad"
     assert patched["3"]["inputs"]["seed"] == 42
     assert patched["5"]["inputs"]["width"] == 960
@@ -188,7 +208,10 @@ def test_workflow_json_applies_character_lora(tmp_path: Path) -> None:
 
 def test_workflow_preset_patches_model_and_sampler(tmp_path: Path) -> None:
     workflow = sample_workflow()
-    workflow["40"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "old.safetensors"}}
+    workflow["40"] = {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "old.safetensors"},
+    }
     workflow["41"] = {"class_type": "VAELoader", "inputs": {"vae_name": "old.vae"}}
     panel = Panel(
         panel_id="p01_01",
@@ -267,7 +290,9 @@ def test_comfyui_status_reports_missing_workflow(tmp_path: Path) -> None:
 def test_mock_comfyui_generates_single_panel_image(tmp_path: Path, monkeypatch) -> None:
     workflow_path = tmp_path / "workflow_api.json"
     workflow_path.write_text(json.dumps(sample_workflow()), encoding="utf-8")
-    monkeypatch.setattr("backend.app.image_backends.httpx.AsyncClient", lambda *args, **kwargs: MockComfyUIClient())
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient", lambda *args, **kwargs: MockComfyUIClient()
+    )
 
     with make_client(tmp_path, image_backend="comfyui", workflow_path=workflow_path) as client:
         project_id = create_generated_project(client)
@@ -280,7 +305,7 @@ def test_mock_comfyui_generates_single_panel_image(tmp_path: Path, monkeypatch) 
         first_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
         assert first_panel["generation"]["status"] == "done"
         assert first_panel["generation"]["prompt_id"] == "prompt-1"
-        assert (tmp_path / first_panel["image_asset"]).exists()
+        assert (tmp_path / "exports" / first_panel["image_asset"]).exists()
 
 
 def test_single_panel_stub_endpoint_updates_panel(tmp_path: Path) -> None:
@@ -400,7 +425,10 @@ def test_character_profiles_are_composed_without_duplicates() -> None:
         }
     )
     positive, negative = compose_panel_prompts(manga, manga.pages[0].panels[0])
-    assert positive == "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling"
+    assert (
+        positive
+        == "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling"
+    )
     assert negative == "low quality, text, different hairstyle, bad hands"
 
 
@@ -435,7 +463,14 @@ def test_character_adapters_are_prepared_for_panel() -> None:
                     "page": 1,
                     "theme": "test",
                     "layout_template": "one",
-                    "panels": [{"panel_id": "p01_01", "bbox": [0, 0, 1, 1], "shot": "test", "characters": ["hero"]}],
+                    "panels": [
+                        {
+                            "panel_id": "p01_01",
+                            "bbox": [0, 0, 1, 1],
+                            "shot": "test",
+                            "characters": ["hero"],
+                        }
+                    ],
                 }
             ],
         }
@@ -473,7 +508,12 @@ def test_location_and_control_references_are_prepared() -> None:
                             "shot": "test",
                             "location_id": "room",
                             "control_references": [
-                                {"id": "pose", "kind": "pose", "asset": "exports/project/pose.png", "load_node_id": "51"}
+                                {
+                                    "id": "pose",
+                                    "kind": "pose",
+                                    "asset": "exports/project/pose.png",
+                                    "load_node_id": "51",
+                                }
                             ],
                         }
                     ],
@@ -487,7 +527,10 @@ def test_location_and_control_references_are_prepared() -> None:
     assert "consistent room" in positive
     assert "changing room" in negative
     assert prepared.generation.workflow_preset.id == "anime"
-    assert [(item.node_id, item.kind) for item in prepared.generation.reference_images] == [("50", "location"), ("51", "pose")]
+    assert [(item.node_id, item.kind) for item in prepared.generation.reference_images] == [
+        ("50", "location"),
+        ("51", "pose"),
+    ]
 
 
 def test_reference_image_is_uploaded_and_patched(tmp_path: Path) -> None:
@@ -507,7 +550,9 @@ def test_reference_image_is_uploaded_and_patched(tmp_path: Path) -> None:
 
     class UploadClient:
         async def post(self, url: str, files: dict, data: dict) -> httpx.Response:
-            return response(url, {"name": "hero.png", "subfolder": data["subfolder"], "type": "input"})
+            return response(
+                url, {"name": "hero.png", "subfolder": data["subfolder"], "type": "input"}
+            )
 
     asyncio.run(
         apply_reference_images_to_workflow(
@@ -530,8 +575,52 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         asset = response.json()["asset"]
-        assert Path(asset).exists()
+        assert (tmp_path / "exports" / asset).exists()
         assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
+
+
+def test_asset_api_rejects_path_traversal(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        response = client.get("/api/assets/../test.db")
+        assert response.status_code == 404
+
+
+def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        page = manga["pages"][0]
+        page["overlay_elements"] = [
+            {
+                "id": "hero unsafe",
+                "source_panel_id": page["panels"][0]["panel_id"],
+                "box": [0.2, 0.2, 0.4, 0.5],
+            }
+        ]
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        image = Image.new("RGBA", (32, 32), (255, 0, 0, 128))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/pages/1/overlays/hero%20unsafe/asset",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        assert response.status_code == 200
+        asset = response.json()["asset"]
+        assert " " not in asset
+        assert (tmp_path / "exports" / asset).is_file()
+
+        manga = response.json()["manga_json"]
+        manga["pages"][0]["reading_order"] = ["unknown-panel"]
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        preflight_response = client.post(f"/api/projects/{project_id}/preflight")
+        assert preflight_response.status_code == 200
+        assert any(
+            issue["code"] == "invalid_reading_order"
+            for issue in preflight_response.json()["errors"]
+        )
 
 
 def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:

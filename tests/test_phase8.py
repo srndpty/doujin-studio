@@ -13,7 +13,6 @@ from backend.app.renderer import fit_image_to_box, render_project_page
 from backend.app.schemas import (
     BalloonTail,
     Dialogue,
-    GenerationInfo,
     MangaProject,
     Page,
     Panel,
@@ -24,10 +23,19 @@ from backend.app.schemas import (
 def test_balloon_values_are_migrated_from_old_schema() -> None:
     dialogue = Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "round"})
     assert dialogue.balloon == "oval"
-    assert Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "thought"}).balloon == "cloud"
-    assert Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "shout"}).balloon == "burst"
+    assert (
+        Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "thought"}).balloon
+        == "cloud"
+    )
+    assert (
+        Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "shout"}).balloon
+        == "burst"
+    )
     # 新しい値はそのまま通る。
-    assert Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "caption"}).balloon == "caption"
+    assert (
+        Dialogue.model_validate({"speaker": "a", "text": "x", "balloon": "caption"}).balloon
+        == "caption"
+    )
 
 
 def test_generation_size_matches_aspect_and_snaps_to_64() -> None:
@@ -114,8 +122,12 @@ def test_crop_pan_zoom_is_deterministic_and_differs_from_default() -> None:
         for y in range(100):
             source.putpixel((x, y), (x % 256, y % 256, 100))
     plain = fit_image_to_box(source, (80, 80), "cover", "center")
-    zoomed_a = fit_image_to_box(source, (80, 80), "cover", "center", scale=2.0, offset_x=0.5, offset_y=-0.3)
-    zoomed_b = fit_image_to_box(source, (80, 80), "cover", "center", scale=2.0, offset_x=0.5, offset_y=-0.3)
+    zoomed_a = fit_image_to_box(
+        source, (80, 80), "cover", "center", scale=2.0, offset_x=0.5, offset_y=-0.3
+    )
+    zoomed_b = fit_image_to_box(
+        source, (80, 80), "cover", "center", scale=2.0, offset_x=0.5, offset_y=-0.3
+    )
     assert zoomed_a.size == (80, 80)
     assert zoomed_a.tobytes() == zoomed_b.tobytes()  # 再現性
     assert zoomed_a.tobytes() != plain.tobytes()  # ズームで変化

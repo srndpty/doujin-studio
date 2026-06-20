@@ -35,7 +35,9 @@ class Settings:
             knowledge_dir=Path(os.getenv("KNOWLEDGE_DIR", "data/knowledge")),
             image_backend=os.getenv("IMAGE_BACKEND", "stub"),
             comfyui_base_url=os.getenv("COMFYUI_BASE_URL", "http://127.0.0.1:8188"),
-            comfyui_workflow_path=Path(os.getenv("COMFYUI_WORKFLOW_PATH", "workflows/default.workflow_api.json")),
+            comfyui_workflow_path=Path(
+                os.getenv("COMFYUI_WORKFLOW_PATH", "workflows/default.workflow_api.json")
+            ),
             comfyui_timeout_seconds=float(os.getenv("COMFYUI_TIMEOUT_SECONDS", "120")),
             comfyui_positive_node_id=os.getenv("COMFYUI_POSITIVE_NODE_ID", "6"),
             comfyui_negative_node_id=os.getenv("COMFYUI_NEGATIVE_NODE_ID", "7"),

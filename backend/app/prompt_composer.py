@@ -77,7 +77,11 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
     preset_id = panel.generation.workflow_preset_id or manga.active_workflow_preset_id
     prepared.generation.workflow_preset_id = preset_id
     prepared.generation.workflow_preset = next(
-        (preset.model_copy(deep=True) for preset in manga.workflow_presets if preset.id == preset_id),
+        (
+            preset.model_copy(deep=True)
+            for preset in manga.workflow_presets
+            if preset.id == preset_id
+        ),
         None,
     )
     if is_non_character_mode(panel):
@@ -94,7 +98,9 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
         for control in panel.control_references:
             if control.asset and control.load_node_id:
                 prepared.generation.reference_images.append(
-                    ReferenceImageBinding(node_id=control.load_node_id, asset=control.asset, kind=control.kind)
+                    ReferenceImageBinding(
+                        node_id=control.load_node_id, asset=control.asset, kind=control.kind
+                    )
                 )
         return prepared
     for character_id in panel.characters:

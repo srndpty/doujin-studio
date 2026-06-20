@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import math
 
-from .schemas import Character, Dialogue, GenerationInfo, LocationProfile, MangaProject, Page, Panel, Sfx, WorkflowPreset
+from .schemas import (
+    Character,
+    Dialogue,
+    GenerationInfo,
+    LocationProfile,
+    MangaProject,
+    Page,
+    Panel,
+    Sfx,
+    WorkflowPreset,
+)
 
 # 1ページの描画サイズ（rendererと一致させる）。
 PAGE_SIZE = (1200, 1700)
@@ -105,10 +115,34 @@ def generate_four_page_name(
             "establishing shot, after school room, soft daylight, calm mood",
             (1024, 640, "cover", "center"),
             [
-                ("状況提示のロングショット", "少し高い視点", [character_a, character_b], f"{situation}。二人が並んで状況を確認している。", [(character_a, "これ、思ったより大ごとじゃない？")]),
-                ("バストアップ", "正面", [character_b], "相方が妙に自信ありげに話す。", [(character_b, "大丈夫。段取りは完璧だから。")]),
-                ("顔アップ", "寄り", [character_a], "主役が不安そうに目を細める。", [(character_a, "その言い方が一番こわいんだけど。")]),
-                ("二人のリアクション", "水平", [character_a, character_b], "小さな違和感に気づく。", []),
+                (
+                    "状況提示のロングショット",
+                    "少し高い視点",
+                    [character_a, character_b],
+                    f"{situation}。二人が並んで状況を確認している。",
+                    [(character_a, "これ、思ったより大ごとじゃない？")],
+                ),
+                (
+                    "バストアップ",
+                    "正面",
+                    [character_b],
+                    "相方が妙に自信ありげに話す。",
+                    [(character_b, "大丈夫。段取りは完璧だから。")],
+                ),
+                (
+                    "顔アップ",
+                    "寄り",
+                    [character_a],
+                    "主役が不安そうに目を細める。",
+                    [(character_a, "その言い方が一番こわいんだけど。")],
+                ),
+                (
+                    "二人のリアクション",
+                    "水平",
+                    [character_a, character_b],
+                    "小さな違和感に気づく。",
+                    [],
+                ),
             ],
         ),
         (
@@ -118,10 +152,34 @@ def generate_four_page_name(
             "two character conversation, expressive faces, medium shot, clean background",
             (896, 640, "cover", "center"),
             [
-                ("会話コマ", "左寄り", [character_a], "主役が確認する。", [(character_a, "念のため聞くけど、何を準備したの？")]),
-                ("会話コマ", "右寄り", [character_b], "相方がさらっと答える。", [(character_b, "勢いで乗り切るための勢い。")]),
-                ("沈黙コマ", "固定", [character_a, character_b], "二人の間に長い沈黙が落ちる。", []),
-                ("ツッコミ", "寄り", [character_a, character_b], "主役が一気にツッコむ。", [(character_a, "それ準備って言わない！")]),
+                (
+                    "会話コマ",
+                    "左寄り",
+                    [character_a],
+                    "主役が確認する。",
+                    [(character_a, "念のため聞くけど、何を準備したの？")],
+                ),
+                (
+                    "会話コマ",
+                    "右寄り",
+                    [character_b],
+                    "相方がさらっと答える。",
+                    [(character_b, "勢いで乗り切るための勢い。")],
+                ),
+                (
+                    "沈黙コマ",
+                    "固定",
+                    [character_a, character_b],
+                    "二人の間に長い沈黙が落ちる。",
+                    [],
+                ),
+                (
+                    "ツッコミ",
+                    "寄り",
+                    [character_a, character_b],
+                    "主役が一気にツッコむ。",
+                    [(character_a, "それ準備って言わない！")],
+                ),
             ],
         ),
         (
@@ -131,9 +189,27 @@ def generate_four_page_name(
             "dynamic reaction, comedic timing, energetic pose, manga composition",
             (896, 672, "cover", "top"),
             [
-                ("動きのあるコマ", "斜め", [character_a, character_b], "二人が慌てて立て直す。", [(character_b, "でも、今なら逆にいけるかも。")]),
-                ("顔アップ", "寄り", [character_a], "主役が意図に気づく。", [(character_a, "逆にって何をどう逆に？")]),
-                ("大きめリアクション", "低め", [character_a, character_b], "場の空気が少しだけ好転する。", [(character_b, "ほら、結果的に注目された。")]),
+                (
+                    "動きのあるコマ",
+                    "斜め",
+                    [character_a, character_b],
+                    "二人が慌てて立て直す。",
+                    [(character_b, "でも、今なら逆にいけるかも。")],
+                ),
+                (
+                    "顔アップ",
+                    "寄り",
+                    [character_a],
+                    "主役が意図に気づく。",
+                    [(character_a, "逆にって何をどう逆に？")],
+                ),
+                (
+                    "大きめリアクション",
+                    "低め",
+                    [character_a, character_b],
+                    "場の空気が少しだけ好転する。",
+                    [(character_b, "ほら、結果的に注目された。")],
+                ),
             ],
         ),
         (
@@ -143,9 +219,27 @@ def generate_four_page_name(
             "punchline scene, comedic contrast, clear silhouettes, final panel emphasis",
             (1024, 768, "cover", "center"),
             [
-                ("確認", "正面", [character_a], "主役が最後の確認をする。", [(character_a, "つまり成功ってことでいいの？")]),
-                ("自信満々", "正面", [character_b], "相方が胸を張る。", [(character_b, "もちろん。予定通りだよ。")]),
-                ("オチの大ゴマ", "引き", [character_a, character_b], f"{ending_direction}。二人の温度差で締める。", [(character_a, "絶対いま予定って言葉を作ったでしょ。")]),
+                (
+                    "確認",
+                    "正面",
+                    [character_a],
+                    "主役が最後の確認をする。",
+                    [(character_a, "つまり成功ってことでいいの？")],
+                ),
+                (
+                    "自信満々",
+                    "正面",
+                    [character_b],
+                    "相方が胸を張る。",
+                    [(character_b, "もちろん。予定通りだよ。")],
+                ),
+                (
+                    "オチの大ゴマ",
+                    "引き",
+                    [character_a, character_b],
+                    f"{ending_direction}。二人の温度差で締める。",
+                    [(character_a, "絶対いま予定って言葉を作ったでしょ。")],
+                ),
             ],
         ),
     ]
@@ -167,7 +261,9 @@ def generate_four_page_name(
             ]
             panel_bbox = LAYOUTS[template_id][index - 1]
             gen_w, gen_h = compute_generation_size(panel_bbox)
-            subject_mode = "reaction" if ("リアクション" in shot or "沈黙" in shot) else "character_scene"
+            subject_mode = (
+                "reaction" if ("リアクション" in shot or "沈黙" in shot) else "character_scene"
+            )
             page_panels.append(
                 Panel(
                     panel_id=panel_id,
@@ -193,7 +289,9 @@ def generate_four_page_name(
                     ),
                 )
             )
-        pages.append(Page(page=page_number, theme=theme, layout_template=template_id, panels=page_panels))
+        pages.append(
+            Page(page=page_number, theme=theme, layout_template=template_id, panels=page_panels)
+        )
 
     manga = MangaProject(
         title=title,
@@ -231,7 +329,9 @@ def expand_pages(manga: MangaProject, target_pages: int) -> None:
         for index, panel in enumerate(page.panels, start=1):
             panel.panel_id = f"p{page_number:02d}_{index:02d}"
             panel.generation.seed = page_number * 100 + index
-            panel.generation.prompt = f"story continuation, page {page_number}, {panel.generation.prompt}"
+            panel.generation.prompt = (
+                f"story continuation, page {page_number}, {panel.generation.prompt}"
+            )
             panel.image_asset = None
             panel.image_candidates = []
             panel.selected_candidate_id = None

@@ -12,9 +12,20 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import ValidationError
 from PIL import Image
+from pydantic import ValidationError
 
+from . import fonts as font_registry
+from . import knowledge as knowledge_db
+from . import layout_engine
+from . import preflight as preflight_module
+from . import story as story_module
+from .assets import (
+    normalize_manga_assets,
+    path_to_asset_id,
+    resolve_asset_path,
+    safe_component,
+)
 from .config import Settings
 from .database import (
     KnowledgeChunkRecord,
@@ -26,23 +37,17 @@ from .database import (
     now_utc,
 )
 from .generator import generate_four_page_name
-from . import fonts as font_registry
-from . import knowledge as knowledge_db
-from . import layout_engine
-from . import preflight as preflight_module
-from . import story as story_module
-from .llm import build_llm_client, get_llm_status
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
-from .jobs import GenerationJob, JobManager, TERMINAL_JOB_STATUSES
+from .jobs import TERMINAL_JOB_STATUSES, GenerationJob, JobManager
+from .llm import build_llm_client, get_llm_status
 from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
-    ExportResponse,
     BatchGenerationJobCreate,
     BatchGenerationJobResponse,
     CharacterReferenceResponse,
-    ReferenceAssetResponse,
     ComfyUIStatusResponse,
+    ExportResponse,
     FontInfo,
     FontsResponse,
     GenerateNameRequest,
@@ -53,8 +58,6 @@ from .schemas import (
     KnowledgeDocumentRequest,
     KnowledgeImportRequest,
     KnowledgeImportResponse,
-    LocalKnowledgeSyncResponse,
-    LocalKnowledgeWorkResponse,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
@@ -62,21 +65,24 @@ from .schemas import (
     LayoutSuggestRequest,
     LayoutSuggestResponse,
     LLMStatusResponse,
+    LocalKnowledgeSyncResponse,
+    LocalKnowledgeWorkResponse,
     MangaProject,
+    OpenExportFolderResponse,
+    PageProductionStatus,
     PageRenderResponse,
+    PanelControlReference,
+    PanelImageGenerationResponse,
+    PanelPageRenderResponse,
     PreflightIssue,
     PreflightResponse,
-    OpenExportFolderResponse,
-    PanelImageGenerationResponse,
-    PanelControlReference,
-    PanelPageRenderResponse,
-    PromptPreviewResponse,
-    PageProductionStatus,
-    ProjectProductionStatus,
     ProjectCreate,
     ProjectDetail,
+    ProjectProductionStatus,
     ProjectRevisionResponse,
     ProjectSummary,
+    PromptPreviewResponse,
+    ReferenceAssetResponse,
     RenderRequest,
     RenderResponse,
     StageGenerateRequest,
@@ -130,6 +136,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fonts=fonts,
         )
 
+    @app.get("/api/fonts/dialogue/file")
+    def get_dialogue_font() -> FileResponse:
+        path = font_registry.find_dialogue_font_path()
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="写植用フォントが見つかりません")
+        return FileResponse(path, media_type="font/ttf", filename=path.name)
+
     @app.get("/api/comfyui/status", response_model=ComfyUIStatusResponse)
     async def comfyui_status(request: Request) -> ComfyUIStatusResponse:
         status = await get_comfyui_status(request.app.state.settings)
@@ -138,7 +151,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/projects", response_model=ProjectDetail)
     def create_project(payload: ProjectCreate, request: Request) -> ProjectDetail:
         project_id = str(uuid.uuid4())
-        manga = MangaProject(title=payload.title, work_name=payload.work_name, target_pages=payload.target_pages)
+        manga = MangaProject(
+            title=payload.title, work_name=payload.work_name, target_pages=payload.target_pages
+        )
         record = ProjectRecord(
             id=project_id,
             title=payload.title,
@@ -151,7 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.add(record)
             session.commit()
             session.refresh(record)
-        return to_detail(record)
+        return to_detail(record, request.app.state.settings.export_dir)
 
     @app.get("/api/projects", response_model=list[ProjectSummary])
     def list_projects(request: Request) -> list[ProjectSummary]:
@@ -162,10 +177,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/projects/{project_id}", response_model=ProjectDetail)
     def get_project(project_id: str, request: Request) -> ProjectDetail:
         record = load_project_record(request, project_id)
-        return to_detail(record)
+        return to_detail(record, request.app.state.settings.export_dir)
 
     @app.post("/api/projects/{project_id}/generate-name", response_model=ProjectDetail)
-    def generate_name(project_id: str, payload: GenerateNameRequest, request: Request) -> ProjectDetail:
+    def generate_name(
+        project_id: str, payload: GenerateNameRequest, request: Request
+    ) -> ProjectDetail:
         record = load_project_record(request, project_id)
         manga = generate_four_page_name(
             title=record.title,
@@ -188,7 +205,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return to_detail(record)
 
     @app.put("/api/projects/{project_id}/manga-json", response_model=ProjectDetail)
-    def update_manga_json(project_id: str, payload: MangaProject, request: Request) -> ProjectDetail:
+    def update_manga_json(
+        project_id: str, payload: MangaProject, request: Request
+    ) -> ProjectDetail:
+        normalize_manga_assets(payload, request.app.state.settings.export_dir)
         for page in payload.pages:
             page.render_status = "pending"
             page.rendered_at = None
@@ -202,7 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             record.updated_at = now_utc()
             session.commit()
             session.refresh(record)
-        return to_detail(record)
+        return to_detail(record, request.app.state.settings.export_dir)
 
     @app.post("/api/projects/{project_id}/render", response_model=RenderResponse)
     async def render_project(
@@ -235,7 +255,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             warnings=warnings,
         )
 
-    @app.post("/api/projects/{project_id}/panels/{panel_id}/generate-image", response_model=PanelImageGenerationResponse)
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/generate-image",
+        response_model=PanelImageGenerationResponse,
+    )
     async def generate_panel_image(
         project_id: str,
         panel_id: str,
@@ -250,13 +273,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await backend.generate_panel(project_id, prepared, settings.export_dir)
         register_generation_candidate(panel, prepared, result)
         save_manga_json(request, project_id, manga)
-        return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
+        return PanelImageGenerationResponse(
+            project_id=project_id, panel_id=panel_id, manga_json=manga
+        )
 
     @app.get(
         "/api/projects/{project_id}/panels/{panel_id}/prompt-preview",
         response_model=PromptPreviewResponse,
     )
-    def preview_panel_prompt(project_id: str, panel_id: str, request: Request) -> PromptPreviewResponse:
+    def preview_panel_prompt(
+        project_id: str, panel_id: str, request: Request
+    ) -> PromptPreviewResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         panel = find_panel(manga, panel_id)
@@ -302,7 +329,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manager.start(job, run_generation_job(request.app, job))
         return to_job_response(job)
 
-    @app.post("/api/projects/{project_id}/generation-jobs", response_model=BatchGenerationJobResponse)
+    @app.post(
+        "/api/projects/{project_id}/generation-jobs", response_model=BatchGenerationJobResponse
+    )
     async def create_batch_generation_jobs(
         project_id: str,
         request: Request,
@@ -345,7 +374,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = get_job_or_404(request, job_id)
         return to_job_response(job)
 
-    @app.get("/api/projects/{project_id}/generation-jobs", response_model=list[GenerationJobResponse])
+    @app.get(
+        "/api/projects/{project_id}/generation-jobs", response_model=list[GenerationJobResponse]
+    )
     def list_generation_jobs(project_id: str, request: Request) -> list[GenerationJobResponse]:
         load_project_record(request, project_id)
         manager: JobManager = request.app.state.job_manager
@@ -396,7 +427,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         apply_candidate_selection(panel, candidate)
         settings = request.app.state.settings
         page_number = find_panel_page_number(manga, panel_id)
-        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page_asset, warnings = render_project_page(
+            project_id, manga, page_number, settings.export_dir
+        )
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
@@ -409,7 +442,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             warnings=warnings,
         )
 
-    @app.post("/api/projects/{project_id}/panels/{panel_id}/use-stub", response_model=PanelImageGenerationResponse)
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/use-stub",
+        response_model=PanelImageGenerationResponse,
+    )
     async def use_stub_panel_image(
         project_id: str,
         panel_id: str,
@@ -422,7 +458,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await StubImageBackend().generate_panel(project_id, panel, settings.export_dir)
         register_generation_candidate(panel, panel, result)
         save_manga_json(request, project_id, manga)
-        return PanelImageGenerationResponse(project_id=project_id, panel_id=panel_id, manga_json=manga)
+        return PanelImageGenerationResponse(
+            project_id=project_id, panel_id=panel_id, manga_json=manga
+        )
 
     @app.post(
         "/api/projects/{project_id}/characters/{character_id}/reference-image",
@@ -438,13 +476,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         character = next((item for item in manga.characters if item.id == character_id), None)
         if character is None:
             raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
-        target = request.app.state.settings.export_dir / project_id / "references" / f"{character_id}.png"
+        target = (
+            request.app.state.settings.export_dir
+            / safe_component(project_id, "project")
+            / "references"
+            / f"{safe_component(character_id, 'character')}.png"
+        )
         await save_request_image(request, target)
-        character.reference_image_asset = str(target)
+        asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
+        character.reference_image_asset = asset_id
         save_manga_json(request, project_id, manga)
         return CharacterReferenceResponse(
             character_id=character_id,
-            asset=str(target),
+            asset=asset_id,
             manga_json=manga,
         )
 
@@ -462,11 +506,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         location = next((item for item in manga.locations if item.id == location_id), None)
         if location is None:
             raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
-        target = request.app.state.settings.export_dir / project_id / "locations" / f"{location_id}.png"
+        target = (
+            request.app.state.settings.export_dir
+            / safe_component(project_id, "project")
+            / "locations"
+            / f"{safe_component(location_id, 'location')}.png"
+        )
         await save_request_image(request, target)
-        location.reference_image_asset = str(target)
+        asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
+        location.reference_image_asset = asset_id
         save_manga_json(request, project_id, manga)
-        return ReferenceAssetResponse(target_id=location_id, asset=str(target), manga_json=manga)
+        return ReferenceAssetResponse(target_id=location_id, asset=asset_id, manga_json=manga)
 
     @app.post(
         "/api/projects/{project_id}/panels/{panel_id}/controls/{kind}/reference-image",
@@ -484,21 +534,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         panel = find_panel(manga, panel_id)
-        target = request.app.state.settings.export_dir / project_id / "controls" / panel_id / f"{kind}.png"
+        target = (
+            request.app.state.settings.export_dir
+            / safe_component(project_id, "project")
+            / "controls"
+            / safe_component(panel_id, "panel")
+            / f"{kind}.png"
+        )
         await save_request_image(request, target)
+        asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         existing = next((item for item in panel.control_references if item.kind == kind), None)
         if existing:
-            existing.asset = str(target)
+            existing.asset = asset_id
             existing.load_node_id = load_node_id
             target_id = existing.id
         else:
             control = PanelControlReference(
-                id=str(uuid.uuid4()), kind=kind, asset=str(target), load_node_id=load_node_id
+                id=str(uuid.uuid4()), kind=kind, asset=asset_id, load_node_id=load_node_id
             )
             panel.control_references.append(control)
             target_id = control.id
         save_manga_json(request, project_id, manga)
-        return ReferenceAssetResponse(target_id=target_id, asset=str(target), manga_json=manga)
+        return ReferenceAssetResponse(target_id=target_id, asset=asset_id, manga_json=manga)
+
+    @app.post(
+        "/api/projects/{project_id}/pages/{page_number}/overlays/{overlay_id}/{asset_kind}",
+        response_model=ReferenceAssetResponse,
+    )
+    async def upload_overlay_asset(
+        project_id: str,
+        page_number: int,
+        overlay_id: str,
+        asset_kind: str,
+        request: Request,
+    ) -> ReferenceAssetResponse:
+        if asset_kind not in {"asset", "mask"}:
+            raise HTTPException(status_code=422, detail="overlayアセット種別が不正です")
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        page = next((item for item in manga.pages if item.page == page_number), None)
+        if page is None:
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        overlay = next((item for item in page.overlay_elements if item.id == overlay_id), None)
+        if overlay is None:
+            raise HTTPException(status_code=404, detail="overlayが見つかりません")
+        suffix = "mask" if asset_kind == "mask" else "image"
+        target = (
+            request.app.state.settings.export_dir
+            / safe_component(project_id, "project")
+            / "overlays"
+            / f"{safe_component(overlay_id, 'overlay')}-{suffix}.png"
+        )
+        await save_request_image(request, target)
+        asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
+        if asset_kind == "mask":
+            overlay.mask_asset = asset_id
+        else:
+            overlay.asset = asset_id
+        save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(target_id=overlay_id, asset=asset_id, manga_json=manga)
 
     @app.post(
         "/api/projects/{project_id}/pages/{page_number}/layout/suggest",
@@ -538,31 +632,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/projects/{project_id}/pages/{page_number}/preflight",
         response_model=PreflightResponse,
     )
-    def preflight_page_endpoint(project_id: str, page_number: int, request: Request) -> PreflightResponse:
+    def preflight_page_endpoint(
+        project_id: str, page_number: int, request: Request
+    ) -> PreflightResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         page = next((item for item in manga.pages if item.page == page_number), None)
         if page is None:
             raise HTTPException(status_code=404, detail="ページが見つかりません")
-        issues = preflight_module.preflight_page(manga, page)
+        issues = preflight_module.preflight_page(
+            manga, page, export_dir=request.app.state.settings.export_dir
+        )
         return _to_preflight_response(project_id, page_number, issues)
+
+    @app.post("/api/projects/{project_id}/preflight", response_model=PreflightResponse)
+    def preflight_project_endpoint(project_id: str, request: Request) -> PreflightResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        issues = preflight_module.preflight_project(manga, request.app.state.settings.export_dir)
+        return _to_preflight_response(project_id, None, issues)
 
     @app.post(
         "/api/projects/{project_id}/pages/{page_number}/render",
         response_model=PageRenderResponse,
     )
-    def render_page_endpoint(project_id: str, page_number: int, request: Request) -> PageRenderResponse:
+    def render_page_endpoint(
+        project_id: str, page_number: int, request: Request
+    ) -> PageRenderResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         page = next((item for item in manga.pages if item.page == page_number), None)
         if page is None:
             raise HTTPException(status_code=404, detail="ページが見つかりません")
         settings = request.app.state.settings
-        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page_asset, warnings = render_project_page(
+            project_id, manga, page_number, settings.export_dir
+        )
         page.render_status = "done"
         page.rendered_at = now_utc()
         save_manga_json(request, project_id, manga)
-        issues = preflight_module.preflight_page(manga, page)
+        issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
         return PageRenderResponse(
             project_id=project_id,
             page=page_number,
@@ -572,13 +681,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             preflight=_to_preflight_response(project_id, page_number, issues),
         )
 
-    @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
-    def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:
+    @app.post(
+        "/api/projects/{project_id}/panels/{panel_id}/render-page",
+        response_model=PanelPageRenderResponse,
+    )
+    def render_panel_page(
+        project_id: str, panel_id: str, request: Request
+    ) -> PanelPageRenderResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         page_number = find_panel_page_number(manga, panel_id)
         settings = request.app.state.settings
-        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page_asset, warnings = render_project_page(
+            project_id, manga, page_number, settings.export_dir
+        )
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
@@ -599,13 +715,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = build_production_status(project_id, manga)
         # 重大エラー（台詞のはみ出し等）があればCBZ出力を停止する。
         preflight_errors = [
-            issue for issue in preflight_module.preflight_project(manga) if issue.level == "error"
+            issue
+            for issue in preflight_module.preflight_project(manga, settings.export_dir)
+            if issue.level == "error"
         ]
         if preflight_errors:
             raise HTTPException(
                 status_code=422,
                 detail="プリフライトで重大エラーが見つかりました: "
-                + "; ".join(f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]),
+                + "; ".join(
+                    f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
+                ),
             )
         page_assets, render_warnings = render_project_pages(project_id, manga, settings.export_dir)
         for page in manga.pages:
@@ -617,7 +737,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
             absolute_path=str(cbz_path.resolve()),
-            warnings=[blocker for blocker in status.blockers if "採用画像" in blocker] + render_warnings,
+            warnings=[blocker for blocker in status.blockers if "採用画像" in blocker]
+            + render_warnings,
         )
 
     @app.post(
@@ -632,7 +753,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="出力フォルダが不正です")
         project_dir.mkdir(parents=True, exist_ok=True)
         cbz_files = list(project_dir.glob("*.cbz"))
-        cbz_path = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+        cbz_path = (
+            max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+        )
         open_in_file_manager(cbz_path)
         return OpenExportFolderResponse(
             project_id=project_id,
@@ -692,7 +815,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/knowledge/sources/import", response_model=KnowledgeImportResponse)
-    def import_knowledge_sources(payload: KnowledgeImportRequest, request: Request) -> KnowledgeImportResponse:
+    def import_knowledge_sources(
+        payload: KnowledgeImportRequest, request: Request
+    ) -> KnowledgeImportResponse:
         sources: list[KnowledgeSourceResponse] = []
         with request.app.state.SessionLocal() as session:
             for file in payload.files:
@@ -709,7 +834,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return KnowledgeImportResponse(sources=sources)
 
     @app.post("/api/knowledge/documents", response_model=KnowledgeSourceResponse)
-    def add_knowledge_document(payload: KnowledgeDocumentRequest, request: Request) -> KnowledgeSourceResponse:
+    def add_knowledge_document(
+        payload: KnowledgeDocumentRequest, request: Request
+    ) -> KnowledgeSourceResponse:
         with request.app.state.SessionLocal() as session:
             record = knowledge_db.import_source(
                 session,
@@ -722,9 +849,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return to_knowledge_source(record)
 
     @app.get("/api/knowledge/sources", response_model=list[KnowledgeSourceResponse])
-    def list_knowledge_sources(request: Request, work_name: str | None = None) -> list[KnowledgeSourceResponse]:
+    def list_knowledge_sources(
+        request: Request, work_name: str | None = None
+    ) -> list[KnowledgeSourceResponse]:
         with request.app.state.SessionLocal() as session:
-            return [to_knowledge_source(record) for record in knowledge_db.list_sources(session, work_name)]
+            return [
+                to_knowledge_source(record)
+                for record in knowledge_db.list_sources(session, work_name)
+            ]
 
     @app.delete("/api/knowledge/sources/{source_id}")
     def delete_knowledge_source(source_id: str, request: Request) -> dict[str, bool]:
@@ -734,7 +866,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/knowledge/search", response_model=KnowledgeSearchResponse)
-    def search_knowledge(payload: KnowledgeSearchRequest, request: Request) -> KnowledgeSearchResponse:
+    def search_knowledge(
+        payload: KnowledgeSearchRequest, request: Request
+    ) -> KnowledgeSearchResponse:
         with request.app.state.SessionLocal() as session:
             hits = knowledge_db.search_chunks(
                 session,
@@ -753,7 +887,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- ストーリー生成セッション ---
 
     @app.post("/api/projects/{project_id}/story-sessions", response_model=StorySessionResponse)
-    def create_story_session(project_id: str, payload: StorySessionCreate, request: Request) -> StorySessionResponse:
+    def create_story_session(
+        project_id: str, payload: StorySessionCreate, request: Request
+    ) -> StorySessionResponse:
         record = load_project_record(request, project_id)
         work_name = payload.work_name or record.work_name
         with request.app.state.SessionLocal() as session:
@@ -803,7 +939,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
             return story_module.session_to_response(record)
 
-    @app.post("/api/story-sessions/{session_id}/stages/{stage}/generate", response_model=StorySessionResponse)
+    @app.post(
+        "/api/story-sessions/{session_id}/stages/{stage}/generate",
+        response_model=StorySessionResponse,
+    )
     async def generate_story_stage(
         session_id: str,
         stage: str,
@@ -838,7 +977,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
             return story_module.session_to_response(record)
 
-    @app.post("/api/story-sessions/{session_id}/stages/{stage}/approve", response_model=StorySessionResponse)
+    @app.post(
+        "/api/story-sessions/{session_id}/stages/{stage}/approve",
+        response_model=StorySessionResponse,
+    )
     def approve_story_stage(session_id: str, stage: str, request: Request) -> StorySessionResponse:
         with request.app.state.SessionLocal() as session:
             record = session.get(StoryGenerationSessionRecord, session_id)
@@ -864,7 +1006,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except StoryError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
             session.refresh(project)
-            return to_detail(project)
+            return to_detail(project, request.app.state.settings.export_dir)
 
     @app.get("/api/projects/{project_id}/revisions", response_model=list[ProjectRevisionResponse])
     def list_project_revisions(project_id: str, request: Request) -> list[ProjectRevisionResponse]:
@@ -878,13 +1020,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             return [
                 ProjectRevisionResponse(
-                    id=record.id, project_id=record.project_id, label=record.label, created_at=record.created_at
+                    id=record.id,
+                    project_id=record.project_id,
+                    label=record.label,
+                    created_at=record.created_at,
                 )
                 for record in records
             ]
 
-    @app.post("/api/projects/{project_id}/revisions/{revision_id}/restore", response_model=ProjectDetail)
-    def restore_project_revision(project_id: str, revision_id: str, request: Request) -> ProjectDetail:
+    @app.post(
+        "/api/projects/{project_id}/revisions/{revision_id}/restore", response_model=ProjectDetail
+    )
+    def restore_project_revision(
+        project_id: str, revision_id: str, request: Request
+    ) -> ProjectDetail:
         with request.app.state.SessionLocal() as session:
             project = session.get(ProjectRecord, project_id)
             if project is None:
@@ -894,13 +1043,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="リビジョンが見つかりません")
             story_module.restore_revision(session, project, revision)
             session.refresh(project)
-            return to_detail(project)
+            return to_detail(project, request.app.state.settings.export_dir)
 
     @app.get("/api/assets/{asset_id:path}")
     def get_asset(asset_id: str, request: Request) -> FileResponse:
-        export_root = request.app.state.settings.export_dir.resolve()
-        target = (export_root / asset_id).resolve()
-        if not str(target).startswith(str(export_root)) or not target.exists():
+        try:
+            target = resolve_asset_path(asset_id, request.app.state.settings.export_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="アセットが見つかりません") from exc
+        if not target.is_file():
             raise HTTPException(status_code=404, detail="アセットが見つかりません")
         return FileResponse(target)
 
@@ -915,7 +1066,9 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
             await execute_generation_job(app, job)
     except CancelledError:
         if manager.shutting_down:
-            manager.update(job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します")
+            manager.update(
+                job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します"
+            )
             raise
         mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         if job.status != "cancelled":
@@ -946,16 +1099,22 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 / f"{candidate_id}.png"
             )
 
-            async def report_progress(current: int, total: int, node: str | None, message: str) -> None:
+            async def report_progress(
+                current: int,
+                total: int,
+                node: str | None,
+                message: str,
+                candidate_number: int = candidate_index,
+            ) -> None:
                 fraction = current / max(total, 1)
-                overall = round(((candidate_index + fraction) / job.candidate_count) * 100)
+                overall = round(((candidate_number + fraction) / job.candidate_count) * 100)
                 manager.update(
                     job,
                     progress=max(0, min(overall, 99)),
                     current=current,
                     total=total,
                     node=node,
-                    message=f"候補 {candidate_index + 1}/{job.candidate_count}: {message}",
+                    message=f"候補 {candidate_number + 1}/{job.candidate_count}: {message}",
                 )
 
             result = await backend.generate_panel(
@@ -993,10 +1152,14 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 message=f"候補 {candidate_index + 1}/{job.candidate_count} を保存しました",
             )
 
-        manager.update(job, status="done", progress=100, node=None, message="画像候補の生成が完了しました")
+        manager.update(
+            job, status="done", progress=100, node=None, message="画像候補の生成が完了しました"
+        )
     except CancelledError:
         if manager.shutting_down:
-            manager.update(job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します")
+            manager.update(
+                job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します"
+            )
             raise
         mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         if job.status != "cancelled":
@@ -1004,7 +1167,9 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
         raise
     except Exception as exc:
         mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
-        manager.update(job, status="error", node=None, message=f"画像候補の生成に失敗しました: {exc}")
+        manager.update(
+            job, status="error", node=None, message=f"画像候補の生成に失敗しました: {exc}"
+        )
 
 
 def load_manga_for_app(app: FastAPI, project_id: str) -> MangaProject:
@@ -1012,10 +1177,12 @@ def load_manga_for_app(app: FastAPI, project_id: str) -> MangaProject:
         record = session.get(ProjectRecord, project_id)
         if record is None:
             raise RuntimeError("プロジェクトが見つかりません")
-        return parse_manga_json(record.manga_json)
+        manga = parse_manga_json(record.manga_json)
+        return normalize_manga_assets(manga, app.state.settings.export_dir)
 
 
 def save_manga_json_for_app(app: FastAPI, project_id: str, manga: MangaProject) -> None:
+    normalize_manga_assets(manga, app.state.settings.export_dir)
     with app.state.SessionLocal() as session:
         record = session.get(ProjectRecord, project_id)
         if record is None:
@@ -1025,7 +1192,9 @@ def save_manga_json_for_app(app: FastAPI, project_id: str, manga: MangaProject) 
         session.commit()
 
 
-def mark_panel_job_stopped(app: FastAPI, job: GenerationJob, message: str, error: bool = False) -> None:
+def mark_panel_job_stopped(
+    app: FastAPI, job: GenerationJob, message: str, error: bool = False
+) -> None:
     try:
         manga = load_manga_for_app(app, job.project_id)
         panel = find_panel(manga, job.panel_id)
@@ -1084,7 +1253,9 @@ def build_production_status(project_id: str, manga: MangaProject) -> ProjectProd
             1
             for panel in page.panels
             if panel.selected_candidate_id
-            and any(candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates)
+            and any(
+                candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates
+            )
         )
         rendered = page.render_status == "done"
         blockers: list[str] = []
@@ -1137,6 +1308,10 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         if record is None:
             raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         session.expunge(record)
+        manga = parse_manga_json(record.manga_json)
+        record.manga_json = normalize_manga_assets(
+            manga, request.app.state.settings.export_dir
+        ).model_dump_json()
         return record
 
 
@@ -1209,6 +1384,7 @@ def register_generation_candidate(panel, generated_panel, result) -> None:
 
 
 def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> None:
+    normalize_manga_assets(manga, request.app.state.settings.export_dir)
     with request.app.state.SessionLocal() as session:
         writable = session.get(ProjectRecord, project_id)
         if writable is None:
@@ -1267,12 +1443,15 @@ def to_summary(record: ProjectRecord) -> ProjectSummary:
     )
 
 
-def to_detail(record: ProjectRecord) -> ProjectDetail:
-    return ProjectDetail(**to_summary(record).model_dump(), manga_json=parse_manga_json(record.manga_json))
+def to_detail(record: ProjectRecord, export_dir: Path | None = None) -> ProjectDetail:
+    manga = parse_manga_json(record.manga_json)
+    if export_dir is not None:
+        normalize_manga_assets(manga, export_dir)
+    return ProjectDetail(**to_summary(record).model_dump(), manga_json=manga)
 
 
 def asset_to_id(path: Path, export_dir: Path) -> str:
-    return path.resolve().relative_to(export_dir.resolve()).as_posix()
+    return path_to_asset_id(path, export_dir)
 
 
 def open_in_file_manager(path: Path) -> None:

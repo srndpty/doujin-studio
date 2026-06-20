@@ -8,9 +8,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image, ImageDraw
 
+from . import typeset
+from .assets import resolve_asset_path
 from .fonts import find_dialogue_font_path, load_label_font
 from .schemas import Dialogue, MangaProject, Page, Panel, Sfx, TypographySettings
-from . import typeset
 
 PAGE_SIZE = (1200, 1700)
 PANEL_OUTLINE_WIDTH = 4
@@ -27,7 +28,7 @@ def render_project_pages(
     assets: list[Path] = []
     warnings: list[str] = []
     for page in manga.pages:
-        target, page_warnings = _render_single_page(manga, page, pages_dir)
+        target, page_warnings = _render_single_page(manga, page, pages_dir, export_dir)
         assets.append(target)
         warnings.extend(page_warnings)
     return assets, warnings
@@ -41,10 +42,12 @@ def render_project_page(
     page = next((item for item in manga.pages if item.page == page_number), None)
     if page is None:
         raise ValueError(f"ページが見つかりません: {page_number}")
-    return _render_single_page(manga, page, pages_dir)
+    return _render_single_page(manga, page, pages_dir, export_dir)
 
 
-def _render_single_page(manga: MangaProject, page: Page, pages_dir: Path) -> tuple[Path, list[str]]:
+def _render_single_page(
+    manga: MangaProject, page: Page, pages_dir: Path, export_dir: Path
+) -> tuple[Path, list[str]]:
     # レンダリング順: 背景 → 通常コマ → 背面overlay → 前面overlay → 吹き出し・SFX。
     image = Image.new("RGBA", PAGE_SIZE, (248, 248, 244, 255))
     draw = ImageDraw.Draw(image)
@@ -52,13 +55,13 @@ def _render_single_page(manga: MangaProject, page: Page, pages_dir: Path) -> tup
     panel_boxes = {panel.panel_id: _panel_box_px(panel) for panel in page.panels}
 
     for panel in page.panels:
-        draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id])
-    for overlay in page.overlay_elements:
+        draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id], export_dir)
+    for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "back":
-            draw_overlay(image, draw, overlay, page, panel_boxes)
-    for overlay in page.overlay_elements:
+            draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
+    for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "front":
-            draw_overlay(image, draw, overlay, page, panel_boxes)
+            draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
     for panel in page.panels:
         warnings.extend(
             draw_panel_text(image, draw, panel, panel_boxes[panel.panel_id], manga.typography)
@@ -96,12 +99,24 @@ def _panel_box_px(panel: Panel) -> tuple[int, int, int, int]:
     return (left, top, left + width, top + height)
 
 
-def _fit_panel_image(panel: Panel, box: tuple[int, int, int, int]) -> Image.Image | None:
-    if not (panel.image_asset and Path(panel.image_asset).exists()):
+def _fit_panel_image(
+    panel: Panel, box: tuple[int, int, int, int], export_dir: Path | None = None
+) -> Image.Image | None:
+    if not panel.image_asset:
+        return None
+    try:
+        source_path = (
+            resolve_asset_path(panel.image_asset, export_dir)
+            if export_dir is not None
+            else Path(panel.image_asset)
+        )
+    except ValueError:
+        return None
+    if not source_path.exists():
         return None
     width = box[2] - box[0]
     height = box[3] - box[1]
-    source = Image.open(panel.image_asset).convert("RGB")
+    source = Image.open(source_path).convert("RGB")
     return fit_image_to_box(
         source,
         (width, height),
@@ -123,9 +138,10 @@ def draw_panel_art(
     draw: ImageDraw.ImageDraw,
     panel: Panel,
     box: tuple[int, int, int, int],
+    export_dir: Path | None = None,
 ) -> None:
     """コマの画像と枠線・番号ラベルだけを描く（overlayより下のレイヤー）。"""
-    fitted = _fit_panel_image(panel, box)
+    fitted = _fit_panel_image(panel, box, export_dir)
     if fitted is not None:
         page_image.paste(fitted.convert("RGB"), (box[0], box[1]))
     else:
@@ -159,6 +175,7 @@ def draw_overlay(
     overlay,
     page,
     panel_boxes: dict[str, tuple[int, int, int, int]],
+    export_dir: Path | None = None,
 ) -> None:
     """オーバーフレーム（コマ枠外の演出レイヤー）を合成する。"""
     page_w, page_h = PAGE_SIZE
@@ -168,16 +185,37 @@ def draw_overlay(
     dest_y = int(overlay.box[1] * page_h)
 
     tile: Image.Image | None = None
-    if overlay.asset and Path(overlay.asset).exists():
-        tile = Image.open(overlay.asset).convert("RGBA").resize((target_w, target_h))
-        if overlay.mask_asset and Path(overlay.mask_asset).exists():
-            mask = Image.open(overlay.mask_asset).convert("L").resize((target_w, target_h))
+    try:
+        overlay_path = (
+            resolve_asset_path(overlay.asset, export_dir)
+            if overlay.asset and export_dir is not None
+            else Path(overlay.asset)
+            if overlay.asset
+            else None
+        )
+    except ValueError:
+        overlay_path = None
+    if overlay_path and overlay_path.exists():
+        tile = Image.open(overlay_path).convert("RGBA").resize((target_w, target_h))
+        try:
+            mask_path = (
+                resolve_asset_path(overlay.mask_asset, export_dir)
+                if overlay.mask_asset and export_dir is not None
+                else Path(overlay.mask_asset)
+                if overlay.mask_asset
+                else None
+            )
+        except ValueError:
+            mask_path = None
+        if mask_path and mask_path.exists():
+            mask = Image.open(mask_path).convert("L").resize((target_w, target_h))
             tile.putalpha(mask)
     if tile is None:
         # アセット未設定でも配置枠を点線で示す（後からマスク/抽出を接続できる）。
         draw.rectangle(
             (dest_x, dest_y, dest_x + target_w, dest_y + target_h),
-            outline=(120, 120, 200, 255), width=3,
+            outline=(120, 120, 200, 255),
+            width=3,
         )
         return
     if overlay.opacity < 1.0:
@@ -191,10 +229,11 @@ def draw_overlay(
         box = panel_boxes.get(panel_id)
         if panel is None or box is None:
             continue
-        draw_panel_art(page_image, draw, panel, box)
+        draw_panel_art(page_image, draw, panel, box, export_dir)
 
 
 # --- 吹き出しと写植 ---
+
 
 def _anchor_point(position: str, box: tuple[int, int, int, int]) -> tuple[int, int]:
     left, top, right, bottom = box
@@ -210,7 +249,9 @@ def _anchor_point(position: str, box: tuple[int, int, int, int]) -> tuple[int, i
     return points.get(position, points["center"])
 
 
-def _clamp_box(box: tuple[int, int, int, int], bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+def _clamp_box(
+    box: tuple[int, int, int, int], bounds: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
     bl, bt, br, bb = bounds
     x0, y0, x1, y1 = box
     w = min(x1 - x0, br - bl)
@@ -239,7 +280,9 @@ def resolve_dialogue_layout(
     vertical = dialogue.vertical
     pad = BUBBLE_INNER_PAD
 
-    default_size = max(min(dialogue.font_size, typography.default_font_size or dialogue.font_size), TEXT_FLOOR_SIZE)
+    default_size = max(
+        min(dialogue.font_size, typography.default_font_size or dialogue.font_size), TEXT_FLOOR_SIZE
+    )
     # 形状ごとの余白係数（楕円/雲/爆発は内接ぶん広めに取る）。
     if dialogue.balloon in {"oval", "cloud", "burst"}:
         shape_x, shape_y = 1.24, 1.18
@@ -250,11 +293,19 @@ def resolve_dialogue_layout(
         # 編集UIなどで指定された枠を尊重し、その中へ収める。
         bx = left + int(dialogue.box[0] * pw)
         by = top + int(dialogue.box[1] * ph)
-        bubble = _clamp_box((bx, by, bx + int(dialogue.box[2] * pw), by + int(dialogue.box[3] * ph)), bounds)
+        bubble = _clamp_box(
+            (bx, by, bx + int(dialogue.box[2] * pw), by + int(dialogue.box[3] * ph)), bounds
+        )
         inner_w = (bubble[2] - bubble[0]) / shape_x - pad * 2
         inner_h = (bubble[3] - bubble[1]) / shape_y - pad * 2
         layout = typeset.layout_text(
-            dialogue.text, font_path_str, max(8, inner_w), max(8, inner_h), vertical, default_size, TEXT_FLOOR_SIZE
+            dialogue.text,
+            font_path_str,
+            max(8, inner_w),
+            max(8, inner_h),
+            vertical,
+            default_size,
+            TEXT_FLOOR_SIZE,
         )
         return bubble, layout
 
@@ -272,20 +323,32 @@ def resolve_dialogue_layout(
         inner_h = cap_h / shape_y - pad * 2
         if inner_w < size or inner_h < size:
             continue
-        layout = typeset.layout_text(dialogue.text, font_path_str, inner_w, inner_h, vertical, size, size)
+        layout = typeset.layout_text(
+            dialogue.text, font_path_str, inner_w, inner_h, vertical, size, size
+        )
         if layout.fits:
             chosen = layout
             break
     if chosen is None:
         inner_w = max(8.0, cap_w / shape_x - pad * 2)
         inner_h = max(8.0, cap_h / shape_y - pad * 2)
-        chosen = typeset.layout_text(dialogue.text, font_path_str, inner_w, inner_h, vertical, TEXT_FLOOR_SIZE, TEXT_FLOOR_SIZE)
+        chosen = typeset.layout_text(
+            dialogue.text,
+            font_path_str,
+            inner_w,
+            inner_h,
+            vertical,
+            TEXT_FLOOR_SIZE,
+            TEXT_FLOOR_SIZE,
+        )
 
     # 吹き出しを内容ぴったりに縮める。
     bubble_w = int(min(cap_w, chosen.width * shape_x + pad * 2))
     bubble_h = int(min(cap_h, chosen.height * shape_y + pad * 2))
     cx, cy = _anchor_point(dialogue.position, panel_box)
-    bubble = _clamp_box((cx - bubble_w // 2, cy - bubble_h // 2, cx + bubble_w // 2, cy + bubble_h // 2), bounds)
+    bubble = _clamp_box(
+        (cx - bubble_w // 2, cy - bubble_h // 2, cx + bubble_w // 2, cy + bubble_h // 2), bounds
+    )
     return bubble, chosen
 
 
@@ -358,8 +421,10 @@ def _tail_tip(dialogue: Dialogue, bubble, panel_box) -> tuple[int, int]:
     dx, dy = cx - bx, cy - by
     norm = math.hypot(dx, dy) or 1.0
     reach = min(pw, ph) * 0.07
-    return (int(bx + dx / norm * (abs(bubble[2] - bubble[0]) / 2 + reach)),
-            int(by + dy / norm * (abs(bubble[3] - bubble[1]) / 2 + reach)))
+    return (
+        int(bx + dx / norm * (abs(bubble[2] - bubble[0]) / 2 + reach)),
+        int(by + dy / norm * (abs(bubble[3] - bubble[1]) / 2 + reach)),
+    )
 
 
 def _draw_tail(draw, dialogue, bubble, panel_box, outline, fill, square: bool = False) -> None:
@@ -403,8 +468,11 @@ def _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, fill) -> None:
 def _draw_cloud(draw, bubble, outline, fill) -> None:
     x0, y0, x1, y1 = bubble
     w, h = x1 - x0, y1 - y0
-    draw.rounded_rectangle((x0 + w * 0.06, y0 + h * 0.12, x1 - w * 0.06, y1 - h * 0.12),
-                           radius=int(min(w, h) * 0.3), fill=fill)
+    draw.rounded_rectangle(
+        (x0 + w * 0.06, y0 + h * 0.12, x1 - w * 0.06, y1 - h * 0.12),
+        radius=int(min(w, h) * 0.3),
+        fill=fill,
+    )
     # 縁にこぶを並べて雲状にする。
     bumps = max(6, int(w / 60))
     rb = min(w, h) * 0.12
@@ -414,14 +482,18 @@ def _draw_cloud(draw, bubble, outline, fill) -> None:
             (x0 + w * t, y0 + h * 0.12),
             (x0 + w * t, y1 - h * 0.12),
         ):
-            draw.ellipse((cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2)
+            draw.ellipse(
+                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2
+            )
     for i in range(max(3, int(h / 60))):
         t = i / max(3, int(h / 60))
         for cxb, cyb in (
             (x0 + w * 0.06, y0 + h * t),
             (x1 - w * 0.06, y0 + h * t),
         ):
-            draw.ellipse((cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2)
+            draw.ellipse(
+                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2
+            )
 
 
 def _draw_burst(draw, bubble, outline, fill) -> None:
@@ -438,6 +510,7 @@ def _draw_burst(draw, bubble, outline, fill) -> None:
 
 
 # --- SFX ---
+
 
 def _parse_color(value: str) -> tuple[int, int, int]:
     value = (value or "").strip()
@@ -463,11 +536,15 @@ def draw_sfx(page_image: Image.Image, sfx: Sfx, panel_box: tuple[int, int, int, 
     page_image.alpha_composite(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)))
 
 
-def _render_sfx_tile(sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, int, int]) -> Image.Image:
+def _render_sfx_tile(
+    sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, int, int]
+) -> Image.Image:
     font_path = find_dialogue_font_path()
     from PIL import ImageFont
 
-    font = ImageFont.truetype(str(font_path), sfx.font_size) if font_path else ImageFont.load_default()
+    font = (
+        ImageFont.truetype(str(font_path), sfx.font_size) if font_path else ImageFont.load_default()
+    )
     pad = sfx.outline_width + 8
     if sfx.vertical:
         widths, heights = [], []
@@ -481,8 +558,15 @@ def _render_sfx_tile(sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, in
         td = ImageDraw.Draw(tile)
         y = pad
         for ch in sfx.text:
-            td.text((tile_w / 2, y), ch, font=font, fill=(*fill, 255), anchor="ma",
-                    stroke_width=sfx.outline_width, stroke_fill=(*stroke, 255))
+            td.text(
+                (tile_w / 2, y),
+                ch,
+                font=font,
+                fill=(*fill, 255),
+                anchor="ma",
+                stroke_width=sfx.outline_width,
+                stroke_fill=(*stroke, 255),
+            )
             y += int(sfx.font_size * 1.05)
         return tile
     bbox = font.getbbox(sfx.text)
@@ -490,8 +574,14 @@ def _render_sfx_tile(sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, in
     tile_h = (bbox[3] - bbox[1]) + pad * 2
     tile = Image.new("RGBA", (int(tile_w), int(tile_h)), (0, 0, 0, 0))
     td = ImageDraw.Draw(tile)
-    td.text((pad - bbox[0], pad - bbox[1]), sfx.text, font=font, fill=(*fill, 255),
-            stroke_width=sfx.outline_width, stroke_fill=(*stroke, 255))
+    td.text(
+        (pad - bbox[0], pad - bbox[1]),
+        sfx.text,
+        font=font,
+        fill=(*fill, 255),
+        stroke_width=sfx.outline_width,
+        stroke_fill=(*stroke, 255),
+    )
     return tile
 
 
@@ -504,6 +594,7 @@ def draw_page_number(draw: ImageDraw.ImageDraw, page_number: int, reading_direct
 
 
 # --- 画像のはめ込み（パン・ズームcrop） ---
+
 
 def fit_image_to_box(
     source: Image.Image,

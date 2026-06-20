@@ -6,11 +6,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.app import layout_engine
+from backend.app import layout_engine, story
 from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.schemas import MangaProject, ScriptStage
-from backend.app import story
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -23,7 +22,9 @@ def make_client(tmp_path: Path) -> TestClient:
 
 
 def create_generated_project(client: TestClient) -> str:
-    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()["id"]
+    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
+        "id"
+    ]
     client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
@@ -87,7 +88,13 @@ def test_script_to_manga_sets_composition_metadata() -> None:
     script = ScriptStage.model_validate(
         {
             "pages": [
-                {"page": 1, "panels": [{"shot": "wide", "dialogue": [{"speaker": "a", "text": "やあ"}]} for _ in range(3)]},
+                {
+                    "page": 1,
+                    "panels": [
+                        {"shot": "wide", "dialogue": [{"speaker": "a", "text": "やあ"}]}
+                        for _ in range(3)
+                    ],
+                },
                 {"page": 2, "panels": [{"shot": "close", "dialogue": []} for _ in range(2)]},
             ]
         }
@@ -99,7 +106,9 @@ def test_script_to_manga_sets_composition_metadata() -> None:
     assert page1.panels[0].role  # 役割が付く
     assert 1 <= page1.panels[0].emphasis <= 5
     # 隣接ページは同じファミリーを避ける。
-    assert manga.pages[0].layout_family != manga.pages[1].layout_family or len(manga.pages[1].panels) != len(manga.pages[0].panels)
+    assert manga.pages[0].layout_family != manga.pages[1].layout_family or len(
+        manga.pages[1].panels
+    ) != len(manga.pages[0].panels)
 
 
 def test_layout_suggest_api_repropose_keeps_content(tmp_path: Path) -> None:
