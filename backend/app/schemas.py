@@ -343,7 +343,15 @@ class ReferenceAssetResponse(BaseModel):
 class ExportResponse(BaseModel):
     project_id: str
     cbz_asset: str
+    absolute_path: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class OpenExportFolderResponse(BaseModel):
+    project_id: str
+    folder_path: str
+    cbz_path: str
+    cbz_exists: bool
 
 
 # --- LLM ---

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -44,13 +46,21 @@ def render_project_page(project_id: str, manga: MangaProject, page_number: int, 
     return target
 
 
-def export_cbz(project_id: str, page_assets: list[Path], export_dir: Path) -> Path:
-    target = export_dir / project_id / f"{project_id}.cbz"
+def export_cbz(project_id: str, title: str, page_assets: list[Path], export_dir: Path) -> Path:
+    safe_title = sanitize_export_filename(title)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = export_dir / project_id / f"{safe_title}-{timestamp}.cbz"
     target.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(target, "w", ZIP_DEFLATED) as archive:
         for asset in sorted(page_assets):
             archive.write(asset, asset.name)
     return target
+
+
+def sanitize_export_filename(title: str) -> str:
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip(" .")
+    sanitized = re.sub(r"\s+", " ", sanitized)
+    return (sanitized or "名称未設定")[:80].rstrip(" .")
 
 
 def draw_panel(page_image: Image.Image, draw: ImageDraw.ImageDraw, panel: Panel) -> None:

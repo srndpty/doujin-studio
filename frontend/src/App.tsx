@@ -1,5 +1,5 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
+import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
 import { KnowledgePanel } from "./KnowledgePanel";
 import { StoryPanel } from "./StoryPanel";
 
@@ -634,10 +634,22 @@ export function App() {
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ cbz_asset: string; warnings: string[] }>(`/api/projects/${selected.id}/export/cbz`);
+      const response = await api.post<{ cbz_asset: string; absolute_path: string; warnings: string[] }>(`/api/projects/${selected.id}/export/cbz`);
       const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
-      setMessage(`CBZを書き出しました: /api/assets/${response.cbz_asset}${warning}`);
+      setMessage(`CBZを書き出しました: ${response.absolute_path}${warning}`);
       await refreshProductionStatus(selected.id);
+    });
+  }
+
+  async function openExportFolder() {
+    if (!selected) return;
+    await runTask(async () => {
+      const response = await api.post<{ folder_path: string; cbz_path: string; cbz_exists: boolean }>(
+        `/api/projects/${selected.id}/export/open-folder`
+      );
+      setMessage(response.cbz_exists
+        ? `保存先を開きました: ${response.cbz_path}`
+        : `出力フォルダを開きました: ${response.folder_path}`);
     });
   }
 
@@ -973,6 +985,7 @@ export function App() {
             <button title="全ページを生成" onClick={generateAllPageImages} disabled={!selected || busy}><Images size={17} />全ページ生成</button>
             <button title="全ページをレンダリング" onClick={renderPages} disabled={!selected || busy}><RefreshCw size={17} />レンダリング</button>
             <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}><Download size={17} />CBZ</button>
+            <button title="保存先を開く" onClick={openExportFolder} disabled={!selected || busy}><FolderOpen size={17} />保存先</button>
           </div>
         </header>
 

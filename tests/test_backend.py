@@ -10,6 +10,7 @@ import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 
+import backend.app.main as main_module
 from backend.app.config import Settings
 from backend.app.database import create_session_factory
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
@@ -17,7 +18,7 @@ from backend.app.image_backends import ComfyUIWorkflowConfig, apply_panel_to_wor
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
-from backend.app.renderer import fit_image_to_box
+from backend.app.renderer import fit_image_to_box, sanitize_export_filename
 from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
 
 
@@ -84,12 +85,34 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
         cbz_asset = response.json()["cbz_asset"]
         cbz_path = tmp_path / "exports" / cbz_asset
         assert cbz_path.exists()
+        assert cbz_path.name.startswith("テスト本-")
+        assert cbz_path.name.endswith(".cbz")
+        assert Path(response.json()["absolute_path"]) == cbz_path.resolve()
         with ZipFile(cbz_path) as archive:
             assert archive.namelist() == ["page_001.png", "page_002.png", "page_003.png", "page_004.png"]
         assert response.json()["warnings"] == []
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["status"] == "complete"
         assert status["adopted_panels"] == status["total_panels"]
+
+
+def test_open_export_folder_selects_cbz(tmp_path: Path, monkeypatch) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(main_module, "open_in_file_manager", lambda path: opened.append(path))
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        client.post(f"/api/projects/{project_id}/export/cbz")
+        response = client.post(f"/api/projects/{project_id}/export/open-folder")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["cbz_exists"] is True
+        assert Path(payload["cbz_path"]).name.startswith("テスト本-")
+        assert opened == [Path(payload["cbz_path"])]
+
+
+def test_export_filename_is_safe_for_windows() -> None:
+    assert sanitize_export_filename(' 本:第1話/「始まり」? ') == "本_第1話_「始まり」_"
+    assert sanitize_export_filename(" . ") == "名称未設定"
 
 
 def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:

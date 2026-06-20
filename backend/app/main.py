@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import uuid
 from asyncio import CancelledError
 from contextlib import asynccontextmanager
@@ -54,6 +56,7 @@ from .schemas import (
     KnowledgeSourceResponse,
     LLMStatusResponse,
     MangaProject,
+    OpenExportFolderResponse,
     PanelImageGenerationResponse,
     PanelControlReference,
     PanelPageRenderResponse,
@@ -503,11 +506,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             page.render_status = "done"
             page.rendered_at = now_utc()
         save_manga_json(request, project_id, manga)
-        cbz_path = export_cbz(project_id, page_assets, settings.export_dir)
+        cbz_path = export_cbz(project_id, manga.title, page_assets, settings.export_dir)
         return ExportResponse(
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
+            absolute_path=str(cbz_path.resolve()),
             warnings=[blocker for blocker in status.blockers if "採用画像" in blocker],
+        )
+
+    @app.post(
+        "/api/projects/{project_id}/export/open-folder",
+        response_model=OpenExportFolderResponse,
+    )
+    def open_project_export_folder(project_id: str, request: Request) -> OpenExportFolderResponse:
+        load_project_record(request, project_id)
+        export_dir = request.app.state.settings.export_dir.resolve()
+        project_dir = (export_dir / project_id).resolve()
+        if project_dir.parent != export_dir:
+            raise HTTPException(status_code=400, detail="出力フォルダが不正です")
+        project_dir.mkdir(parents=True, exist_ok=True)
+        cbz_files = list(project_dir.glob("*.cbz"))
+        cbz_path = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+        open_in_file_manager(cbz_path)
+        return OpenExportFolderResponse(
+            project_id=project_id,
+            folder_path=str(project_dir),
+            cbz_path=str(cbz_path),
+            cbz_exists=cbz_path.is_file(),
         )
 
     @app.get("/api/projects/{project_id}/production-status", response_model=ProjectProductionStatus)
@@ -1128,6 +1153,21 @@ def to_detail(record: ProjectRecord) -> ProjectDetail:
 
 def asset_to_id(path: Path, export_dir: Path) -> str:
     return path.resolve().relative_to(export_dir.resolve()).as_posix()
+
+
+def open_in_file_manager(path: Path) -> None:
+    target = path.resolve()
+    if sys.platform == "win32":
+        command = (
+            ["explorer.exe", f"/select,{target}"]
+            if target.is_file()
+            else ["explorer.exe", str(target)]
+        )
+    elif sys.platform == "darwin":
+        command = ["open", "-R", str(target)] if target.is_file() else ["open", str(target)]
+    else:
+        command = ["xdg-open", str(target.parent if target.is_file() else target)]
+    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 app = create_app()
