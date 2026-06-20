@@ -23,6 +23,7 @@ export type Dialogue = {
   position: string;
   box: [number, number, number, number] | null;
   font_size: number;
+  min_font_size?: number;
   max_lines: number;
   vertical?: boolean;
   tail?: { enabled: boolean; tip: [number, number]; base: number; width: number } | null;
@@ -36,6 +37,7 @@ export type Sfx = {
   font_size?: number;
   color?: string;
   outline_color?: string;
+  outline_width?: number;
   rotation?: number;
   vertical?: boolean;
   layer?: "below" | "above";

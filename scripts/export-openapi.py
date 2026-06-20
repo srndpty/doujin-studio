@@ -15,9 +15,11 @@ def main() -> None:
         raise SystemExit("出力先を指定してください")
     target = Path(sys.argv[1])
     target.parent.mkdir(parents=True, exist_ok=True)
+    # 改行をLFに固定し、Windows/Linux間で出力が一致するようにする。
     target.write_text(
         json.dumps(create_app().openapi(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
 

@@ -8,6 +8,33 @@ from PIL import ImageFont
 WINDOWS_FONT_DIR = Path("C:/Windows/Fonts")
 USER_FONT_DIR = Path.home() / "AppData/Local/Microsoft/Windows/Fonts"
 
+# フォント探索ディレクトリ（Windows優先、Linux/Macも対応）。
+FONT_DIRS = [
+    WINDOWS_FONT_DIR,
+    USER_FONT_DIR,
+    Path("/usr/share/fonts"),
+    Path("/usr/local/share/fonts"),
+    Path.home() / ".fonts",
+    Path.home() / ".local/share/fonts",
+    Path("/Library/Fonts"),
+    Path("/System/Library/Fonts"),
+    Path.home() / "Library/Fonts",
+]
+
+# Linux/Macで利用できる日本語退避フォントのキーワード（サブディレクトリも再帰探索）。
+CJK_FALLBACK_KEYWORDS = [
+    "notosanscjkjp",
+    "notosanscjk",
+    "notosansjp",
+    "notoserifcjkjp",
+    "notoserifcjk",
+    "notoserifjp",
+    "sourcehansans",
+    "ipaexgothic",
+    "ipagothic",
+    "vlgothic",
+]
+
 # 源暎アンチック（同人写植の定番フォント）。配布物によりファイル名が揺れるため複数候補を持つ。
 GENEI_ANTIQUE_FILES = [
     "GenEiAntiqueNv5-M.ttf",
@@ -37,7 +64,7 @@ BOLD_FONT_FILES = [
 
 
 def _font_dirs() -> list[Path]:
-    return [path for path in (WINDOWS_FONT_DIR, USER_FONT_DIR) if path.exists()]
+    return [path for path in FONT_DIRS if path.exists()]
 
 
 def _find_in_dirs(filenames: list[str]) -> Path | None:
@@ -50,16 +77,17 @@ def _find_in_dirs(filenames: list[str]) -> Path | None:
 
 
 def _scan_for_keywords(keywords: list[str]) -> Path | None:
+    normalized = [keyword.casefold() for keyword in keywords]
     for directory in _font_dirs():
         try:
-            entries = list(directory.iterdir())
+            entries = list(directory.rglob("*"))
         except OSError:
             continue
         for entry in entries:
             if entry.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
                 continue
             name = entry.name.casefold()
-            if any(keyword.casefold() in name for keyword in keywords):
+            if any(keyword in name for keyword in normalized):
                 return entry
     return None
 
@@ -75,8 +103,16 @@ def find_genei_antique() -> Path | None:
 
 @lru_cache(maxsize=1)
 def find_dialogue_font_path() -> Path | None:
-    """台詞フォント（源暎アンチック優先、無ければBIZ UDゴシック等）のパス。"""
-    return find_genei_antique() or _find_in_dirs(FALLBACK_FONT_FILES)
+    """台詞フォント（源暎アンチック優先、無ければBIZ UDゴシック等）のパス。
+
+    Windowsの定番フォントが無ければ、Linux/Macの日本語フォント（Noto/IPA等）を
+    再帰探索で拾う。日本語フォントが一切無い環境ではNone。
+    """
+    return (
+        find_genei_antique()
+        or _find_in_dirs(FALLBACK_FONT_FILES)
+        or _scan_for_keywords(CJK_FALLBACK_KEYWORDS)
+    )
 
 
 def dialogue_font_is_primary() -> bool:

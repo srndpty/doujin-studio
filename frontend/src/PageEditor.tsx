@@ -63,7 +63,7 @@ const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 export function PageEditor({
   projectId,
-  manga,
+  manga: mangaProp,
   pageNumber,
   assetVersion,
   busy,
@@ -72,6 +72,11 @@ export function PageEditor({
   onSuggest,
   setMessage
 }: Props) {
+  // 親のonChangeが反映される前でも編集を即時表示できるよう、作業コピーを持つ。
+  const [manga, setManga] = useState<MangaProject>(mangaProp);
+  useEffect(() => {
+    setManga(mangaProp);
+  }, [mangaProp]);
   const page = manga.pages.find((item) => item.page === pageNumber) ?? null;
   const [selection, setSelection] = useState<
     | { panelId: string; kind: "panel" | "dialogue" | "sfx"; index: number }
@@ -124,6 +129,7 @@ export function PageEditor({
     const target = next.pages.find((item) => item.page === pageNumber);
     if (!target) return next;
     mutator(target);
+    setManga(next);
     onChange(next);
     return next;
   };

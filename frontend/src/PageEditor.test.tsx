@@ -122,8 +122,17 @@ describe("PageEditor", () => {
     const onChange = vi.fn();
     const onSave = vi.fn();
     render(
-      <PageEditor projectId="project" manga={sampleManga()} pageNumber={1} assetVersion={1}
-        busy={false} onChange={onChange} onSave={onSave} onSuggest={vi.fn()} setMessage={vi.fn()} />
+      <PageEditor
+        projectId="project"
+        manga={sampleManga()}
+        pageNumber={1}
+        assetVersion={1}
+        busy={false}
+        onChange={onChange}
+        onSave={onSave}
+        onSuggest={vi.fn()}
+        setMessage={vi.fn()}
+      />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
@@ -134,10 +143,21 @@ describe("PageEditor", () => {
   });
 
   it("プリフライト結果を表示する", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true, errors: [], warnings: [] })));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, errors: [], warnings: [] }))
+    );
     render(
-      <PageEditor projectId="project" manga={sampleManga()} pageNumber={1} assetVersion={1}
-        busy={false} onChange={vi.fn()} onSave={vi.fn()} onSuggest={vi.fn()} setMessage={vi.fn()} />
+      <PageEditor
+        projectId="project"
+        manga={sampleManga()}
+        pageNumber={1}
+        assetVersion={1}
+        busy={false}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onSuggest={vi.fn()}
+        setMessage={vi.fn()}
+      />
     );
     fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
     await waitFor(() => expect(screen.getByText("問題は見つかりませんでした")).toBeVisible());
