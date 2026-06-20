@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from . import knowledge
+from . import layout_engine
 from .config import Settings
 from .database import (
     KnowledgeChunkRecord,
@@ -714,13 +715,23 @@ def script_to_manga(
     common_negative = base.common_negative_prompt or DEFAULT_COMMON_NEGATIVE_PROMPT
     page_characters = page_characters or {}
 
+    rtl = base.reading_direction == "rtl"
+    total_pages = len(script.pages)
+    previous_family: str | None = None
     pages: list[Page] = []
-    for script_page in script.pages:
+    for page_index, script_page in enumerate(script.pages):
         panel_count = len(script_page.panels)
-        layout = select_layout(panel_count, script_page.layout)
+        family = layout_engine.choose_family(
+            script_page.layout, page_index, total_pages, panel_count, previous_family
+        )
+        previous_family = family
+        layout = layout_engine.build_page_layout(panel_count, family, base.page_layout, rtl=rtl)
         panels: list[Panel] = []
         for index, script_panel in enumerate(script_page.panels):
             panel_id = f"p{script_page.page:02d}_{index + 1:02d}"
+            role = layout_engine.derive_role(
+                index, panel_count, page_index, total_pages, bool(script_panel.dialogue)
+            )
             # コマ明記の登場人物 + 台詞話者を統合し、無ければページ構成の登場人物で補う。
             names: list[str] = list(script_panel.characters)
             for line in script_panel.dialogue:
@@ -746,6 +757,8 @@ def script_to_manga(
                     panel_id=panel_id,
                     bbox=panel_bbox,
                     shot=script_panel.shot or "コマ",
+                    role=role,
+                    emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
                     characters=character_ids,
@@ -768,6 +781,8 @@ def script_to_manga(
                 page=script_page.page,
                 theme=f"{script_page.page}ページ",
                 layout_template=f"count_{panel_count}",
+                layout_family=family,
+                reading_order=[panel.panel_id for panel in panels],
                 panels=panels,
             )
         )

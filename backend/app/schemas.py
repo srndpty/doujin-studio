@@ -200,6 +200,10 @@ class Panel(BaseModel):
     subject_mode: Literal[
         "character_scene", "reaction", "prop_insert", "hand_insert", "background"
     ] = "character_scene"
+    # 構図段階の役割（establish/dialogue/reveal/action/punchline/silent/montage等）。
+    role: str = ""
+    # 強調度（1=控えめ、5=見せ場）。レイアウトエンジンが面積配分に使う。
+    emphasis: int = Field(default=2, ge=1, le=5)
     camera: str = ""
     location_id: str = ""
     characters: list[str] = Field(default_factory=list)
@@ -229,6 +233,14 @@ class Page(BaseModel):
     page: int = Field(ge=1)
     theme: str
     layout_template: str
+    # レイアウトエンジンが選んだテンプレートファミリー。
+    layout_family: str = ""
+    # ページの演出意図（構図段階）。
+    intent: str = ""
+    # 手動編集後はtrue。自動レイアウト再提案で上書きしない。
+    layout_locked: bool = False
+    # コマの読み順（panel_id列）。右上から左下を既定とする。
+    reading_order: list[str] = Field(default_factory=list)
     panels: list[Panel] = Field(min_length=1)
     render_status: Literal["pending", "done"] = "pending"
     rendered_at: datetime | None = None
@@ -359,6 +371,17 @@ class FontsResponse(BaseModel):
 
 class RenderRequest(BaseModel):
     force: bool = False
+
+
+class LayoutSuggestRequest(BaseModel):
+    family: str | None = None
+
+
+class LayoutSuggestResponse(BaseModel):
+    project_id: str
+    page: int
+    layout_family: str
+    manga_json: MangaProject
 
 
 class ComfyUIStatusResponse(BaseModel):

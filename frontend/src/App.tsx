@@ -2,8 +2,9 @@ import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useMemo, useRe
 import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
 import { KnowledgePanel } from "./KnowledgePanel";
 import { StoryPanel } from "./StoryPanel";
+import { PageEditor } from "./PageEditor";
 
-type WorkspaceTab = "production" | "knowledge" | "story";
+type WorkspaceTab = "production" | "editor" | "knowledge" | "story";
 
 type Dialogue = {
   speaker: string;
@@ -991,6 +992,7 @@ export function App() {
 
         <nav className="workspace-tabs">
           <button className={activeTab === "production" ? "active" : ""} onClick={() => setActiveTab("production")}>制作</button>
+          <button className={activeTab === "editor" ? "active" : ""} onClick={() => setActiveTab("editor")} disabled={!selected}>ページ編集</button>
           <button className={activeTab === "knowledge" ? "active" : ""} onClick={() => setActiveTab("knowledge")}>作品知識</button>
           <button className={activeTab === "story" ? "active" : ""} onClick={() => setActiveTab("story")} disabled={!selected}>ストーリー生成</button>
         </nav>
@@ -1004,6 +1006,52 @@ export function App() {
             <progress className={progress.indeterminate ? "indeterminate" : ""} value={progress.indeterminate ? undefined : progressPercent} max="100" />
             {activeJobIds.length > 0 && <button onClick={cancelActiveJob}>キャンセル</button>}
           </section>
+        )}
+
+        {activeTab === "editor" && selected && (
+          <PageEditor
+            projectId={selected.id}
+            manga={selected.manga_json}
+            pageNumber={selectedPage}
+            assetVersion={assetVersion}
+            busy={busy}
+            setMessage={setMessage}
+            onChange={(manga) => {
+              setSelected({ ...selected, manga_json: manga });
+              setJsonText(JSON.stringify(manga, null, 2));
+            }}
+            onSave={async () => {
+              if (!selected) return;
+              setBusy(true);
+              try {
+                const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
+                setSelected(project);
+                setJsonText(JSON.stringify(project.manga_json, null, 2));
+                setMessage("レイアウトを保存しました");
+              } catch (error) {
+                setMessage(`保存に失敗しました: ${(error as Error).message}`);
+              } finally {
+                setBusy(false);
+              }
+            }}
+            onSuggest={async (family) => {
+              if (!selected) return;
+              setBusy(true);
+              try {
+                const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
+                  `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
+                  { family }
+                );
+                setSelected({ ...selected, manga_json: response.manga_json });
+                setJsonText(JSON.stringify(response.manga_json, null, 2));
+                setMessage(`レイアウトを再提案しました（${response.layout_family}）`);
+              } catch (error) {
+                setMessage(`再提案に失敗しました: ${(error as Error).message}`);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
         )}
 
         {activeTab === "knowledge" && (

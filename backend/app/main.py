@@ -28,6 +28,7 @@ from .database import (
 from .generator import generate_four_page_name
 from . import fonts as font_registry
 from . import knowledge as knowledge_db
+from . import layout_engine
 from . import story as story_module
 from .llm import build_llm_client, get_llm_status
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
@@ -57,6 +58,8 @@ from .schemas import (
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
     KnowledgeSourceResponse,
+    LayoutSuggestRequest,
+    LayoutSuggestResponse,
     LLMStatusResponse,
     MangaProject,
     OpenExportFolderResponse,
@@ -492,6 +495,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target_id = control.id
         save_manga_json(request, project_id, manga)
         return ReferenceAssetResponse(target_id=target_id, asset=str(target), manga_json=manga)
+
+    @app.post(
+        "/api/projects/{project_id}/pages/{page_number}/layout/suggest",
+        response_model=LayoutSuggestResponse,
+    )
+    def suggest_page_layout(
+        project_id: str,
+        page_number: int,
+        request: Request,
+        payload: LayoutSuggestRequest | None = Body(default=None),
+    ) -> LayoutSuggestResponse:
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
+        page = next((item for item in manga.pages if item.page == page_number), None)
+        if page is None:
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        page_index = manga.pages.index(page)
+        previous_family = manga.pages[page_index - 1].layout_family if page_index > 0 else None
+        layout_engine.relayout_page(
+            page,
+            manga.page_layout,
+            rtl=manga.reading_direction == "rtl",
+            family=payload.family if payload else None,
+            previous_family=previous_family,
+            page_index=page_index,
+            total_pages=len(manga.pages),
+        )
+        save_manga_json(request, project_id, manga)
+        return LayoutSuggestResponse(
+            project_id=project_id,
+            page=page_number,
+            layout_family=page.layout_family,
+            manga_json=manga,
+        )
 
     @app.post("/api/projects/{project_id}/panels/{panel_id}/render-page", response_model=PanelPageRenderResponse)
     def render_panel_page(project_id: str, panel_id: str, request: Request) -> PanelPageRenderResponse:

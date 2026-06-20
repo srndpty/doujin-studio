@@ -1345,3 +1345,45 @@ button.primary {
   border-radius: 8px;
   padding: 14px;
 }
+
+/* --- Phase 2: ページ編集（react-konva） --- */
+.page-editor {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px;
+}
+.page-editor-canvas {
+  flex: 0 0 auto;
+}
+.page-editor-controls {
+  flex: 1 1 280px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.page-editor-controls fieldset {
+  border: 1px solid #d8d8d2;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.page-editor-controls legend {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.page-editor-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  gap: 4px;
+}
+.page-editor-controls .editor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
