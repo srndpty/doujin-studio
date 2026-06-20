@@ -14,8 +14,10 @@
 
 ```powershell
 uv sync
-uv run uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn backend.app.main:app --reload --reload-dir backend --host 127.0.0.1 --port 8000
 ```
+
+`--reload-dir backend`でコード本体だけを監視します（`.venv`/`data`/`exports`を監視すると重く誤検知も増えるため）。
 
 ComfyUI実生成を使う場合は、ComfyUIを起動してから次を実行します。
 
