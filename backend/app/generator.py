@@ -1,6 +1,36 @@
 from __future__ import annotations
 
+import math
+
 from .schemas import Character, Dialogue, GenerationInfo, LocationProfile, MangaProject, Page, Panel, Sfx, WorkflowPreset
+
+# 1ページの描画サイズ（rendererと一致させる）。
+PAGE_SIZE = (1200, 1700)
+
+
+def compute_generation_size(
+    bbox: tuple[float, float, float, float],
+    base_pixels: int = 1024 * 1024,
+    multiple: int = 64,
+    min_dim: int = 512,
+    max_dim: int = 1536,
+) -> tuple[int, int]:
+    """コマの縦横比からComfyUI生成サイズを求め、64px単位へ丸める。
+
+    生成画像の比率をコマへ近づけ、はめ込み時の強制cropを減らす。
+    """
+    page_w, page_h = PAGE_SIZE
+    panel_w = max(1.0, bbox[2] * page_w)
+    panel_h = max(1.0, bbox[3] * page_h)
+    aspect = panel_w / panel_h
+    height = math.sqrt(base_pixels / aspect)
+    width = aspect * height
+
+    def snap(value: float) -> int:
+        rounded = int(round(value / multiple)) * multiple
+        return max(min_dim, min(max_dim, rounded))
+
+    return snap(width), snap(height)
 
 
 DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, score_7, safe, anime"
@@ -135,11 +165,15 @@ def generate_four_page_name(
                 )
                 for i, (speaker, text) in enumerate(dialogue_specs)
             ]
+            panel_bbox = LAYOUTS[template_id][index - 1]
+            gen_w, gen_h = compute_generation_size(panel_bbox)
+            subject_mode = "reaction" if ("リアクション" in shot or "沈黙" in shot) else "character_scene"
             page_panels.append(
                 Panel(
                     panel_id=panel_id,
-                    bbox=LAYOUTS[template_id][index - 1],
+                    bbox=panel_bbox,
                     shot=shot,
+                    subject_mode=subject_mode,
                     camera=camera,
                     location_id="default_room",
                     characters=character_ids,
@@ -151,8 +185,8 @@ def generate_four_page_name(
                         prompt=f"{page_prompt}, {work_name}, {situation}, {prompt}",
                         negative_prompt=DEFAULT_COMMON_NEGATIVE_PROMPT,
                         seed=page_number * 100 + index,
-                        width=width,
-                        height=height,
+                        width=gen_w,
+                        height=gen_h,
                         fit_mode=fit_mode,
                         crop_anchor=crop_anchor,
                         status="pending",

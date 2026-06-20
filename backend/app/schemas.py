@@ -6,16 +6,55 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+# 旧balloon値から新しい吹き出し種別への対応表。
+BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
+BalloonKind = Literal["oval", "cloud", "burst", "caption", "none"]
+PositionAnchor = Literal["upper_left", "upper_right", "lower_left", "lower_right", "center"]
+
+
+class BalloonTail(BaseModel):
+    """話者方向を示す吹き出しの先端（しっぽ）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # 先端の座標（コマ基準 0..1）。話者の口元へ向ける。
+    tip: tuple[float, float] = (0.5, 1.0)
+    # 付け根の位置（吹き出しの辺に沿った 0..1）。
+    base: float = Field(default=0.5, ge=0.0, le=1.0)
+    # 付け根の幅（吹き出し幅に対する比率）。
+    width: float = Field(default=0.16, ge=0.02, le=0.6)
+
+    @field_validator("tip")
+    @classmethod
+    def validate_tip(cls, value: tuple[float, float]) -> tuple[float, float]:
+        x, y = value
+        if not (-0.2 <= x <= 1.2 and -0.2 <= y <= 1.2):
+            raise ValueError("tipはコマ付近(-0.2〜1.2)に収めてください")
+        return value
+
+
 class Dialogue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     speaker: str
-    text: str = Field(min_length=1, max_length=120)
-    balloon: Literal["round", "thought", "shout"] = "round"
-    position: Literal["upper_left", "upper_right", "lower_left", "lower_right", "center"] = "upper_right"
+    text: str = Field(min_length=1, max_length=400)
+    balloon: BalloonKind = "oval"
+    position: PositionAnchor = "upper_right"
     box: tuple[float, float, float, float] | None = None
-    font_size: int = Field(default=24, ge=10, le=72)
-    max_lines: int = Field(default=3, ge=1, le=8)
+    # 縦書きを既定にする（日本語漫画）。
+    vertical: bool = True
+    font_size: int = Field(default=34, ge=10, le=96)
+    min_font_size: int = Field(default=26, ge=8, le=96)
+    max_lines: int = Field(default=6, ge=1, le=20)
+    tail: BalloonTail | None = None
+
+    @field_validator("balloon", mode="before")
+    @classmethod
+    def migrate_balloon(cls, value):
+        if isinstance(value, str):
+            return BALLOON_MIGRATION.get(value, value)
+        return value
 
     @field_validator("box")
     @classmethod
@@ -34,8 +73,28 @@ class Sfx(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=40)
-    position: Literal["upper_left", "upper_right", "lower_left", "lower_right", "center"] = "center"
+    position: PositionAnchor = "center"
     style: str = "small_handwritten"
+    # コマ基準の配置座標（中心 0..1）。未指定時はpositionから決める。
+    box: tuple[float, float] | None = None
+    font_size: int = Field(default=54, ge=12, le=240)
+    rotation: float = Field(default=0.0, ge=-180.0, le=180.0)
+    color: str = "#191919"
+    outline_color: str = "#FFFFFF"
+    outline_width: int = Field(default=4, ge=0, le=24)
+    vertical: bool = False
+    # below=コマ画像の上だが吹き出しの下、above=最前面。
+    layer: Literal["below", "above"] = "above"
+
+    @field_validator("box")
+    @classmethod
+    def validate_box(cls, value: tuple[float, float] | None) -> tuple[float, float] | None:
+        if value is None:
+            return value
+        x, y = value
+        if not (-0.2 <= x <= 1.2 and -0.2 <= y <= 1.2):
+            raise ValueError("boxはコマ付近(-0.2〜1.2)に収めてください")
+        return value
 
 
 class WorkflowPreset(BaseModel):
@@ -95,6 +154,13 @@ class GenerationInfo(BaseModel):
     height: int | None = Field(default=None, ge=64, le=4096)
     fit_mode: Literal["cover", "contain"] = "cover"
     crop_anchor: Literal["center", "top", "bottom", "left", "right"] = "center"
+    # パン・ズーム方式のcrop。anchorを粗い基準、offsetを微調整として合成する。
+    crop_scale: float = Field(default=1.0, ge=1.0, le=4.0)
+    crop_offset_x: float = Field(default=0.0, ge=-1.0, le=1.0)
+    crop_offset_y: float = Field(default=0.0, ge=-1.0, le=1.0)
+    # 注視点（0..1）。指定時はoffsetより優先してこの点を中心に寄せる。
+    focal_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    focal_y: float | None = Field(default=None, ge=0.0, le=1.0)
     text_policy: Literal["no_text"] = "no_text"
     model_notes: str = ""
     status: Literal["pending", "running", "queued", "done", "fallback", "skipped", "error"] = "pending"
@@ -130,6 +196,10 @@ class Panel(BaseModel):
     panel_id: str
     bbox: tuple[float, float, float, float]
     shot: str
+    # コマの主題。prop_insert/hand_insert/backgroundではキャラ同一性を抑制する。
+    subject_mode: Literal[
+        "character_scene", "reaction", "prop_insert", "hand_insert", "background"
+    ] = "character_scene"
     camera: str = ""
     location_id: str = ""
     characters: list[str] = Field(default_factory=list)
@@ -196,6 +266,29 @@ class LocationProfile(BaseModel):
     reference_load_node_id: str = ""
 
 
+class TypographySettings(BaseModel):
+    """写植の既定設定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 優先フォント名（源暎アンチック）。未導入時はBIZ UDゴシックへ退避する。
+    primary_font: str = "源暎アンチック"
+    default_font_size: int = Field(default=34, ge=10, le=96)
+    min_font_size: int = Field(default=26, ge=8, le=96)
+    vertical_default: bool = True
+
+
+class PageLayoutSettings(BaseModel):
+    """ページ余白とコマ間余白を別々に持つ。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 外周余白（ページ端からの余白）。
+    outer_margin: float = Field(default=0.04, ge=0.0, le=0.2)
+    # コマ間余白（ガター）。約1.0〜1.2%。
+    gutter: float = Field(default=0.012, ge=0.0, le=0.1)
+
+
 class MangaProject(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -203,6 +296,10 @@ class MangaProject(BaseModel):
     work_name: str = ""
     premise: str = ""
     target_pages: int = 4
+    # 読み方向。日本漫画は右綴じ・右から左を既定にする。
+    reading_direction: Literal["rtl", "ltr"] = "rtl"
+    typography: TypographySettings = Field(default_factory=TypographySettings)
+    page_layout: PageLayoutSettings = Field(default_factory=PageLayoutSettings)
     common_positive_prompt: str = ""
     common_negative_prompt: str = ""
     characters: list[Character] = Field(default_factory=list)
@@ -243,6 +340,21 @@ class RenderResponse(BaseModel):
     project_id: str
     page_assets: list[str]
     manga_json: MangaProject
+    warnings: list[str] = Field(default_factory=list)
+
+
+class FontInfo(BaseModel):
+    id: str
+    name: str
+    path: str
+    available: bool
+    is_primary: bool = False
+
+
+class FontsResponse(BaseModel):
+    dialogue_font: str
+    dialogue_font_available: bool
+    fonts: list[FontInfo]
 
 
 class RenderRequest(BaseModel):
@@ -271,6 +383,7 @@ class PanelPageRenderResponse(BaseModel):
     panel_id: str
     page_asset: str
     manga_json: MangaProject
+    warnings: list[str] = Field(default_factory=list)
 
 
 class GenerationJobCreate(BaseModel):

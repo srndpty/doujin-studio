@@ -18,7 +18,12 @@ from .database import (
     StoryGenerationSessionRecord,
     now_utc,
 )
-from .generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT, LAYOUTS
+from .generator import (
+    DEFAULT_COMMON_NEGATIVE_PROMPT,
+    DEFAULT_COMMON_POSITIVE_PROMPT,
+    LAYOUTS,
+    compute_generation_size,
+)
 from .llm import LLMError, StubLLMClient, extract_json_object
 from .schemas import (
     BriefCharacter,
@@ -575,7 +580,7 @@ def distribute_rows(panel_count: int, max_cols: int = 3) -> list[int]:
 
 
 def grid_layout(
-    panel_count: int, margin: float = 0.05, gap: float = 0.02
+    panel_count: int, margin: float = 0.04, gap: float = 0.012
 ) -> list[tuple[float, float, float, float]]:
     """任意コマ数を行グリッドのbboxへ自動配置する（1〜4以外のフォールバック）。"""
     rows = distribute_rows(panel_count)
@@ -734,10 +739,12 @@ def script_to_manga(
                         position="upper_right" if dialogue_index % 2 == 0 else "upper_left",
                     )
                 )
+            panel_bbox = layout[index]
+            gen_w, gen_h = compute_generation_size(panel_bbox)
             panels.append(
                 Panel(
                     panel_id=panel_id,
-                    bbox=layout[index],
+                    bbox=panel_bbox,
                     shot=script_panel.shot or "コマ",
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
@@ -750,6 +757,8 @@ def script_to_manga(
                         prompt=script_panel.visual_prompt,
                         negative_prompt=common_negative,
                         seed=script_page.page * 100 + index + 1,
+                        width=gen_w,
+                        height=gen_h,
                         status="pending",
                     ),
                 )
@@ -768,6 +777,9 @@ def script_to_manga(
         work_name=base.work_name,
         premise=base.premise,
         target_pages=len(pages),
+        reading_direction=base.reading_direction,
+        typography=base.typography.model_copy(deep=True),
+        page_layout=base.page_layout.model_copy(deep=True),
         common_positive_prompt=common_positive,
         common_negative_prompt=common_negative,
         characters=base.characters,

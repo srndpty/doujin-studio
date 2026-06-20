@@ -26,6 +26,7 @@ from .database import (
     now_utc,
 )
 from .generator import generate_four_page_name
+from . import fonts as font_registry
 from . import knowledge as knowledge_db
 from . import story as story_module
 from .llm import build_llm_client, get_llm_status
@@ -40,6 +41,8 @@ from .schemas import (
     CharacterReferenceResponse,
     ReferenceAssetResponse,
     ComfyUIStatusResponse,
+    FontInfo,
+    FontsResponse,
     GenerateNameRequest,
     GenerationJobCreate,
     GenerationJobResponse,
@@ -108,6 +111,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/fonts", response_model=FontsResponse)
+    def list_fonts() -> FontsResponse:
+        fonts = [FontInfo(**item) for item in font_registry.list_fonts()]
+        path = font_registry.find_dialogue_font_path()
+        primary = font_registry.dialogue_font_is_primary()
+        return FontsResponse(
+            dialogue_font=("源暎アンチック" if primary else (path.name if path else "PIL既定")),
+            dialogue_font_available=path is not None,
+            fonts=fonts,
+        )
 
     @app.get("/api/comfyui/status", response_model=ComfyUIStatusResponse)
     async def comfyui_status(request: Request) -> ComfyUIStatusResponse:
@@ -202,7 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     result = await backend.generate_panel(project_id, prepared, settings.export_dir)
                     register_generation_candidate(panel, prepared, result)
 
-        page_assets = render_project_pages(project_id, manga, settings.export_dir)
+        page_assets, warnings = render_project_pages(project_id, manga, settings.export_dir)
         for page in manga.pages:
             page.render_status = "done"
             page.rendered_at = now_utc()
@@ -211,6 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
             manga_json=manga,
+            warnings=warnings,
         )
 
     @app.post("/api/projects/{project_id}/panels/{panel_id}/generate-image", response_model=PanelImageGenerationResponse)
@@ -374,7 +389,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         apply_candidate_selection(panel, candidate)
         settings = request.app.state.settings
         page_number = find_panel_page_number(manga, panel_id)
-        page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
@@ -384,6 +399,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             panel_id=panel_id,
             page_asset=asset_to_id(page_asset, settings.export_dir),
             manga_json=manga,
+            warnings=warnings,
         )
 
     @app.post("/api/projects/{project_id}/panels/{panel_id}/use-stub", response_model=PanelImageGenerationResponse)
@@ -483,7 +499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manga = parse_manga_json(record.manga_json)
         page_number = find_panel_page_number(manga, panel_id)
         settings = request.app.state.settings
-        page_asset = render_project_page(project_id, manga, page_number, settings.export_dir)
+        page_asset, warnings = render_project_page(project_id, manga, page_number, settings.export_dir)
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
@@ -493,6 +509,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             panel_id=panel_id,
             page_asset=asset_to_id(page_asset, settings.export_dir),
             manga_json=manga,
+            warnings=warnings,
         )
 
     @app.post("/api/projects/{project_id}/export/cbz", response_model=ExportResponse)
@@ -501,7 +518,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manga = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
         status = build_production_status(project_id, manga)
-        page_assets = render_project_pages(project_id, manga, settings.export_dir)
+        page_assets, render_warnings = render_project_pages(project_id, manga, settings.export_dir)
         for page in manga.pages:
             page.render_status = "done"
             page.rendered_at = now_utc()
@@ -511,7 +528,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
             absolute_path=str(cbz_path.resolve()),
-            warnings=[blocker for blocker in status.blockers if "採用画像" in blocker],
+            warnings=[blocker for blocker in status.blockers if "採用画像" in blocker] + render_warnings,
         )
 
     @app.post(

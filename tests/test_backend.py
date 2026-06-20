@@ -63,10 +63,15 @@ def test_project_crud_and_generate_name(tmp_path: Path) -> None:
         assert payload["manga_json"]["common_positive_prompt"] == DEFAULT_COMMON_POSITIVE_PROMPT
         assert payload["manga_json"]["common_negative_prompt"] == DEFAULT_COMMON_NEGATIVE_PROMPT
         first_panel = payload["manga_json"]["pages"][0]["panels"][0]
-        assert first_panel["generation"]["width"] == 1024
-        assert first_panel["generation"]["height"] == 640
+        # 生成サイズはコマの縦横比から64px単位で算出する。
+        assert first_panel["generation"]["width"] % 64 == 0
+        assert first_panel["generation"]["height"] % 64 == 0
+        assert first_panel["generation"]["width"] > first_panel["generation"]["height"]
         assert "establishing shot" in first_panel["generation"]["prompt"]
         assert payload["manga_json"]["characters"][0]["trigger_prompt"] == "春香"
+        # 日本漫画向けの既定（右綴じ・縦書き写植）。
+        assert payload["manga_json"]["reading_direction"] == "rtl"
+        assert payload["manga_json"]["typography"]["default_font_size"] == 34
 
 
 def test_render_and_export_cbz(tmp_path: Path) -> None:
@@ -238,7 +243,12 @@ def test_existing_manga_json_gets_new_defaults() -> None:
     panel = manga.pages[0].panels[0]
     assert panel.generation.fit_mode == "cover"
     assert panel.generation.text_policy == "no_text"
-    assert panel.dialogue[0].font_size == 24
+    assert panel.generation.crop_scale == 1.0
+    assert panel.subject_mode == "character_scene"
+    assert panel.dialogue[0].font_size == 34
+    assert panel.dialogue[0].vertical is True
+    # 旧形式は吹き出し既定が無いので新既定のovalになる。
+    assert panel.dialogue[0].balloon == "oval"
     assert panel.dialogue[0].box is None
     assert manga.common_positive_prompt == ""
     assert manga.common_negative_prompt == ""
