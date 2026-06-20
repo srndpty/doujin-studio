@@ -565,6 +565,65 @@ def test_reference_image_is_uploaded_and_patched(tmp_path: Path) -> None:
     assert workflow["30"]["inputs"]["image"] == "local-doujin-studio/project/references/hero.png"
 
 
+def test_reference_image_relative_asset_id_is_resolved_against_export_dir(tmp_path: Path) -> None:
+    # 参照画像は相対アセットID(project/...形式)で保存される。CWDではなくexport_dir基準で解決すること。
+    export_dir = tmp_path / "exports"
+    source = export_dir / "project" / "references" / "hero.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (16, 16), "blue").save(source)
+    workflow = {"30": {"class_type": "LoadImage", "inputs": {"image": "old.png"}}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        generation=GenerationInfo(
+            reference_images=[{"node_id": "30", "asset": "project/references/hero.png"}]
+        ),
+    )
+
+    class UploadClient:
+        async def post(self, url: str, files: dict, data: dict) -> httpx.Response:
+            return response(
+                url, {"name": "hero.png", "subfolder": data["subfolder"], "type": "input"}
+            )
+
+    asyncio.run(
+        apply_reference_images_to_workflow(
+            UploadClient(), "http://comfy", workflow, panel, export_dir, "project"
+        )
+    )
+    assert workflow["30"]["inputs"]["image"] == "local-doujin-studio/project/references/hero.png"
+
+
+def test_reference_image_outside_export_dir_is_rejected(tmp_path: Path) -> None:
+    # export_dir外を指す参照IDは見つからない扱いにする（フォールバックさせる）。
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        generation=GenerationInfo(reference_images=[{"node_id": "30", "asset": "../secret.png"}]),
+    )
+    workflow = {"30": {"class_type": "LoadImage", "inputs": {"image": "old.png"}}}
+
+    class UploadClient:
+        async def post(
+            self, url: str, files: dict, data: dict
+        ) -> httpx.Response:  # pragma: no cover
+            raise AssertionError("export_dir外の参照はアップロードしてはいけない")
+
+    try:
+        asyncio.run(
+            apply_reference_images_to_workflow(
+                UploadClient(), "http://comfy", workflow, panel, export_dir, "project"
+            )
+        )
+        raise AssertionError("ValueErrorが送出されるべき")
+    except ValueError as exc:
+        assert "参照画像が見つかりません" in str(exc)
+
+
 def test_reference_image_upload_api(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)

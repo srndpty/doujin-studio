@@ -13,6 +13,7 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 from websockets.asyncio.client import ClientConnection, connect
 
+from .assets import resolve_asset_path
 from .config import Settings
 from .schemas import Panel
 
@@ -388,7 +389,6 @@ async def apply_reference_images_to_workflow(
     export_dir: Path,
     project_id: str,
 ) -> None:
-    export_root = export_dir.resolve()
     reference_nodes: set[str] = set()
     for binding in panel.generation.reference_images:
         if binding.node_id in reference_nodes:
@@ -397,11 +397,12 @@ async def apply_reference_images_to_workflow(
         node = workflow.get(binding.node_id)
         if not node or "inputs" not in node:
             raise ValueError(f"参照画像ノードがworkflowにありません: {binding.node_id}")
-        source = Path(binding.asset)
-        if not source.is_absolute():
-            source = source.resolve()
-        source = source.resolve()
-        if not source.is_relative_to(export_root) or not source.exists():
+        # 参照画像は相対アセットID（project/...形式）で保存されるため、export_dir基準で解決する。
+        try:
+            source = resolve_asset_path(binding.asset, export_dir)
+        except ValueError as exc:
+            raise ValueError(f"参照画像が見つかりません: {binding.asset}") from exc
+        if not source.exists():
             raise ValueError(f"参照画像が見つかりません: {binding.asset}")
         subfolder = f"local-doujin-studio/{project_id}/references"
         with source.open("rb") as image_file:
