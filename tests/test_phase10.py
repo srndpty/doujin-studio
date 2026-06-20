@@ -86,7 +86,7 @@ def test_overlay_renders_with_occlusion_and_placeholder(tmp_path: Path) -> None:
     assert target2.exists()
 
 
-def test_preflight_flags_dialogue_overflow_as_error() -> None:
+def test_preflight_flags_dialogue_overflow_as_warning() -> None:
     manga = MangaProject(
         title="overflow",
         pages=[
@@ -104,7 +104,9 @@ def test_preflight_flags_dialogue_overflow_as_error() -> None:
         ],
     )
     issues = preflight.preflight_page(manga, manga.pages[0])
-    assert any(issue.code == "dialogue_overflow" and issue.level == "error" for issue in issues)
+    # テキストは切り捨てないので重大エラーではなく警告にする。
+    overflow = [issue for issue in issues if issue.code == "dialogue_overflow"]
+    assert overflow and all(issue.level == "warning" for issue in overflow)
 
 
 def test_preflight_tail_out_of_range_and_insert_characters() -> None:
@@ -181,11 +183,11 @@ def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
         assert body["preflight"]["ok"] is True
 
 
-def test_cbz_export_blocked_on_dialogue_overflow(tmp_path: Path) -> None:
+def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
-        # 1つのコマに収まらない長文を仕込む。
+        # 収まりにくい長文を仕込んでも、切り捨てない方針なので出力は止めない。
         dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
         dialogue["text"] = "あ" * 300
         dialogue["box"] = [0.0, 0.0, 0.15, 0.1]
@@ -193,5 +195,7 @@ def test_cbz_export_blocked_on_dialogue_overflow(tmp_path: Path) -> None:
         saved = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
         assert saved.status_code == 200
         export = client.post(f"/api/projects/{project_id}/export/cbz")
-        assert export.status_code == 422
-        assert "プリフライト" in export.json()["detail"]
+        assert export.status_code == 200
+        # 窮屈さはプリフライト警告として確認できる。
+        preflight_result = client.post(f"/api/projects/{project_id}/pages/1/preflight").json()
+        assert any(issue["code"] == "dialogue_overflow" for issue in preflight_result["warnings"])

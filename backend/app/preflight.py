@@ -51,11 +51,12 @@ def _check_dialogue_fit(manga: MangaProject, page: Page) -> list[PreflightIssue]
         for dialogue in panel.dialogue:
             _bubble, layout = resolve_dialogue_layout(dialogue, box, manga.typography)
             if not layout.fits:
+                # テキストは切り捨てないため出力は止めず、注意（警告）として知らせる。
                 issues.append(
                     PreflightIssue(
-                        level="error",
+                        level="warning",
                         code="dialogue_overflow",
-                        message=f"台詞が最小サイズでも収まりません（{dialogue.speaker}）",
+                        message=f"台詞が大きく、コマに対して窮屈です（{dialogue.speaker}）",
                         page=page.page,
                         panel_id=panel.panel_id,
                     )

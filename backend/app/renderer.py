@@ -14,7 +14,9 @@ from . import typeset
 
 PAGE_SIZE = (1200, 1700)
 PANEL_OUTLINE_WIDTH = 4
-BUBBLE_INNER_PAD = 16
+BUBBLE_INNER_PAD = 12
+# 写植が成立する最小フォント（収まらない場合の床）。
+TEXT_FLOOR_SIZE = 18
 
 
 def render_project_pages(
@@ -129,8 +131,6 @@ def draw_panel_art(
     else:
         draw.rectangle(box, fill=(230, 232, 235, 255))
     draw.rectangle(box, outline=(20, 20, 20, 255), width=PANEL_OUTLINE_WIDTH)
-    label_font = load_label_font(20)
-    draw.text((box[0] + 14, box[1] + 10), panel.panel_id, fill=(20, 20, 20, 255), font=label_font)
 
 
 def draw_panel_text(
@@ -210,27 +210,6 @@ def _anchor_point(position: str, box: tuple[int, int, int, int]) -> tuple[int, i
     return points.get(position, points["center"])
 
 
-def _default_bubble(dialogue: Dialogue, panel_box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    left, top, right, bottom = panel_box
-    panel_w = right - left
-    panel_h = bottom - top
-    if dialogue.box:
-        x = left + int(dialogue.box[0] * panel_w)
-        y = top + int(dialogue.box[1] * panel_h)
-        bw = int(dialogue.box[2] * panel_w)
-        bh = int(dialogue.box[3] * panel_h)
-        return (x, y, x + bw, y + bh)
-    # 縦書きは縦長、横書きは横長の既定サイズにする。
-    if dialogue.vertical:
-        bw = max(120, min(int(panel_w * 0.34), 360))
-        bh = max(160, min(int(panel_h * 0.6), 560))
-    else:
-        bw = max(200, min(int(panel_w * 0.6), 480))
-        bh = max(120, min(int(panel_h * 0.34), 360))
-    cx, cy = _anchor_point(dialogue.position, panel_box)
-    return (cx - bw // 2, cy - bh // 2, cx + bw // 2, cy + bh // 2)
-
-
 def _clamp_box(box: tuple[int, int, int, int], bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     bl, bt, br, bb = bounds
     x0, y0, x1, y1 = box
@@ -246,34 +225,68 @@ def resolve_dialogue_layout(
     panel_box: tuple[int, int, int, int],
     typography: TypographySettings,
 ) -> tuple[tuple[int, int, int, int], typeset.TextLayout]:
-    """吹き出し枠と写植レイアウトを決める（描画と検査で共通利用）。"""
+    """吹き出し枠と写植レイアウトを決める（描画と検査で共通利用）。
+
+    吹き出しはコマを埋め尽くさず内容に合わせて最小限の大きさにし、
+    必要に応じてフォントを縮小する。明示的なboxがあればそれを尊重する。
+    """
     left, top, right, bottom = panel_box
+    pw, ph = right - left, bottom - top
     inset = PANEL_OUTLINE_WIDTH + 4
     bounds = (left + inset, top + inset, right - inset, bottom - inset)
-    bubble = _clamp_box(_default_bubble(dialogue, panel_box), bounds)
     font_path = find_dialogue_font_path()
     font_path_str = str(font_path) if font_path else None
+    vertical = dialogue.vertical
+    pad = BUBBLE_INNER_PAD
 
-    default_size = min(dialogue.font_size, typography.default_font_size or dialogue.font_size)
-    default_size = max(default_size, dialogue.min_font_size)
-    min_size = dialogue.min_font_size
+    default_size = max(min(dialogue.font_size, typography.default_font_size or dialogue.font_size), TEXT_FLOOR_SIZE)
+    # 形状ごとの余白係数（楕円/雲/爆発は内接ぶん広めに取る）。
+    if dialogue.balloon in {"oval", "cloud", "burst"}:
+        shape_x, shape_y = 1.24, 1.18
+    else:
+        shape_x, shape_y = 1.05, 1.05
 
-    def layout_for(target_box: tuple[int, int, int, int]) -> typeset.TextLayout:
-        inner_w = (target_box[2] - target_box[0]) - BUBBLE_INNER_PAD * 2
-        inner_h = (target_box[3] - target_box[1]) - BUBBLE_INNER_PAD * 2
-        return typeset.layout_text(
-            dialogue.text, font_path_str, max(8, inner_w), max(8, inner_h),
-            dialogue.vertical, default_size, min_size,
+    if dialogue.box:
+        # 編集UIなどで指定された枠を尊重し、その中へ収める。
+        bx = left + int(dialogue.box[0] * pw)
+        by = top + int(dialogue.box[1] * ph)
+        bubble = _clamp_box((bx, by, bx + int(dialogue.box[2] * pw), by + int(dialogue.box[3] * ph)), bounds)
+        inner_w = (bubble[2] - bubble[0]) / shape_x - pad * 2
+        inner_h = (bubble[3] - bubble[1]) / shape_y - pad * 2
+        layout = typeset.layout_text(
+            dialogue.text, font_path_str, max(8, inner_w), max(8, inner_h), vertical, default_size, TEXT_FLOOR_SIZE
         )
+        return bubble, layout
 
-    layout = layout_for(bubble)
-    if not layout.fits:
-        # 吹き出しをコマ内最大まで広げてから再計算する。
-        expanded = _clamp_box(bounds, bounds)
-        expanded_layout = layout_for(expanded)
-        if expanded_layout.fits or expanded_layout.font_size >= layout.font_size:
-            bubble, layout = expanded, expanded_layout
-    return bubble, layout
+    # 内容に合わせて自動サイズ。コマの一定割合を上限にする。
+    if vertical:
+        cap_w, cap_h = pw * 0.62, ph * 0.84
+    else:
+        cap_w, cap_h = pw * 0.86, ph * 0.58
+    cap_w = min(cap_w, bounds[2] - bounds[0])
+    cap_h = min(cap_h, bounds[3] - bounds[1])
+
+    chosen: typeset.TextLayout | None = None
+    for size in range(default_size, TEXT_FLOOR_SIZE - 1, -1):
+        inner_w = cap_w / shape_x - pad * 2
+        inner_h = cap_h / shape_y - pad * 2
+        if inner_w < size or inner_h < size:
+            continue
+        layout = typeset.layout_text(dialogue.text, font_path_str, inner_w, inner_h, vertical, size, size)
+        if layout.fits:
+            chosen = layout
+            break
+    if chosen is None:
+        inner_w = max(8.0, cap_w / shape_x - pad * 2)
+        inner_h = max(8.0, cap_h / shape_y - pad * 2)
+        chosen = typeset.layout_text(dialogue.text, font_path_str, inner_w, inner_h, vertical, TEXT_FLOOR_SIZE, TEXT_FLOOR_SIZE)
+
+    # 吹き出しを内容ぴったりに縮める。
+    bubble_w = int(min(cap_w, chosen.width * shape_x + pad * 2))
+    bubble_h = int(min(cap_h, chosen.height * shape_y + pad * 2))
+    cx, cy = _anchor_point(dialogue.position, panel_box)
+    bubble = _clamp_box((cx - bubble_w // 2, cy - bubble_h // 2, cx + bubble_w // 2, cy + bubble_h // 2), bounds)
+    return bubble, chosen
 
 
 def draw_dialogue(
@@ -317,8 +330,8 @@ def _draw_balloon_shape(
     white = (255, 255, 255, 255)
     x0, y0, x1, y1 = bubble
     if dialogue.balloon == "caption":
+        # ナレーションは四角枠。しっぽは付けない。
         draw.rectangle(bubble, fill=(252, 252, 250, 255), outline=outline, width=3)
-        _draw_tail(draw, dialogue, bubble, panel_box, outline, white, square=True)
         return
     if dialogue.balloon == "burst":
         _draw_burst(draw, bubble, outline, white)
@@ -338,13 +351,13 @@ def _tail_tip(dialogue: Dialogue, bubble, panel_box) -> tuple[int, int]:
     pw, ph = right - left, bottom - top
     if dialogue.tail is not None:
         return (left + int(dialogue.tail.tip[0] * pw), top + int(dialogue.tail.tip[1] * ph))
-    # 既定はコマ中央へ向ける（話者方向の代理）。
+    # 既定は吹き出し下方向へ短く出す（話者方向の代理）。
     bx = (bubble[0] + bubble[2]) / 2
     by = (bubble[1] + bubble[3]) / 2
-    cx, cy = (left + pw / 2, top + ph / 2)
+    cx, cy = (left + pw / 2, bottom - ph * 0.1)
     dx, dy = cx - bx, cy - by
     norm = math.hypot(dx, dy) or 1.0
-    reach = min(pw, ph) * 0.18
+    reach = min(pw, ph) * 0.07
     return (int(bx + dx / norm * (abs(bubble[2] - bubble[0]) / 2 + reach)),
             int(by + dy / norm * (abs(bubble[3] - bubble[1]) / 2 + reach)))
 
@@ -355,20 +368,23 @@ def _draw_tail(draw, dialogue, bubble, panel_box, outline, fill, square: bool = 
     x0, y0, x1, y1 = bubble
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     tip = _tail_tip(dialogue, bubble, panel_box)
-    width_ratio = dialogue.tail.width if dialogue.tail is not None else 0.16
-    base_w = max(10, (x1 - x0) * width_ratio)
-    # 付け根は吹き出し中心から先端方向の縁に取る。
+    width_ratio = dialogue.tail.width if dialogue.tail is not None else 0.12
+    base_w = max(12, min((x1 - x0) * width_ratio, 26))
+    # 付け根は吹き出しの縁に取る。
     dx, dy = tip[0] - cx, tip[1] - cy
     norm = math.hypot(dx, dy) or 1.0
     ux, uy = dx / norm, dy / norm
     rx, ry = (x1 - x0) / 2, (y1 - y0) / 2
-    base_cx = cx + ux * rx * 0.92
-    base_cy = cy + uy * ry * 0.92
+    base_cx = cx + ux * rx * 0.98
+    base_cy = cy + uy * ry * 0.98
     # 縁に沿う垂直方向ベクトル。
     px, py = -uy, ux
     p1 = (base_cx + px * base_w / 2, base_cy + py * base_w / 2)
     p2 = (base_cx - px * base_w / 2, base_cy - py * base_w / 2)
-    draw.polygon([p1, p2, tip], fill=fill, outline=outline)
+    # 付け根（吹き出し内側）の線は描かず、斜辺だけ縁取りして自然に繋げる。
+    draw.polygon([p1, p2, tip], fill=fill)
+    draw.line([p1, tip], fill=outline, width=3)
+    draw.line([p2, tip], fill=outline, width=3)
 
 
 def _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, fill) -> None:
@@ -388,7 +404,7 @@ def _draw_cloud(draw, bubble, outline, fill) -> None:
     x0, y0, x1, y1 = bubble
     w, h = x1 - x0, y1 - y0
     draw.rounded_rectangle((x0 + w * 0.06, y0 + h * 0.12, x1 - w * 0.06, y1 - h * 0.12),
-                           radius=int(min(w, h) * 0.3), fill=fill, outline=outline, width=3)
+                           radius=int(min(w, h) * 0.3), fill=fill)
     # 縁にこぶを並べて雲状にする。
     bumps = max(6, int(w / 60))
     rb = min(w, h) * 0.12

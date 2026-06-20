@@ -46,9 +46,8 @@ def _rows_and_weights(panel_count: int, family: str) -> tuple[list[int], list[fl
 
     if family in {"dialogue", "silent"}:
         rows = _distribute_rows(panel_count, 2)
-        # 全幅コマが連続しないよう、単独行は重みを交互に変える。
-        weights = _vary_full_width(rows)
-        return rows, weights
+        # 行境界が中央(腹切り)に来ないよう非対称な重みにする。
+        return rows, _vary_full_width(rows, _asymmetric_weights(rows))
 
     if family == "establish":
         # 先頭に状況提示の大ゴマ、残りを分配する。
@@ -83,7 +82,12 @@ def _rows_and_weights(panel_count: int, family: str) -> tuple[list[int], list[fl
 
     # 既定は会話グリッド。
     rows = _distribute_rows(panel_count, 2)
-    return rows, _vary_full_width(rows)
+    return rows, _vary_full_width(rows, _asymmetric_weights(rows))
+
+
+def _asymmetric_weights(rows: list[int]) -> list[float]:
+    """行の高さを交互にずらし、全幅の横線が中央(腹切り)に揃うのを避ける。"""
+    return [1.0 + (0.16 if i % 2 == 0 else -0.12) for i in range(len(rows))]
 
 
 def _vary_full_width(rows: list[int], weights: list[float] | None = None) -> list[float]:

@@ -19,8 +19,10 @@ LINE_START_FORBIDDEN = set(
 LINE_END_FORBIDDEN = set("「『（［｛〔〈《【（([｟")
 # 縦書きで90度回転させる文字（長音・ダッシュ・括弧類）。
 ROTATE_CHARS = set("ー－—‐-~〜（）()「」『』【】〈〉《》〔〕［］｛｝<>＜＞≪≫…‥")
-# 縦書きで右上へ寄せる小書き仮名・句読点。
-SMALL_SHIFT_CHARS = set("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ、。，．")
+# 縦書きで右上へ寄せる小書き仮名。
+SMALL_KANA_CHARS = set("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ")
+# 縦書きでセル右上へ置く句読点。
+PUNCT_CHARS = set("、。，．")
 
 
 @dataclass
@@ -178,8 +180,14 @@ def _draw_glyph(
     stroke_width: int,
     stroke_fill: tuple[int, int, int],
     rotate: bool,
+    cell: float = 0.0,
+    corner: str = "",
 ) -> None:
-    """1セル分のグリフを中心(cx, cy)へ描く。rotateで90度回転。"""
+    """1セル分のグリフを中心(cx, cy)へ描く。
+
+    rotateで90度回転。corner="tr"のときはセル(中心cx,cy・一辺cell)の右上へ寄せる
+    （縦書きの句読点向け）。
+    """
     pad = stroke_width + 4
     try:
         bbox = font.getbbox(text)
@@ -199,8 +207,13 @@ def _draw_glyph(
     )
     if rotate:
         tile = tile.rotate(-90, expand=True)
-    paste_x = int(cx - tile.width / 2)
-    paste_y = int(cy - tile.height / 2)
+    if corner == "tr" and cell:
+        # セル右上に寄せる（縦書きの句読点）。
+        paste_x = int(cx + cell / 2 - tile.width - cell * 0.04)
+        paste_y = int(cy - cell / 2 + cell * 0.04)
+    else:
+        paste_x = int(cx - tile.width / 2)
+        paste_y = int(cy - tile.height / 2)
     base.alpha_composite(tile, (paste_x, paste_y))
 
 
@@ -249,9 +262,13 @@ def _draw_cell_vertical(base, full_font, small_font, kind, glyph_text, cx, cy, c
         _draw_glyph(base, full_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=True)
         return
     ch = glyph_text
-    if ch in SMALL_SHIFT_CHARS:
-        # 小書き仮名・句読点は右上へ寄せる。
-        _draw_glyph(base, full_font, ch, cx + cell * 0.18, cy - cell * 0.18, fill, stroke_width, stroke_fill, rotate=False)
+    if ch in PUNCT_CHARS:
+        # 句読点はセル右上へ置く（縦書きの自然な配置）。
+        _draw_glyph(base, full_font, ch, cx, cy, fill, stroke_width, stroke_fill, rotate=False, cell=cell, corner="tr")
+        return
+    if ch in SMALL_KANA_CHARS:
+        # 小書き仮名は軽く右上へ寄せる。
+        _draw_glyph(base, full_font, ch, cx + cell * 0.1, cy - cell * 0.1, fill, stroke_width, stroke_fill, rotate=False)
         return
     _draw_glyph(base, full_font, ch, cx, cy, fill, stroke_width, stroke_fill, rotate=False)
 
