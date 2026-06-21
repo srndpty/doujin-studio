@@ -3011,6 +3011,17 @@
             "type": "array",
             "title": "Candidate Ids"
           },
+          "generation_input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Input Hash"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",

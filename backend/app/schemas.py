@@ -553,6 +553,7 @@ class GenerationJobResponse(BaseModel):
     node: str | None = None
     message: str
     candidate_ids: list[str] = Field(default_factory=list)
+    generation_input_hash: str | None = None
     created_at: datetime
     updated_at: datetime
 

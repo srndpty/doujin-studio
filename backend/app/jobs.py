@@ -39,6 +39,7 @@ class GenerationJob:
     prompt_id: str | None = None
     # ジョブ開始時のproject世代。構成全置換後の古い候補混入を防ぐ。
     epoch: int = 0
+    generation_input_hash: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     revision: int = 0
@@ -55,6 +56,7 @@ class GenerationJob:
             "node": self.node,
             "message": self.message,
             "candidate_ids": self.candidate_ids,
+            "generation_input_hash": self.generation_input_hash,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -183,6 +185,7 @@ class JobManager:
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
             prompt_id=record.prompt_id,
             epoch=record.epoch,
+            generation_input_hash=record.generation_input_hash,
             created_at=record.created_at.replace(tzinfo=timezone.utc)
             if record.created_at.tzinfo is None
             else record.created_at,
@@ -240,6 +243,7 @@ class JobManager:
                     panel_id=job.panel_id,
                     candidate_count=job.candidate_count,
                     epoch=job.epoch,
+                    generation_input_hash=job.generation_input_hash,
                     created_at=job.created_at,
                     updated_at=job.updated_at,
                 )
@@ -252,6 +256,7 @@ class JobManager:
             record.message = job.message
             record.candidate_ids_json = json.dumps(job.candidate_ids)
             record.prompt_id = job.prompt_id
+            record.generation_input_hash = job.generation_input_hash
             record.updated_at = job.updated_at
             session.commit()
 

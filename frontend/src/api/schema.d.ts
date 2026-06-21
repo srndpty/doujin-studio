@@ -1172,6 +1172,8 @@ export interface components {
             message: string;
             /** Candidate Ids */
             candidate_ids?: string[];
+            /** Generation Input Hash */
+            generation_input_hash?: string | null;
             /**
              * Created At
              * Format: date-time

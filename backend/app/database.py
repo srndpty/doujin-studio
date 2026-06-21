@@ -45,6 +45,7 @@ class GenerationJobRecord(Base):
     prompt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ジョブ開始時のproject世代。候補保存時に現在世代と異なれば破棄する。
     epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generation_input_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidate_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -165,6 +166,10 @@ def ensure_columns(engine) -> None:
         if "epoch" not in job_columns:
             connection.execute(
                 text("ALTER TABLE generation_jobs ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0")
+            )
+        if "generation_input_hash" not in job_columns:
+            connection.execute(
+                text("ALTER TABLE generation_jobs ADD COLUMN generation_input_hash TEXT")
             )
         # 旧DBにactive重複があれば一意制約導入前に片方だけ残して終端化する。
         connection.execute(

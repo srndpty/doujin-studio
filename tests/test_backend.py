@@ -364,6 +364,46 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
         assert panel2["selected_candidate_id"] == user_pick
 
 
+def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EditingBackend:
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                def change_input(target_panel, target_page) -> None:
+                    target_panel.prompt = "NEW_PROMPT"
+                    target_panel.generation.prompt = "NEW_PROMPT"
+
+                main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
+                return ImageResult("stub", "done", target_path, "old input result")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        assert panel["prompt"] == "NEW_PROMPT"
+        assert panel["image_candidates"] == []
+        assert panel["selected_candidate_id"] is None
+        assert panel["generation"]["status"] == "pending"
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert jobs[0]["status"] == "cancelled"
+        assert jobs[0]["generation_input_hash"]
+
+
 def _queue_client(running: list[str], pending: list[str], posted: list[tuple[str, dict | None]]):
     class FakeComfyQueueClient:
         def __enter__(self):
@@ -931,6 +971,40 @@ def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeyp
         response = client.post(f"/api/projects/{project_id}/export/cbz")
         assert response.status_code == 409
         assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+
+def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        original_export = main_module.export_confirmed_cbz
+
+        def update_then_export(*args, **kwargs):
+            def break_reading_order(manga: MangaProject) -> None:
+                manga.pages[0].reading_order = ["missing-panel"]
+
+            app.state.mutation.mutate(project_id, break_reading_order)
+            return original_export(*args, **kwargs)
+
+        monkeypatch.setattr(main_module, "export_confirmed_cbz", update_then_export)
+        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert response.status_code == 409
+        latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
+        assert any(issue["code"] == "invalid_reading_order" for issue in latest_preflight["errors"])
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+
+def test_production_status_detects_missing_render_asset(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        rendered = client.post(f"/api/projects/{project_id}/pages/1/render").json()
+        asset = tmp_path / "exports" / rendered["page_asset"]
+        asset.unlink()
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        page = next(item for item in status["pages"] if item["page"] == 1)
+        assert page["rendered"] is False
+        saved_page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert saved_page["render_status"] == "pending"
 
 
 def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:

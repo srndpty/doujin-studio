@@ -85,4 +85,9 @@ Alembic 全面導入の前段として、最低限:
 - overlay画像/maskも正規化PNGの内容hash付き不変assetへ保存する。全文JSON保存でページ・
   コマ順・読み順が変わった場合は`generation_epoch`を進め、旧ComfyUI promptも停止する。
 - 旧形式の`done`ページ（`render_asset`/`render_hash`なし）は初回ロード時に`pending`へ移行する。
-- 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。
+- 生成ジョブは構造epochに加えて、実生成panelと参照画像内容の`generation_input_hash`を保持し、
+  候補保存前に不一致なら古い候補を破棄する。
+- CBZ確定は開始時revision/epochの厳密CASとし、production statusは不変PNGの実在・名前・
+  現在の描画hash一致まで検証する。
+- 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。また、不変assetは
+  current JSON・project revision・候補・CBZ manifestの参照を走査する猶予付きGCが必要。

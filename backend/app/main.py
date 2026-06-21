@@ -857,9 +857,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
                 ),
             )
-        status = build_production_status(project_id, snapshot)
+        status = build_production_status(project_id, snapshot, settings.export_dir)
         blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
         # CBZ完成まではDBをdoneへ進めない。失敗時は全ページpendingのまま残る。
+        pages_dir = settings.export_dir / project_id / "pages"
+        existing_page_assets = set(pages_dir.glob("*.png")) if pages_dir.is_dir() else set()
         page_assets, render_warnings = render_snapshot_pages(
             project_id, snapshot, settings.export_dir, record.revision
         )
@@ -867,10 +869,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             project_id, snapshot.title, page_assets, settings.export_dir, record.revision
         )
         try:
-            manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+            manga, revision = commit_rendered_pages(
+                request.app,
+                project_id,
+                snapshot,
+                page_assets,
+                expected_revision=record.revision,
+                expected_epoch=record.generation_epoch,
+            )
         except Exception:
             # 入力競合で409になった古いCBZをopen-folderの候補へ残さない。
             cbz_path.unlink(missing_ok=True)
+            for page_asset in page_assets:
+                if page_asset not in existing_page_assets:
+                    page_asset.unlink(missing_ok=True)
             raise
         return ExportResponse(
             project_id=project_id,
@@ -907,7 +919,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/projects/{project_id}/production-status", response_model=ProjectProductionStatus)
     def get_production_status(project_id: str, request: Request) -> ProjectProductionStatus:
         record = load_project_record(request, project_id)
-        return build_production_status(project_id, parse_manga_json(record.manga_json))
+        return build_production_status(
+            project_id,
+            parse_manga_json(record.manga_json),
+            request.app.state.settings.export_dir,
+        )
 
     @app.get("/api/llm/status", response_model=LLMStatusResponse)
     async def llm_status(request: Request) -> LLMStatusResponse:
@@ -1357,7 +1373,14 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             app, job.project_id, job.panel_id, set_running, expected_epoch=job.epoch
         )
         panel = find_panel(manga, job.panel_id)
-        manager.update(job, status="running", message="画像候補を生成中です")
+        prepared_panel = prepare_panel_for_generation(manga, panel)
+        input_hash = generation_input_hash(manga, panel, app.state.settings.export_dir)
+        manager.update(
+            job,
+            status="running",
+            generation_input_hash=input_hash,
+            message="画像候補を生成中です",
+        )
         backend = build_image_backend(app.state.settings)
         # 開始時の選択状態を記録し、生成中にユーザーが選び直したら自動選択で上書きしない。
         selection_state = {
@@ -1368,7 +1391,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
 
         for candidate_index in range(job.candidate_count):
             candidate_id = str(uuid.uuid4())
-            generated_panel = prepare_panel_for_generation(manga, panel)
+            generated_panel = prepared_panel.model_copy(deep=True)
             generated_panel.generation.seed += candidate_index
             target = (
                 app.state.settings.export_dir
@@ -1429,7 +1452,21 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 created_at=now_utc(),
             )
 
-            def add_candidate(target_panel, target_page, new_candidate=candidate) -> None:
+            def add_candidate_to_latest(
+                latest: MangaProject, new_candidate: ImageCandidate = candidate
+            ) -> bool:
+                target_panel, target_page = find_panel_and_page(latest, job.panel_id)
+                if target_panel is None:
+                    raise RuntimeError("コマが見つかりません")
+                latest_hash = generation_input_hash(
+                    latest, target_panel, app.state.settings.export_dir
+                )
+                if latest_hash != job.generation_input_hash:
+                    target_panel.generation.status = "pending"
+                    target_panel.generation.message = (
+                        "生成中に入力が変更されたため、古い候補を破棄しました"
+                    )
+                    return False
                 target_panel.image_candidates.append(new_candidate)
                 current = target_panel.selected_candidate_id
                 # 開始時の選択、またはジョブ自身が直前に自動選択した状態から変わっていなければ
@@ -1446,12 +1483,17 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                         mark_page_dirty(target_page)
                 else:
                     selection_state["allow"] = False
+                return True
 
             # 候補ごとに最新を読み直してマージし、生成中のユーザー編集を残す。
             # 構成全置換後（世代不一致）なら候補を保存せず破棄する（EpochMismatchError）。
-            update_panel_in_latest(
-                app, job.project_id, job.panel_id, add_candidate, expected_epoch=job.epoch
+            stored, _latest, _revision = app.state.mutation.mutate(
+                job.project_id,
+                add_candidate_to_latest,
+                expected_epoch=job.epoch,
             )
+            if not stored:
+                raise GenerationInputMismatchError()
             job.candidate_ids.append(candidate_id)
             manager.update(
                 job,
@@ -1481,6 +1523,14 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             node=None,
             prompt_id=None,
             message="作品構成が変わったため生成を破棄しました",
+        )
+    except GenerationInputMismatchError:
+        manager.update(
+            job,
+            status="cancelled",
+            node=None,
+            prompt_id=None,
+            message="生成入力が変わったため古い候補を破棄しました",
         )
     except Exception as exc:
         mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
@@ -1540,7 +1590,9 @@ def _to_preflight_response(
     )
 
 
-def build_production_status(project_id: str, manga: MangaProject) -> ProjectProductionStatus:
+def build_production_status(
+    project_id: str, manga: MangaProject, export_dir: Path
+) -> ProjectProductionStatus:
     page_statuses: list[PageProductionStatus] = []
     project_blockers: list[str] = []
     adopted_total = 0
@@ -1556,9 +1608,7 @@ def build_production_status(project_id: str, manga: MangaProject) -> ProjectProd
                 candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates
             )
         )
-        rendered = (
-            page.render_status == "done" and bool(page.render_asset) and bool(page.render_hash)
-        )
+        rendered = page_render_is_valid(manga, page, export_dir)
         blockers: list[str] = []
         for panel in page.panels:
             if not panel.selected_candidate_id:
@@ -1610,12 +1660,13 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
             raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         session.expunge(record)
     manga = parse_manga_json(record.manga_json)
-    if migrate_legacy_render_state(manga):
+    export_dir = request.app.state.settings.export_dir
+    if migrate_legacy_render_state(manga, export_dir):
         # 旧形式のdoneを安全側へ戻す。CAS競合時は最新へ同じ移行を再適用する。
         run_mutation(
             request.app.state.mutation,
             project_id,
-            migrate_legacy_render_state,
+            lambda latest: migrate_legacy_render_state(latest, export_dir),
         )
         with request.app.state.SessionLocal() as session:
             record = session.get(ProjectRecord, project_id)
@@ -1629,18 +1680,68 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
     return record
 
 
-def migrate_legacy_render_state(manga: MangaProject) -> bool:
-    """hash付きrender assetを持たない旧doneページをpendingへ移行する。"""
+def migrate_legacy_render_state(manga: MangaProject, export_dir: Path) -> bool:
+    """不変render assetが欠損・不整合なdoneページをpendingへ移行する。"""
     changed = False
     for page in manga.pages:
-        if page.render_status == "done" and (not page.render_asset or not page.render_hash):
+        if page.render_status == "done" and not page_render_is_valid(manga, page, export_dir):
             mark_page_dirty(page)
             changed = True
     return changed
 
 
+def page_render_is_valid(manga: MangaProject, page, export_dir: Path) -> bool:
+    if page.render_status != "done" or not page.render_asset or not page.render_hash:
+        return False
+    if page.render_hash != page_render_hash(manga, page):
+        return False
+    expected_name = f"page_{page.page:03d}.{page.render_hash}.png"
+    try:
+        path = resolve_asset_path(page.render_asset, export_dir)
+    except ValueError:
+        return False
+    return path.name == expected_name and path.is_file()
+
+
 class RenderInputChangedError(Exception):
     pass
+
+
+class GenerationInputMismatchError(Exception):
+    pass
+
+
+def generation_input_hash(manga: MangaProject, panel, export_dir: Path) -> str:
+    """実際にbackendへ渡す生成入力と参照画像内容から安定hashを作る。"""
+    generated = prepare_panel_for_generation(manga, panel)
+    payload = generated.model_dump(
+        exclude={
+            "image_asset",
+            "image_candidates",
+            "selected_candidate_id",
+            "dialogue",
+            "sfx",
+        }
+    )
+    generation = payload["generation"]
+    for volatile in ("status", "message", "prompt_id"):
+        generation.pop(volatile, None)
+    asset_ids = {reference.asset for reference in generated.control_references} | {
+        reference.asset for reference in generated.generation.reference_images
+    }
+    asset_digests: dict[str, str] = {}
+    for asset_id in sorted(asset_ids):
+        try:
+            path = resolve_asset_path(asset_id, export_dir)
+            asset_digests[asset_id] = (
+                hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+            )
+        except (OSError, ValueError):
+            asset_digests[asset_id] = "missing"
+    payload["asset_digests"] = asset_digests
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def render_snapshot_page(
@@ -1728,6 +1829,9 @@ def commit_rendered_pages(
     project_id: str,
     snapshot: MangaProject,
     assets: list[Path],
+    *,
+    expected_revision: int | None = None,
+    expected_epoch: int | None = None,
 ) -> tuple[MangaProject, int]:
     """最新入力がsnapshotと一致する場合だけdoneと不変assetをCAS確定する。"""
     snapshot_pages = {page.page: page for page in snapshot.pages}
@@ -1755,7 +1859,12 @@ def commit_rendered_pages(
             )
 
     try:
-        _result, manga, revision = app.state.mutation.mutate(project_id, finalize)
+        _result, manga, revision = app.state.mutation.mutate(
+            project_id,
+            finalize,
+            expected_revision=expected_revision,
+            expected_epoch=expected_epoch,
+        )
     except RenderInputChangedError as exc:
         raise HTTPException(
             status_code=409,
@@ -1763,6 +1872,8 @@ def commit_rendered_pages(
         ) from exc
     except ProjectConflictError as exc:
         raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
+    except EpochMismatchError as exc:
+        raise HTTPException(status_code=409, detail="作品構成が更新されています") from exc
     return manga, revision
 
 
