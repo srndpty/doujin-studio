@@ -369,7 +369,8 @@ def draw_dialogue(
     typography: TypographySettings,
 ) -> list[str]:
     bubble, layout = resolve_dialogue_layout(dialogue, panel_box, typography)
-    font_path = find_dialogue_font_path()
+    # 写植フォントもtypography.primary_fontで解決する（レイアウトと描画を一致させる）。
+    font_path = find_dialogue_font_path(typography.primary_font)
     font_path_str = str(font_path) if font_path else None
     warnings = list(layout.warnings)
     fill = (20, 20, 20)

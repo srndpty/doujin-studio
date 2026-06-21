@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "[1/6] Ruff lint"
-& .\.venv\Scripts\python.exe scripts\export-openapi.py frontend\src\api\openapi.json
+# uv経由で起動し、.venv未作成のクリーン環境でも再現できるようにする。
+uv run python scripts\export-openapi.py frontend\src\api\openapi.json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Push-Location frontend
 try {
