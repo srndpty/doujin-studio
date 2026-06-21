@@ -634,7 +634,8 @@ function DialogueNode({
   }).flat();
   return (
     <Group>
-      {dialogue.tail?.enabled && (
+      {/* tail未指定はレンダラーと同様に既定で表示する。 */}
+      {(dialogue.tail?.enabled ?? true) && (
         <Line
           points={[bx + bw / 2, by + bh / 2, px + tip[0] * pw, py + tip[1] * ph]}
           stroke="#191919"
@@ -650,9 +651,10 @@ function DialogueNode({
         onClick={onSelect}
         onTap={onSelect}
         onDragEnd={(event) =>
+          // 幅・高さを考慮してクランプし、box[0]+box[2]>1 等の無効JSONを防ぐ。
           onMove([
-            clamp01((event.target.x() - px) / pw),
-            clamp01((event.target.y() - py) / ph),
+            clamp01(Math.min((event.target.x() - px) / pw, 1 - box[2])),
+            clamp01(Math.min((event.target.y() - py) / ph, 1 - box[3])),
             box[2],
             box[3]
           ])
