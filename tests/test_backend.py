@@ -1373,6 +1373,9 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
         assert panel["selected_candidate_id"] is None
         jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
         assert jobs[0]["status"] == "cancelled"
+        # 破棄した候補PNG本体も残らない（current/history未参照のため回収）。
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
 
 
 def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) -> None:
@@ -1418,6 +1421,35 @@ def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) ->
         # 構成置換後のページをdoneへ確定しない。
         pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
         assert all(page["render_status"] == "pending" for page in pages)
+
+
+def test_missing_selected_asset_blocks_render_and_cbz(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # 全ページ生成・レンダリングして完成状態にする。
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.get(f"/api/projects/{project_id}/production-status").json()["status"] == (
+            "complete"
+        )
+        # 採用candidateは残したまま、採用画像ファイルだけを消す非構造的な欠損を作る。
+        detail = client.get(f"/api/projects/{project_id}").json()
+        asset = detail["manga_json"]["pages"][0]["panels"][0]["image_asset"]
+        assert asset
+        (tmp_path / "exports" / asset).unlink()
+
+        # production statusはcompleteにならず、欠損をblocker化する。
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert status["status"] != "complete"
+        assert any("欠損" in blocker for blocker in status["blockers"])
+
+        # 採用画像が欠損したコマがあると、CBZ出力は422で拒否する。
+        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert export.status_code == 422
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+        # /renderもプレースホルダを完成PNGとして確定せず409で中止する。
+        render = client.post(f"/api/projects/{project_id}/render")
+        assert render.status_code == 409
 
 
 def test_character_profiles_are_composed_without_duplicates() -> None:

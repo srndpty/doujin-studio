@@ -326,6 +326,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_same_epoch()
         latest = load_project_record(request, project_id)
         snapshot = parse_manga_json(latest.manga_json)
+        # 採用candidateとassetが不整合なpanel（選択済みなのにasset欠損等）があれば、
+        # プレースホルダを完成画像として確定しないよう、PNG公開前に409で中止する。
+        inconsistent = find_inconsistent_selected_panel(snapshot, settings.export_dir)
+        if inconsistent is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{inconsistent.panel_id}: 採用画像が欠損/不整合です。"
+                    "再選択または再生成してから出力してください。"
+                ),
+            )
         # publish開始からcommitまで一つのtry/exceptで囲い、途中失敗でも公開済みPNGを回収する。
         published_by_request: dict[Path, bool] = {}
         try:
@@ -902,6 +913,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
                 ),
             )
+        # 採用candidateとassetが不整合なpanelがあれば、プレースホルダ入りCBZを出さない。
+        inconsistent = find_inconsistent_selected_panel(snapshot, settings.export_dir)
+        if inconsistent is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{inconsistent.panel_id}: 採用画像が欠損/不整合です。CBZ出力前に修正してください。",
+            )
         status = build_production_status(project_id, snapshot, settings.export_dir)
         blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
         # CBZ完成まではDBをdoneへ進めない。失敗時は全ページpendingのまま残る。
@@ -1421,6 +1439,9 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
 
 async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     manager: JobManager = app.state.job_manager
+    # このジョブが生成した候補PNG。epoch/入力不一致での破棄時に未参照分を回収する。
+    # 最初のepochチェックで例外が出てもexceptで参照できるよう、try外で初期化する。
+    candidate_assets: dict[Path, bool] = {}
     try:
 
         def set_running(panel, page) -> None:
@@ -1495,6 +1516,8 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 return
             if result.asset_path is None:
                 raise RuntimeError("生成画像の保存先が返りませんでした")
+            # 生成したPNGを追跡する。破棄時にcurrent/history未参照なら回収する。
+            candidate_assets[Path(result.asset_path)] = True
             candidate = ImageCandidate(
                 id=candidate_id,
                 asset=str(result.asset_path),
@@ -1589,6 +1612,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     except EpochMismatchError:
         # ネーム再生成・ストーリー適用・復元で作品構成が置き換わった。古いプロンプトの
         # 候補を新作品へ混ぜないよう、保存せずジョブをキャンセル扱いにする。
+        cleanup_published_assets(app, job.project_id, candidate_assets)
         manager.update(
             job,
             status="cancelled",
@@ -1597,6 +1621,8 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             message="作品構成が変わったため生成を破棄しました",
         )
     except GenerationInputMismatchError:
+        # 破棄した候補のPNG本体も、current/history未参照なら回収する。
+        cleanup_published_assets(app, job.project_id, candidate_assets)
         manager.update(
             job,
             status="cancelled",
@@ -1672,19 +1698,17 @@ def build_production_status(
     rendered_pages = 0
     for page in manga.pages:
         total = len(page.panels)
+        # 採用画像は「選択済み かつ assetが整合してファイルが存在する」ものだけ数える。
         adopted = sum(
-            1
-            for panel in page.panels
-            if panel.selected_candidate_id
-            and any(
-                candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates
-            )
+            1 for panel in page.panels if selected_panel_asset_is_valid(panel, export_dir)
         )
         rendered = page_render_is_valid(manga, page, export_dir)
         blockers: list[str] = []
         for panel in page.panels:
             if not panel.selected_candidate_id:
                 blockers.append(f"{panel.panel_id}: 採用画像が未選択です")
+            elif not selected_panel_asset_is_valid(panel, export_dir):
+                blockers.append(f"{panel.panel_id}: 採用画像が欠損しています")
         if not rendered:
             blockers.append(f"{page.page}ページ: ページが未レンダリングです")
         if adopted == total and rendered:
@@ -1760,6 +1784,35 @@ def migrate_legacy_render_state(manga: MangaProject, export_dir: Path) -> bool:
             mark_page_dirty(page)
             changed = True
     return changed
+
+
+def selected_panel_asset_is_valid(panel, export_dir: Path) -> bool:
+    """採用candidateと実際に描画するimage_assetが整合し、ファイルが存在するか。
+
+    generation_epochは構造変更しか検出しないため、候補選択・asset消失・候補削除などの
+    非構造編集ではプレースホルダを完成画像として確定し得る。これを明示的に弾く。
+    """
+    if not panel.selected_candidate_id or not panel.image_asset:
+        return False
+    candidate = next(
+        (item for item in panel.image_candidates if item.id == panel.selected_candidate_id),
+        None,
+    )
+    if candidate is None or panel.image_asset != candidate.asset:
+        return False
+    try:
+        return resolve_asset_path(panel.image_asset, export_dir).is_file()
+    except ValueError:
+        return False
+
+
+def find_inconsistent_selected_panel(manga: MangaProject, export_dir: Path):
+    """採用candidate指定済みなのにassetが欠損/不整合なpanelを返す（無ければNone）。"""
+    for page in manga.pages:
+        for panel in page.panels:
+            if panel.selected_candidate_id and not selected_panel_asset_is_valid(panel, export_dir):
+                return panel
+    return None
 
 
 def page_render_is_valid(manga: MangaProject, page, export_dir: Path) -> bool:
