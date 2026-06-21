@@ -64,6 +64,7 @@ from .renderer import (
     sanitize_export_filename,
 )
 from .schemas import (
+    ApiErrorResponse,
     BatchGenerationJobCreate,
     BatchGenerationJobResponse,
     CharacterReferenceResponse,
@@ -113,6 +114,13 @@ from .schemas import (
     StorySessionSummary,
 )
 from .story import StoryError
+
+# 同期生成API(generate-image / render)の追加エラー契約をOpenAPIへ明示する。
+# 実行時にキャンセルは409、生成バックエンド失敗は502を返す。
+GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
+    409: {"model": ApiErrorResponse, "description": "生成がキャンセルされた（入力変更・構成置換など）"},
+    502: {"model": ApiErrorResponse, "description": "画像生成バックエンドが失敗した"},
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -265,7 +273,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             load_project_record(request, project_id), request.app.state.settings.export_dir
         )
 
-    @app.post("/api/projects/{project_id}/render", response_model=RenderResponse)
+    @app.post(
+        "/api/projects/{project_id}/render",
+        response_model=RenderResponse,
+        responses=GENERATION_ERROR_RESPONSES,
+    )
     async def render_project(
         project_id: str,
         request: Request,
@@ -296,15 +308,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         latest = load_project_record(request, project_id)
         snapshot = parse_manga_json(latest.manga_json)
+        # publish開始からcommitまで一つのtry/exceptで囲い、途中失敗でも公開済みPNGを回収する。
         published_by_request: dict[Path, bool] = {}
-        page_assets, warnings = render_snapshot_pages(
-            project_id,
-            snapshot,
-            settings.export_dir,
-            latest.revision,
-            ownership=published_by_request,
-        )
         try:
+            page_assets, warnings = render_snapshot_pages(
+                project_id,
+                snapshot,
+                settings.export_dir,
+                latest.revision,
+                ownership=published_by_request,
+            )
             manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
         except Exception:
             cleanup_published_assets(request.app, project_id, published_by_request)
@@ -320,6 +333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(
         "/api/projects/{project_id}/panels/{panel_id}/generate-image",
         response_model=PanelImageGenerationResponse,
+        responses=GENERATION_ERROR_RESPONSES,
     )
     async def generate_panel_image(
         project_id: str,
@@ -870,23 +884,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = build_production_status(project_id, snapshot, settings.export_dir)
         blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
         # CBZ完成まではDBをdoneへ進めない。失敗時は全ページpendingのまま残る。
+        # publish開始からcommitまで一つのtry/exceptで囲い、PNG公開後・CBZ生成中に
+        # 例外が起きても、このリクエストで公開した不変アセットを必ず回収する。
         published_by_request: dict[Path, bool] = {}
-        page_assets, render_warnings = render_snapshot_pages(
-            project_id,
-            snapshot,
-            settings.export_dir,
-            record.revision,
-            ownership=published_by_request,
-        )
-        cbz_path = export_confirmed_cbz(
-            project_id,
-            snapshot.title,
-            page_assets,
-            settings.export_dir,
-            record.revision,
-            ownership=published_by_request,
-        )
         try:
+            page_assets, render_warnings = render_snapshot_pages(
+                project_id,
+                snapshot,
+                settings.export_dir,
+                record.revision,
+                ownership=published_by_request,
+            )
+            cbz_path = export_confirmed_cbz(
+                project_id,
+                snapshot.title,
+                page_assets,
+                settings.export_dir,
+                record.revision,
+                ownership=published_by_request,
+            )
             manga, revision = commit_rendered_pages(
                 request.app,
                 project_id,
@@ -1995,19 +2011,19 @@ def render_and_commit_page(
     page_number: int,
 ) -> tuple[Path, list[str], MangaProject, int]:
     published_by_request: dict[Path, bool] = {}
-    asset, warnings = render_snapshot_page(
-        project_id,
-        snapshot,
-        page_number,
-        app.state.settings.export_dir,
-        snapshot_revision,
-        ownership=published_by_request,
-    )
-    # 対象ページだけを確定するため、snapshotを対象ページへ絞ったCAS用projectにする。
-    page = next(item for item in snapshot.pages if item.page == page_number)
-    commit_snapshot = snapshot.model_copy(deep=True)
-    commit_snapshot.pages = [page.model_copy(deep=True)]
     try:
+        asset, warnings = render_snapshot_page(
+            project_id,
+            snapshot,
+            page_number,
+            app.state.settings.export_dir,
+            snapshot_revision,
+            ownership=published_by_request,
+        )
+        # 対象ページだけを確定するため、snapshotを対象ページへ絞ったCAS用projectにする。
+        page = next(item for item in snapshot.pages if item.page == page_number)
+        commit_snapshot = snapshot.model_copy(deep=True)
+        commit_snapshot.pages = [page.model_copy(deep=True)]
         manga, revision = commit_rendered_pages(app, project_id, commit_snapshot, [asset])
     except Exception:
         cleanup_published_assets(app, project_id, published_by_request)

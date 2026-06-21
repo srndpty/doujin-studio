@@ -326,6 +326,26 @@
               }
             }
           },
+          "409": {
+            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "画像生成バックエンドが失敗した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -387,6 +407,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "画像生成バックエンドが失敗した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -2181,6 +2221,20 @@
   },
   "components": {
     "schemas": {
+      "ApiErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ApiErrorResponse",
+        "description": "FastAPI標準のエラー本体({\"detail\": ...})に対応する型。\n\n409(キャンセル)・502(生成バックエンド失敗)などの同期API契約をOpenAPIへ明示するため。"
+      },
       "BalloonTail": {
         "properties": {
           "enabled": {

@@ -418,8 +418,10 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 2},
         )
-        assert response.status_code == 200
-        panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        # 生成入力が変わってジョブがcancelledになると、同期生成APIは409を返す。
+        assert response.status_code == 409
+        detail = client.get(f"/api/projects/{project_id}").json()
+        panel = detail["manga_json"]["pages"][0]["panels"][0]
         assert panel["prompt"] == "NEW_PROMPT"
         assert panel["image_candidates"] == []
         assert panel["selected_candidate_id"] is None
@@ -1022,6 +1024,8 @@ def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
 def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
+        project_dir = tmp_path / "exports" / project_id
+        pngs_before = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
         monkeypatch.setattr(
             main_module,
             "export_confirmed_cbz",
@@ -1031,6 +1035,9 @@ def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
             client.post(f"/api/projects/{project_id}/export/cbz")
         pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
         assert all(page["render_status"] == "pending" for page in pages)
+        # CBZ生成が例外でも、先に公開したPNGは回収され残らない。
+        pngs_after = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
+        assert pngs_after == pngs_before
 
 
 def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeypatch) -> None:
@@ -1355,14 +1362,15 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 1},
         )
-        assert response.status_code == 200
+        # 世代が変わってジョブがcancelledになると、同期生成APIは409を返す。
+        assert response.status_code == 409
+        detail = client.get(f"/api/projects/{project_id}").json()
         panel = next(
-            p
-            for p in response.json()["manga_json"]["pages"][0]["panels"]
-            if p["panel_id"] == "p01_01"
+            p for p in detail["manga_json"]["pages"][0]["panels"] if p["panel_id"] == "p01_01"
         )
         # 世代が変わったため、古いプロンプトの候補は新作品へ混入しない。
         assert panel["image_candidates"] == []
+        assert panel["selected_candidate_id"] is None
         jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
         assert jobs[0]["status"] == "cancelled"
 

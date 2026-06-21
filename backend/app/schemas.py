@@ -441,6 +441,15 @@ class GenerateNameRequest(BaseModel):
     target_pages: Literal[4, 8, 16] = 4
 
 
+class ApiErrorResponse(BaseModel):
+    """FastAPI標準のエラー本体({"detail": ...})に対応する型。
+
+    409(キャンセル)・502(生成バックエンド失敗)などの同期API契約をOpenAPIへ明示するため。
+    """
+
+    detail: str
+
+
 class RenderResponse(BaseModel):
     project_id: str
     page_assets: list[str]

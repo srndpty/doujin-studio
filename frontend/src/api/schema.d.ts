@@ -794,6 +794,16 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ApiErrorResponse
+         * @description FastAPI標準のエラー本体({"detail": ...})に対応する型。
+         *
+         *     409(キャンセル)・502(生成バックエンド失敗)などの同期API契約をOpenAPIへ明示するため。
+         */
+        ApiErrorResponse: {
+            /** Detail */
+            detail: string;
+        };
+        /**
          * BalloonTail
          * @description 話者方向を示す吹き出しの先端（しっぽ）。
          */
@@ -2510,6 +2520,15 @@ export interface operations {
                     "application/json": components["schemas"]["RenderResponse"];
                 };
             };
+            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2517,6 +2536,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 画像生成バックエンドが失敗した */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -2546,6 +2574,15 @@ export interface operations {
                     "application/json": components["schemas"]["PanelImageGenerationResponse"];
                 };
             };
+            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2553,6 +2590,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 画像生成バックエンドが失敗した */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
