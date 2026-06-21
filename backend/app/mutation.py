@@ -52,6 +52,16 @@ def mark_page_dirty(page: Page) -> None:
     page.render_hash = None
 
 
+def reset_inflight_generation_state(manga: MangaProject) -> None:
+    """epoch更新後へ旧jobのactive表示を持ち越さない。"""
+    for page in manga.pages:
+        for panel in page.panels:
+            if panel.generation.status in {"queued", "running"}:
+                panel.generation.status = "pending"
+                panel.generation.prompt_id = None
+                panel.generation.message = "作品構成の更新により前の生成を中断しました"
+
+
 def parse_manga(raw: str) -> MangaProject:
     try:
         return MangaProject.model_validate(json.loads(raw))
@@ -135,6 +145,8 @@ class ProjectMutationService:
         payloadを正当化してしまう。期待値は必ず呼び出し元から受け取る。
         """
 
+        if increment_epoch:
+            reset_inflight_generation_state(replacement)
         normalize_manga_assets(replacement, self.export_dir)
         with self.session_factory() as session:
             record = session.get(ProjectRecord, project_id)
@@ -184,6 +196,7 @@ class ProjectMutationService:
                 raise ProjectConflictError()
             previous_json = record.manga_json
             replacement = build_replacement(session, parse_manga(previous_json))
+            reset_inflight_generation_state(replacement)
             normalize_manga_assets(replacement, self.export_dir)
             outcome = session.execute(
                 sqlalchemy_update(ProjectRecord)

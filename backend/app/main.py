@@ -511,7 +511,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status="cancelled",
                 message="ローカルではキャンセルしましたが、ComfyUI側の停止に失敗しました",
             )
-        # panel状態の更新は生成Task側へ一本化し、その完了後に応答する。
+        # API側で即時解放済み。Task側の冪等handlerも完了させてから応答する。
         task = manager.tasks.get(job.id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
@@ -1429,7 +1429,7 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
         async with manager.generation_lock:
             await execute_generation_job(app, job)
     except CancelledError:
-        # キャンセル/停止時のpanel状態更新はここ（Task終了処理）に一本化する。
+        # API側で即時解放できなかった経路（shutdown等）と競合時の冪等な保険。
         # job状態はHTTPキャンセルのmanager.cancel()またはshutdown()が既に確定している。
         if manager.shutting_down:
             mark_panel_job_stopped(
@@ -1621,7 +1621,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             message="画像候補の生成が完了しました",
         )
     except CancelledError:
-        # panel/job状態の更新はrun_generation_job（Task終了処理）へ一本化する。
+        # API/Task双方からのpanel更新はmark_panel_job_stopped()の冪等性へ委ねる。
         # 採用されなかった生成PNGはここで回収する（current/history参照分は残る）。
         cleanup_published_assets(app, job.project_id, candidate_assets)
         raise

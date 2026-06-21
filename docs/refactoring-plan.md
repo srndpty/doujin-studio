@@ -98,5 +98,8 @@ Alembic 全面導入の前段として、最低限:
   未参照な成果物だけを対象にする。
 - cancel APIはTask開始有無に依存せずpanelを`skipped`へ解放し、terminal jobは後続の遅延例外で
   別terminal状態へ遷移させない。panel停止更新はAPI/Task双方から呼べる冪等処理とする。
+- epochを進める構造置換は新JSON内の`queued/running`を`pending`へ正規化する。enqueueのactive
+  正本は同epochのDB jobとし、旧epoch jobとDB jobのない孤立active表示をトランザクション内で
+  終端・修復する。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。また、不変assetは
   current JSON・project revision・候補・CBZ manifestの参照を走査する猶予付きGCが必要。

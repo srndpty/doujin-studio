@@ -1300,7 +1300,14 @@ def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> No
                 page=1,
                 theme="t",
                 layout_template="single",
-                panels=[Panel(panel_id="p01_01", bbox=(0, 0, 1, 1), shot="")],
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="",
+                        generation=GenerationInfo(status="running"),
+                    )
+                ],
             )
         ],
     )
@@ -1324,6 +1331,63 @@ def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> No
         assert session.query(GenerationJobRecord).count() == 1
         indexes = session.execute(text("PRAGMA index_list(generation_jobs)")).all()
         assert any(row[1] == "ux_generation_jobs_active_panel" and row[2] == 1 for row in indexes)
+
+
+def test_generation_service_ignores_and_terminates_old_epoch_active_job(tmp_path: Path) -> None:
+    from backend.app.generation_service import GenerationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'old-epoch.db'}")
+    manga = MangaProject(
+        title="t",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="single",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="",
+                        generation=GenerationInfo(status="running"),
+                    )
+                ],
+            )
+        ],
+    )
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                generation_epoch=1,
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+        session.add(
+            GenerationJobRecord(
+                id="old",
+                project_id="p",
+                panel_id="p01_01",
+                candidate_count=1,
+                status="running",
+                epoch=0,
+                candidate_ids_json="[]",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    jobs = GenerationService(session_factory, tmp_path / "exports").enqueue(
+        "p", ["p01_01"], 1, "new", expected_epoch=1
+    )
+    assert jobs[0].epoch == 1
+    with session_factory() as session:
+        assert session.get(GenerationJobRecord, "old").status == "cancelled"
 
 
 def test_stale_structural_replace_does_not_cancel_active_job(tmp_path: Path) -> None:
@@ -1356,6 +1420,12 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧構成ジョブ")[0]
         app.state.job_manager.register_in_memory(job)
         app.state.job_manager.update(job, status="running", prompt_id="old-prompt")
+        main_module.update_panel_in_latest(
+            app,
+            project_id,
+            "p01_01",
+            lambda panel, page: setattr(panel.generation, "status", "running"),
+        )
         stopped: list[str | None] = []
         monkeypatch.setattr(
             main_module,
@@ -1368,8 +1438,6 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         page = manga["pages"][0]
         page["panels"][0], page["panels"][1] = page["panels"][1], page["panels"][0]
         page["reading_order"] = [panel["panel_id"] for panel in page["panels"]]
-        for panel in page["panels"]:
-            panel["generation"]["status"] = "pending"
         response = client.put(
             f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
         )
@@ -1377,6 +1445,21 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         assert app.state.mutation.current_epoch(project_id) == before_epoch + 1
         assert app.state.job_manager.get(job.id).status == "cancelled"
         assert stopped == ["old-prompt"]
+        updated_panel = next(
+            panel
+            for page in response.json()["manga_json"]["pages"]
+            for panel in page["panels"]
+            if panel["panel_id"] == "p01_01"
+        )
+        assert updated_panel["generation"]["status"] == "pending"
+        retried = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert retried.status_code == 200
+        new_job = app.state.job_manager.get(retried.json()["id"])
+        assert new_job is not None
+        assert new_job.epoch == before_epoch + 1
 
 
 def test_legacy_done_page_without_render_asset_migrates_to_pending(tmp_path: Path) -> None:

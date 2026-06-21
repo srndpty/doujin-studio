@@ -59,6 +59,22 @@ class GenerationService:
                 panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
                 if any(panel_id not in panels for panel_id in panel_ids):
                     raise PanelNotFoundError()
+                # 旧epochのactive履歴は現在世代の登録を妨げない。候補保存はepoch CASで
+                # 拒否されるため、DB上もcancelledへ終端化して部分一意indexを解放する。
+                session.execute(
+                    sqlalchemy_update(GenerationJobRecord)
+                    .where(
+                        GenerationJobRecord.project_id == project_id,
+                        GenerationJobRecord.panel_id.in_(panel_ids),
+                        GenerationJobRecord.status.in_(["queued", "running"]),
+                        GenerationJobRecord.epoch != required_epoch,
+                    )
+                    .values(
+                        status="cancelled",
+                        message="作品構成の更新により前の生成を中断しました",
+                        updated_at=now_utc(),
+                    )
+                )
                 active_db = {
                     panel_id
                     for (panel_id,) in session.query(GenerationJobRecord.panel_id)
@@ -66,14 +82,21 @@ class GenerationService:
                         GenerationJobRecord.project_id == project_id,
                         GenerationJobRecord.panel_id.in_(panel_ids),
                         GenerationJobRecord.status.in_(["queued", "running"]),
+                        GenerationJobRecord.epoch == required_epoch,
                     )
                     .all()
                 }
-                active_panels = active_db | {
-                    panel_id
-                    for panel_id in panel_ids
-                    if panels[panel_id].generation.status in {"queued", "running"}
-                }
+                # JSON表示だけactiveで同epochのDB jobが無ければ孤立状態として自己修復する。
+                for panel_id in panel_ids:
+                    panel = panels[panel_id]
+                    if (
+                        panel.generation.status in {"queued", "running"}
+                        and panel_id not in active_db
+                    ):
+                        panel.generation.status = "pending"
+                        panel.generation.prompt_id = None
+                        panel.generation.message = "対応する生成ジョブがないため状態を復旧しました"
+                active_panels = active_db
                 if active_panels and not skip_active:
                     raise ActiveJobConflictError()
                 panel_ids = [panel_id for panel_id in panel_ids if panel_id not in active_panels]
