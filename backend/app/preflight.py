@@ -13,7 +13,7 @@ from . import layout_engine
 from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
 from .renderer import PAGE_SIZE, _panel_box_px, resolve_dialogue_layout
-from .schemas import MangaProject, Page, PreflightIssue
+from .schemas import MangaProject, Page, Panel, PreflightIssue
 
 # 重なり・縦横比などの許容しきい値。
 BUBBLE_OVERLAP_RATIO = 0.25
@@ -162,6 +162,46 @@ def _check_reading_order(manga: MangaProject, page: Page) -> list[PreflightIssue
     return []
 
 
+_GUTTER_EPS = 1e-6
+
+
+def _bbox_overlaps(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> bool:
+    ax0, ay0, aw, ah = a
+    bx0, by0, bw, bh = b
+    x_overlap = min(ax0 + aw, bx0 + bw) - max(ax0, bx0)
+    y_overlap = min(ay0 + ah, by0 + bh) - max(ay0, by0)
+    return x_overlap > _GUTTER_EPS and y_overlap > _GUTTER_EPS
+
+
+def _panel_between(
+    panels: list[Panel],
+    i: int,
+    j: int,
+    gap_span: tuple[float, float],
+    band: tuple[float, float],
+    horizontal: bool,
+) -> bool:
+    """隙間(gap_span)と共有バンド(band)の間に別のコマが入っているか。"""
+    lo, hi = gap_span
+    band_lo, band_hi = band
+    for k, panel in enumerate(panels):
+        if k == i or k == j:
+            continue
+        cx0, cy0, cw, ch = panel.bbox
+        cx1, cy1 = cx0 + cw, cy0 + ch
+        if horizontal:
+            gap_lo_c, gap_hi_c, cross_lo, cross_hi = cx0, cx1, cy0, cy1
+        else:
+            gap_lo_c, gap_hi_c, cross_lo, cross_hi = cy0, cy1, cx0, cx1
+        shares_band = min(cross_hi, band_hi) - max(cross_lo, band_lo) > _GUTTER_EPS
+        in_gap = gap_lo_c < hi - _GUTTER_EPS and gap_hi_c > lo + _GUTTER_EPS
+        if shares_band and in_gap:
+            return True
+    return False
+
+
 def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
     gutter = manga.page_layout.gutter
@@ -174,14 +214,7 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
             bx0, by0, bw, bh = b
             ax1, ay1 = ax0 + aw, ay0 + ah
             bx1, by1 = bx0 + bw, by0 + bh
-            # 重なり（負のガター）。
-            if (
-                _overlap_area(
-                    (int(ax0 * 1000), int(ay0 * 1000), int(ax1 * 1000), int(ay1 * 1000)),
-                    (int(bx0 * 1000), int(by0 * 1000), int(bx1 * 1000), int(by1 * 1000)),
-                )
-                > 0
-            ):
+            if _bbox_overlaps(a, b):
                 issues.append(
                     PreflightIssue(
                         level="warning",
@@ -194,12 +227,20 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
                 continue
             y_overlap = min(ay1, by1) - max(ay0, by0)
             x_overlap = min(ax1, bx1) - max(ax0, bx0)
-            gap = None
-            if y_overlap > 0:  # 左右に隣接
-                gap = max(bx0 - ax1, ax0 - bx1)
-            elif x_overlap > 0:  # 上下に隣接
-                gap = max(by0 - ay1, ay0 - by1)
-            if gap is None or gap < 0:
+            gap: float | None = None
+            blocked = False
+            if y_overlap > _GUTTER_EPS and x_overlap <= _GUTTER_EPS:  # 左右に隣接
+                band = (max(ay0, by0), min(ay1, by1))
+                gap_span = (ax1, bx0) if bx0 >= ax1 else (bx1, ax0)
+                gap = gap_span[1] - gap_span[0]
+                blocked = _panel_between(panels, i, j, gap_span, band, horizontal=True)
+            elif x_overlap > _GUTTER_EPS and y_overlap <= _GUTTER_EPS:  # 上下に隣接
+                band = (max(ax0, bx0), min(ax1, bx1))
+                gap_span = (ay1, by0) if by0 >= ay1 else (by1, ay0)
+                gap = gap_span[1] - gap_span[0]
+                blocked = _panel_between(panels, i, j, gap_span, band, horizontal=False)
+            # 隣接していない（間にコマがある／斜め）ペアはガター判定から除外する。
+            if gap is None or gap < 0 or blocked:
                 continue
             if 0 < gap < gutter * GUTTER_MIN_RATIO:
                 issues.append(

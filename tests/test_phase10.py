@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from backend.app import preflight
+from backend.app import layout_engine, preflight
 from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.renderer import render_project_page
@@ -193,6 +193,20 @@ def test_preflight_overlay_scale_extends_occlusion() -> None:
     manga.pages[0].overlay_elements[0].scale = 1.0
     issues2 = preflight.preflight_page(manga, manga.pages[0])
     assert not any(issue.code == "overlay_hides_earlier_panel" for issue in issues2)
+
+
+def test_preflight_three_column_row_has_no_false_gutter_warning() -> None:
+    # montageの3分割（1行3コマ）。左右端は間に中央コマがあるので隣接扱いしない。
+    boxes = layout_engine.build_page_layout(3, "montage")
+    panels = [Panel(panel_id=f"p01_{k + 1:02d}", bbox=boxes[k], shot="t") for k in range(3)]
+    manga = MangaProject(
+        title="g",
+        pages=[Page(page=1, theme="t", layout_template="grid", panels=panels)],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    codes = {issue.code for issue in issues}
+    assert "gutter_too_large" not in codes
+    assert "panels_overlap" not in codes
 
 
 def test_preflight_layout_repetition() -> None:
