@@ -124,6 +124,7 @@ describe("PageEditor", () => {
     render(
       <PageEditor
         projectId="project"
+        revision={0}
         manga={sampleManga()}
         pageNumber={1}
         assetVersion={1}
@@ -149,6 +150,7 @@ describe("PageEditor", () => {
     render(
       <PageEditor
         projectId="project"
+        revision={0}
         manga={sampleManga()}
         pageNumber={1}
         assetVersion={1}

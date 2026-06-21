@@ -9,6 +9,7 @@ import uuid
 from asyncio import CancelledError
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -16,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from PIL import Image
 from pydantic import ValidationError
+from sqlalchemy import update as sqlalchemy_update
 
 from . import fonts as font_registry
 from . import knowledge as knowledge_db
@@ -220,8 +222,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             record = session.get(ProjectRecord, project_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
-            # 楽観ロック: クライアントが読み込んだ時点より新しい更新があれば409にする。
-            if revision is not None and revision != record.revision:
+            # クライアントが読み込んだ時点のrevisionを期待値にして比較交換(CAS)する。
+            # revision未指定でも読み取り時revisionを期待値にし、並行更新を検出する。
+            expected = revision if revision is not None else record.revision
+            previous = parse_manga_json(record.manga_json)
+            # 描画入力が変わったページだけ未レンダリングに戻す（メタ変更では戻さない）。
+            invalidate_changed_pages(payload, previous)
+            result = session.execute(
+                sqlalchemy_update(ProjectRecord)
+                .where(ProjectRecord.id == project_id, ProjectRecord.revision == expected)
+                .values(
+                    title=payload.title,
+                    work_name=payload.work_name,
+                    manga_json=payload.model_dump_json(),
+                    revision=ProjectRecord.revision + 1,
+                    updated_at=now_utc(),
+                )
+            )
+            if result.rowcount != 1:
+                # 同じrevisionを読んだ別更新が先にcommitした → 厳密に競合検出する。
+                session.rollback()
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -229,14 +249,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "最新を読み込み直してください。"
                     ),
                 )
-            previous = parse_manga_json(record.manga_json)
-            # 描画入力が変わったページだけ未レンダリングに戻す（メタ変更では戻さない）。
-            invalidate_changed_pages(payload, previous)
-            record.title = payload.title
-            record.work_name = payload.work_name
-            record.manga_json = payload.model_dump_json()
-            record.revision += 1
-            record.updated_at = now_utc()
             session.commit()
             session.refresh(record)
         return to_detail(record, request.app.state.settings.export_dir)
@@ -414,13 +426,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [to_job_response(job) for job in manager.list_for_project(project_id)]
 
     @app.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobResponse)
-    def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
+    async def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
         manager: JobManager = request.app.state.job_manager
         job = get_job_or_404(request, job_id)
-        # ローカルTaskを止める前にprompt_idを控え、ComfyUI側も停止する。
-        remote = stop_comfyui_generation(request.app.state.settings, job)
+        # ローカルTaskを止める前にprompt_idを控える。
+        prompt_id = job.prompt_id
+        # HTTP停止だけ別スレッドへ逃がし、JobManager操作はイベントループ側で完結させる。
+        remote = await asyncio.to_thread(
+            stop_comfyui_generation, request.app.state.settings, prompt_id
+        )
         manager.cancel(job)
-        if remote is False:
+        if remote == "failed":
             # ローカルではキャンセル済みだがリモート停止に失敗した状態を区別して伝える。
             manager.update(
                 job,
@@ -1135,19 +1151,39 @@ def find_active_panel_job(
     )
 
 
-def stop_comfyui_generation(settings: Settings, job: GenerationJob) -> bool | None:
-    """ComfyUI側の生成を停止する。停止不要ならNone、成功でTrue、失敗でFalse。"""
-    if settings.image_backend.lower() != "comfyui" or not job.prompt_id:
-        return None
+# リモート(ComfyUI)停止結果の区分。UI表示にも使う。
+RemoteCancelState = Literal["not_requested", "queued_removed", "interrupted", "failed"]
+
+
+def stop_comfyui_generation(settings: Settings, prompt_id: str | None) -> RemoteCancelState:
+    """ComfyUI側の対象生成だけを停止する。
+
+    /interruptはprompt_idを指定できない「現在実行中の処理を止める」グローバル操作なので、
+    対象promptが実行中だと確認できたときだけ使う。キュー待ちならprompt_id指定でqueueから
+    削除する。対象が見当たらなければ無関係な生成を巻き込まないよう何もしない。
+    """
+    if settings.image_backend.lower() != "comfyui" or not prompt_id:
+        return "not_requested"
     base = settings.comfyui_base_url.rstrip("/")
     try:
         with httpx.Client(timeout=5.0) as client:
-            # 実行中ならinterrupt、キュー待ちならprompt_id指定でqueueから削除する。
-            client.post(f"{base}/interrupt")
-            client.post(f"{base}/queue", json={"delete": [job.prompt_id]})
-        return True
+            response = client.get(f"{base}/queue")
+            response.raise_for_status()
+            queue = response.json()
+            running = {entry[1] for entry in queue.get("queue_running", []) if len(entry) > 1}
+            pending = {entry[1] for entry in queue.get("queue_pending", []) if len(entry) > 1}
+            if prompt_id in pending:
+                deleted = client.post(f"{base}/queue", json={"delete": [prompt_id]})
+                deleted.raise_for_status()
+                return "queued_removed"
+            if prompt_id in running:
+                interrupted = client.post(f"{base}/interrupt")
+                interrupted.raise_for_status()
+                return "interrupted"
+            # 対象がキューに無い（完了済み/別物）。グローバルinterruptは避ける。
+            return "not_requested"
     except Exception:
-        return False
+        return "failed"
 
 
 async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
@@ -1181,6 +1217,12 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
         panel = find_panel(manga, job.panel_id)
         manager.update(job, status="running", message="画像候補を生成中です")
         backend = build_image_backend(app.state.settings)
+        # 開始時の選択状態を記録し、生成中にユーザーが選び直したら自動選択で上書きしない。
+        selection_state = {
+            "base": panel.selected_candidate_id,
+            "auto": panel.selected_candidate_id,
+            "allow": True,
+        }
 
         for candidate_index in range(job.candidate_count):
             candidate_id = str(uuid.uuid4())
@@ -1247,7 +1289,18 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
 
             def add_candidate(target_panel, new_candidate=candidate) -> None:
                 target_panel.image_candidates.append(new_candidate)
-                apply_candidate_selection(target_panel, new_candidate)
+                current = target_panel.selected_candidate_id
+                # 開始時の選択、またはジョブ自身が直前に自動選択した状態から変わっていなければ
+                # 新候補を自動選択する。生成中にユーザーが別候補を選んでいたら追加のみに留める。
+                if selection_state["allow"] and current in (
+                    selection_state["base"],
+                    selection_state["auto"],
+                    None,
+                ):
+                    apply_candidate_selection(target_panel, new_candidate)
+                    selection_state["auto"] = new_candidate.id
+                else:
+                    selection_state["allow"] = False
 
             # 候補ごとに最新を読み直してマージし、生成中のユーザー編集を残す。
             update_panel_in_latest(app, job.project_id, job.panel_id, add_candidate)
@@ -1255,6 +1308,8 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             manager.update(
                 job,
                 progress=round(((candidate_index + 1) / job.candidate_count) * 100),
+                # 次候補投入前にprompt_idをクリアし、古いidでのリモート停止誤爆を防ぐ。
+                prompt_id=None,
                 message=f"候補 {candidate_index + 1}/{job.candidate_count} を保存しました",
             )
 
@@ -1521,28 +1576,43 @@ def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> N
             page.rendered_at = None
 
 
-def update_panel_in_latest(app: FastAPI, project_id: str, panel_id: str, mutate) -> MangaProject:
+def update_panel_in_latest(
+    app: FastAPI, project_id: str, panel_id: str, mutate, attempts: int = 5
+) -> MangaProject:
     """最新のmanga_jsonを読み直し、対象パネルだけにmutateを適用して保存する。
 
     生成完了時に開始時点の古いスナップショットを丸ごと保存すると、その間の
     ユーザー編集（他パネルの台詞・別ページの候補選択）を踏みつぶす。読み直して
     対象パネルだけマージすることで、生成とユーザー編集の競合面を最小化する。
+    保存は読み取り時revisionを条件にしたCASで行い、競合時は読み直してリトライする。
     """
-    with app.state.SessionLocal() as session:
-        record = session.get(ProjectRecord, project_id)
-        if record is None:
-            raise RuntimeError("プロジェクトが見つかりません")
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel_optional(manga, panel_id)
-        if panel is None:
-            raise RuntimeError("コマが見つかりません")
-        mutate(panel)
-        normalize_manga_assets(manga, app.state.settings.export_dir)
-        record.manga_json = manga.model_dump_json()
-        record.revision += 1
-        record.updated_at = now_utc()
-        session.commit()
-    return manga
+    for _ in range(attempts):
+        with app.state.SessionLocal() as session:
+            record = session.get(ProjectRecord, project_id)
+            if record is None:
+                raise RuntimeError("プロジェクトが見つかりません")
+            expected = record.revision
+            manga = parse_manga_json(record.manga_json)
+            panel = find_panel_optional(manga, panel_id)
+            if panel is None:
+                raise RuntimeError("コマが見つかりません")
+            mutate(panel)
+            normalize_manga_assets(manga, app.state.settings.export_dir)
+            result = session.execute(
+                sqlalchemy_update(ProjectRecord)
+                .where(ProjectRecord.id == project_id, ProjectRecord.revision == expected)
+                .values(
+                    manga_json=manga.model_dump_json(),
+                    revision=ProjectRecord.revision + 1,
+                    updated_at=now_utc(),
+                )
+            )
+            if result.rowcount == 1:
+                session.commit()
+                return manga
+            # 並行更新が先にcommitした。読み直して再適用する。
+            session.rollback()
+    raise RuntimeError("manga_jsonの競合が続いたため更新できませんでした")
 
 
 def find_panel_page_number(manga: MangaProject, panel_id: str) -> int:

@@ -128,7 +128,14 @@ def ensure_fts(engine) -> None:
 
 
 def ensure_columns(engine) -> None:
-    """create_allでは追加されない後付けカラムを既存SQLite DBへ補う。"""
+    """create_allでは追加されない後付けカラムを既存SQLite DBへ補う。
+
+    注意: SQLiteは`ALTER TABLE`で既存テーブルへ外部キー制約を追加できない。
+    モデルに定義したForeignKey/ON DELETE CASCADEは`create_all`で新規作成される
+    テーブルにのみ適用され、既存DBには導入されない。既存DBへFK・cascadeを入れる
+    場合はテーブル再作成マイグレーションが別途必要（現状プロジェクト削除APIが
+    無いため即時の不整合は生じない）。
+    """
     with engine.begin() as connection:
         rows = connection.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
         columns = {row[1] for row in rows}

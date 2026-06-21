@@ -19,6 +19,7 @@ from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
     ComfyUIWorkflowConfig,
+    ImageResult,
     apply_panel_to_workflow,
     apply_reference_images_to_workflow,
 )
@@ -259,6 +260,130 @@ def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
         pages = render_change.json()["manga_json"]["pages"]
         assert pages[0]["render_status"] == "pending"
         assert all(page["render_status"] == "done" for page in pages[1:])
+
+
+def test_duplicate_workflow_preset_id_is_rejected(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        preset = manga["workflow_presets"][0]
+        manga["workflow_presets"] = [preset, {**preset, "name": "重複ID"}]
+        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert response.status_code == 422
+
+
+def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        # 既存候補を2つ作る（2回目が選択状態になる）。
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel = next(p for p in manga["pages"][0]["panels"] if p["panel_id"] == "p01_01")
+        assert len(panel["image_candidates"]) == 2
+        user_pick = panel["image_candidates"][0]["id"]
+
+        class SelectingBackend:
+            def __init__(self) -> None:
+                self.done = False
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # 生成中にユーザーが別の既存候補を選び直した状況を再現する。
+                if not self.done:
+                    self.done = True
+                    main_module.update_panel_in_latest(
+                        app,
+                        project_id_,
+                        "p01_01",
+                        lambda target_panel: setattr(
+                            target_panel, "selected_candidate_id", user_pick
+                        ),
+                    )
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (9, 9, 9)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        panel2 = next(
+            p
+            for p in response.json()["manga_json"]["pages"][0]["panels"]
+            if p["panel_id"] == "p01_01"
+        )
+        # 新候補は追加されるが、生成中のユーザー選択は自動採用で上書きされない。
+        assert len(panel2["image_candidates"]) == 3
+        assert panel2["selected_candidate_id"] == user_pick
+
+
+def _queue_client(running: list[str], pending: list[str], posted: list[tuple[str, dict | None]]):
+    class FakeComfyQueueClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url):
+            return httpx.Response(
+                200,
+                json={
+                    "queue_running": [[0, pid] for pid in running],
+                    "queue_pending": [[0, pid] for pid in pending],
+                },
+                request=httpx.Request("GET", url),
+            )
+
+        def post(self, url, json=None):
+            posted.append((url, json))
+            return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    return FakeComfyQueueClient()
+
+
+def test_stop_comfyui_removes_queued_without_global_interrupt(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
+    )
+    assert main_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
+    assert any(url.endswith("/queue") and json == {"delete": ["pid"]} for url, json in posted)
+    assert not any(url.endswith("/interrupt") for url, _ in posted)
+
+
+def test_stop_comfyui_interrupts_only_when_running(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
+    )
+    assert main_module.stop_comfyui_generation(settings, "pid") == "interrupted"
+    assert any(url.endswith("/interrupt") for url, _ in posted)
+
+
+def test_stop_comfyui_skips_unrelated_generation(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client(["other"], ["another"], posted)
+    )
+    # 対象prompt_idがキューに無ければグローバルinterruptもqueue削除もしない。
+    assert main_module.stop_comfyui_generation(settings, "pid") == "not_requested"
+    assert posted == []
 
 
 def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:

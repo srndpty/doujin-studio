@@ -164,6 +164,8 @@ type Project = {
   id: string;
   title: string;
   work_name: string;
+  // 楽観ロック用。保存時に?revision=で送り、サーバ側CASで競合を検出する。
+  revision: number;
   manga_json: MangaProject;
 };
 
@@ -178,10 +180,19 @@ const ANIMA3_POSITIVE = "masterpiece, best quality, score_7, safe, anime";
 const ANIMA3_NEGATIVE =
   "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo";
 
+class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "ApiError";
+  }
+}
+
 const api = {
   async get<T>(path: string): Promise<T> {
     const response = await fetch(path);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   },
   async post<T>(path: string, body?: unknown): Promise<T> {
@@ -190,7 +201,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   },
   async put<T>(path: string, body: unknown): Promise<T> {
@@ -199,7 +210,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   }
 };
@@ -360,10 +371,31 @@ export function App() {
     });
   }
 
+  // Manga JSON保存を一本化し、必ず?revision=を添えて楽観ロックを効かせる。
+  // 409時は競合を握りつぶさず、最新revisionだけ取り込んでユーザーへ明示する。
+  // 編集中の内容(jsonText/作業コピー)は保持し、もう一度保存すれば反映できるようにする。
+  async function putMangaJson(projectId: string, revision: number, manga: MangaProject): Promise<Project> {
+    try {
+      return await api.put<Project>(`/api/projects/${projectId}/manga-json?revision=${revision}`, manga);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const latest = await api.get<Project>(`/api/projects/${projectId}`);
+        // revisionだけ最新化し、入力中の内容は消さない。
+        setSelected((prev) =>
+          prev && prev.id === projectId ? { ...prev, revision: latest.revision } : prev
+        );
+        throw new Error(
+          "他の操作（生成完了や別タブの保存）で更新されました。内容は保持しています。もう一度保存してください。"
+        );
+      }
+      throw error;
+    }
+  }
+
   async function saveJsonDraft(successMessage: string): Promise<Project | null> {
     if (!selected) return null;
     const parsed = JSON.parse(jsonText) as MangaProject;
-    const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, parsed);
+    const project = await putMangaJson(selected.id, selected.revision, parsed);
     setSelected(project);
     setJsonText(JSON.stringify(project.manga_json, null, 2));
     setMessage(successMessage);
@@ -1247,6 +1279,7 @@ export function App() {
           <Suspense fallback={<p className="hint">ページ編集機能を読み込んでいます...</p>}>
             <PageEditor
               projectId={selected.id}
+              revision={selected.revision}
               manga={selected.manga_json}
               pageNumber={selectedPage}
               assetVersion={assetVersion}
@@ -1261,7 +1294,7 @@ export function App() {
                 if (!selected) return;
                 setBusy(true);
                 try {
-                  const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, manga);
+                  const project = await putMangaJson(selected.id, selected.revision, manga);
                   const rendered = await api.post<{ manga_json: MangaProject; page_asset: string }>(
                     `/api/projects/${selected.id}/pages/${selectedPage}/render`
                   );
@@ -1288,7 +1321,8 @@ export function App() {
                 try {
                   // 未保存の編集を先に保存する。再レイアウトAPIは保存済みManga JSONを基準に動くため、
                   // 保存しないと直前のコマ移動・吹き出し・overlay編集が失われる。
-                  await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
+                  const saved = await putMangaJson(selected.id, selected.revision, selected.manga_json);
+                  setSelected(saved);
                   const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
                     `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
                     { family }

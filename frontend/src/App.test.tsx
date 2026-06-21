@@ -35,17 +35,29 @@ describe("AppのManga JSON保存", () => {
   it("直接編集したjsonTextをツールバー保存で送信する", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (init?.method === "PUT" && url.endsWith("/manga-json")) {
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
         const body = JSON.parse(String(init.body)) as MangaProject;
-        return jsonResponse({ id: "p1", title: body.title, work_name: body.work_name, manga_json: body });
+        return jsonResponse({
+          id: "p1",
+          title: body.title,
+          work_name: body.work_name,
+          revision: 1,
+          manga_json: body
+        });
       }
       if (url === "/api/projects") {
         return jsonResponse([
-          { id: "p1", title: "テスト本", work_name: "テスト作品", updated_at: "2026-01-01" }
+          { id: "p1", title: "テスト本", work_name: "テスト作品", revision: 0, updated_at: "2026-01-01" }
         ]);
       }
       if (url === "/api/projects/p1") {
-        return jsonResponse({ id: "p1", title: "テスト本", work_name: "テスト作品", manga_json: manga });
+        return jsonResponse({
+          id: "p1",
+          title: "テスト本",
+          work_name: "テスト作品",
+          revision: 0,
+          manga_json: manga
+        });
       }
       if (url.endsWith("/production-status")) {
         return jsonResponse({

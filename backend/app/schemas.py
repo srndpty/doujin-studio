@@ -374,7 +374,11 @@ class MangaProject(BaseModel):
         破綻して原因不明の不具合になる種類の不整合だけをエラーにする。
         """
         errors: list[str] = []
-        preset_ids = {preset.id for preset in self.workflow_presets}
+        preset_id_list = [preset.id for preset in self.workflow_presets]
+        preset_ids = set(preset_id_list)
+        # preset ID重複はpreset_ids(集合)を通り抜け、解決時に先頭が選ばれて意味が曖昧になる。
+        if len(preset_id_list) != len(preset_ids):
+            errors.append("workflow preset IDが重複しています")
 
         page_numbers = [page.page for page in self.pages]
         if len(page_numbers) != len(set(page_numbers)):

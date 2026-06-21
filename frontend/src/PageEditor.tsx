@@ -30,6 +30,8 @@ type PreflightIssue = { level: "error" | "warning"; code: string; message: strin
 
 type Props = {
   projectId: string;
+  // 楽観ロック用。manga-json保存時に?revision=で送る。
+  revision: number;
   manga: MangaProject;
   pageNumber: number;
   assetVersion: number;
@@ -137,6 +139,7 @@ const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 export function PageEditor({
   projectId,
+  revision,
   manga: mangaProp,
   pageNumber,
   assetVersion,
@@ -296,7 +299,7 @@ export function PageEditor({
   };
 
   const uploadOverlay = async (overlay: OverlayElement, kind: "asset" | "mask", file: File) => {
-    const saveResponse = await fetch(`/api/projects/${projectId}/manga-json`, {
+    const saveResponse = await fetch(`/api/projects/${projectId}/manga-json?revision=${revision}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(manga)
