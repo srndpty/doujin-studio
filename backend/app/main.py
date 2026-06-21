@@ -586,7 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "overlays"
             / stable_asset_name(overlay_id, "overlay", suffix)
         )
-        await save_request_image(request, target)
+        await save_request_image(request, target, preserve_alpha=asset_kind == "asset")
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         if asset_kind == "mask":
             overlay.mask_asset = asset_id
@@ -1316,13 +1316,14 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         return record
 
 
-async def save_request_image(request: Request, target: Path) -> None:
+async def save_request_image(request: Request, target: Path, preserve_alpha: bool = False) -> None:
     content = await request.body()
     if not content or len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
     try:
         with Image.open(io.BytesIO(content)) as source:
-            image = source.convert("RGB")
+            # 透過オーバーフレーム（人物切り抜き等）はアルファを保持する。
+            image = source.convert("RGBA" if preserve_alpha else "RGB")
     except Exception as exc:
         raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
     target.parent.mkdir(parents=True, exist_ok=True)

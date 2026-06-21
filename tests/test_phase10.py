@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -198,6 +199,42 @@ def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
         assert body["page_asset"].endswith("page_001.png")
         assert (tmp_path / "exports" / body["page_asset"]).exists()
         assert body["preflight"]["ok"] is True
+
+
+def test_overlay_asset_upload_preserves_alpha(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["pages"][0]["overlay_elements"] = [
+            {
+                "id": "ov1",
+                "source_panel_id": "",
+                "asset": None,
+                "mask_asset": None,
+                "box": [0.2, 0.2, 0.4, 0.4],
+                "scale": 1.0,
+                "opacity": 1.0,
+                "layer": "front",
+                "z_index": 0,
+                "occluded_by_panel_ids": [],
+            }
+        ]
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        # 透過PNG（人物切り抜きを想定）をアップロード。
+        buffer = io.BytesIO()
+        Image.new("RGBA", (20, 20), (255, 0, 0, 0)).save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/pages/1/overlays/ov1/asset",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        assert response.status_code == 200
+        asset = response.json()["asset"]
+        saved = Image.open(tmp_path / "exports" / asset)
+        # アルファチャンネルが保持され、透明部分が潰れていないこと。
+        assert saved.mode == "RGBA"
+        assert saved.getpixel((0, 0))[3] == 0
 
 
 def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:

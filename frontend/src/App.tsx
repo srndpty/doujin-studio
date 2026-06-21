@@ -571,8 +571,9 @@ export function App() {
       const latest = await api.get<Project>(`/api/projects/${projectId}`);
       setSelected(latest);
       setJsonText(JSON.stringify(latest.manga_json, null, 2));
-      setAssetVersion((value) => value + 1);
       await renderAllPages(projectId, latest);
+      // page_*.pngを書き換えた後にキャッシュバスターを進める（同一URLの古い画像が残らないように）。
+      setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
       setMessage("全ページの画像生成とレンダリングが完了しました");
       notifyCompletion("全ページ生成が完了しました", latest.title);
