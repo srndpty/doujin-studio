@@ -100,6 +100,76 @@ describe("AppのManga JSON保存", () => {
       const putCall = fetchMock.mock.calls.find(([, options]) => options?.method === "PUT");
       expect(putCall).toBeDefined();
       expect(JSON.parse(String(putCall?.[1]?.body)).title).toBe("JSONから変更");
+      // 楽観ロック用にrevisionを必ず添える。
+      expect(String(putCall?.[0])).toContain("revision=0");
     });
+  });
+
+  it("409時は最新を読み込み直し、未保存の編集で上書きしない", async () => {
+    const latestManga = { ...manga, title: "他タブが保存した最新" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        // 競合: サーバはCASで409を返す。
+        return Promise.resolve(new Response("conflict", { status: 409 }));
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "テスト本", work_name: "テスト作品", revision: 5, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // 409後の再取得では最新(revision進行済み)を返す。
+        return jsonResponse({
+          id: "p1",
+          title: "他タブが保存した最新",
+          work_name: "テスト作品",
+          revision: 7,
+          manga_json: latestManga
+        });
+      }
+      if (url.endsWith("/production-status")) {
+        return jsonResponse({
+          project_id: "p1",
+          status: "incomplete",
+          adopted_panels: 0,
+          total_panels: 0,
+          rendered_pages: 0,
+          total_pages: 0,
+          pages: [],
+          blockers: []
+        });
+      }
+      if (url.endsWith("/generation-jobs")) return jsonResponse([]);
+      if (url === "/api/comfyui/status") {
+        return jsonResponse({
+          backend: "stub",
+          base_url: "",
+          workflow_path: "",
+          connected: false,
+          workflow_exists: false,
+          workflow_valid: false,
+          missing_nodes: [],
+          message: "stub"
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("テスト本"));
+    await screen.findByLabelText("本のタイトル");
+    const textarea = container.querySelector<HTMLTextAreaElement>(".json-pane textarea");
+    const edited = { ...manga, title: "自分のローカル編集" };
+    fireEvent.change(textarea as HTMLTextAreaElement, { target: { value: JSON.stringify(edited) } });
+    fireEvent.click(screen.getByTitle("タイトルと編集内容を保存"));
+
+    // 409後、最新内容が読み込み直され、ローカル編集は反映されない。
+    await waitFor(() => {
+      expect((textarea as HTMLTextAreaElement).value).toContain("他タブが保存した最新");
+    });
+    expect((textarea as HTMLTextAreaElement).value).not.toContain("自分のローカル編集");
+    // PUTは1回だけ（自動で古い全文を再送して上書きしていない）。
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(1);
   });
 });

@@ -918,6 +918,11 @@ export interface components {
             /** Asset */
             asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** ComfyUIStatusResponse */
         ComfyUIStatusResponse: {
@@ -1398,6 +1403,11 @@ export interface components {
             /** Layout Family */
             layout_family: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** LoRABinding */
         LoRABinding: {
@@ -1654,6 +1664,11 @@ export interface components {
             /** Page Asset */
             page_asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
             preflight: components["schemas"]["PreflightResponse"];
@@ -1740,6 +1755,11 @@ export interface components {
             /** Panel Id */
             panel_id: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** PanelPageRenderResponse */
         PanelPageRenderResponse: {
@@ -1750,6 +1770,11 @@ export interface components {
             /** Page Asset */
             page_asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -1901,6 +1926,11 @@ export interface components {
             /** Asset */
             asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** ReferenceImageBinding */
         ReferenceImageBinding: {
@@ -1935,6 +1965,11 @@ export interface components {
             /** Page Assets */
             page_assets: string[];
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
         };

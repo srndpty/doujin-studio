@@ -441,6 +441,8 @@ class RenderResponse(BaseModel):
     project_id: str
     page_assets: list[str]
     manga_json: MangaProject
+    # 保存後の最新revision。クライアントは楽観ロック用に同期する。
+    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -483,6 +485,7 @@ class PageRenderResponse(BaseModel):
     page: int
     page_asset: str
     manga_json: MangaProject
+    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
     preflight: PreflightResponse
 
@@ -496,6 +499,7 @@ class LayoutSuggestResponse(BaseModel):
     page: int
     layout_family: str
     manga_json: MangaProject
+    revision: int = 0
 
 
 class ComfyUIStatusResponse(BaseModel):
@@ -513,6 +517,7 @@ class PanelImageGenerationResponse(BaseModel):
     project_id: str
     panel_id: str
     manga_json: MangaProject
+    revision: int = 0
 
 
 class PanelPageRenderResponse(BaseModel):
@@ -520,6 +525,7 @@ class PanelPageRenderResponse(BaseModel):
     panel_id: str
     page_asset: str
     manga_json: MangaProject
+    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -582,12 +588,14 @@ class CharacterReferenceResponse(BaseModel):
     character_id: str
     asset: str
     manga_json: MangaProject
+    revision: int = 0
 
 
 class ReferenceAssetResponse(BaseModel):
     target_id: str
     asset: str
     manga_json: MangaProject
+    revision: int = 0
 
 
 class ExportResponse(BaseModel):

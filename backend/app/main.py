@@ -283,11 +283,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for page in manga.pages:
             page.render_status = "done"
             page.rendered_at = now_utc()
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         return RenderResponse(
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
             manga_json=manga,
+            revision=revision,
             warnings=warnings,
         )
 
@@ -317,7 +318,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await await_job(request.app, job)
         latest = load_project_record(request, project_id)
         return PanelImageGenerationResponse(
-            project_id=project_id, panel_id=panel_id, manga_json=parse_manga_json(latest.manga_json)
+            project_id=project_id,
+            panel_id=panel_id,
+            manga_json=parse_manga_json(latest.manga_json),
+            revision=latest.revision,
         )
 
     @app.get(
@@ -429,13 +433,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
         manager: JobManager = request.app.state.job_manager
         job = get_job_or_404(request, job_id)
-        # ローカルTaskを止める前にprompt_idを控える。
+        # 状態遷移を先に確定する。完了直後(done/error)や既にcancelledなら何もしない。
+        # これで成功済みコマがskipped表示になる回帰を防ぐ。
         prompt_id = job.prompt_id
+        if not manager.cancel(job):
+            return to_job_response(job)
+        # 遷移できたときだけリモート停止とパネル状態更新を行う。
         # HTTP停止だけ別スレッドへ逃がし、JobManager操作はイベントループ側で完結させる。
         remote = await asyncio.to_thread(
             stop_comfyui_generation, request.app.state.settings, prompt_id
         )
-        manager.cancel(job)
         if remote == "failed":
             # ローカルではキャンセル済みだがリモート停止に失敗した状態を区別して伝える。
             manager.update(
@@ -489,12 +496,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
             panel_id=panel_id,
             page_asset=asset_to_id(page_asset, settings.export_dir),
             manga_json=manga,
+            revision=revision,
             warnings=warnings,
         )
 
@@ -511,11 +519,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manga = parse_manga_json(record.manga_json)
         panel = find_panel(manga, panel_id)
         settings = request.app.state.settings
-        result = await StubImageBackend().generate_panel(project_id, panel, settings.export_dir)
-        register_generation_candidate(panel, panel, result)
-        save_manga_json(request, project_id, manga)
+        # 候補ごとに一意の保存先を使う。共有パスだと選び直しても画像が上書き済みになる。
+        candidate_id = str(uuid.uuid4())
+        target = settings.export_dir / project_id / "panels" / panel_id / f"{candidate_id}.png"
+        result = await StubImageBackend().generate_panel(
+            project_id, panel, settings.export_dir, target_path=target
+        )
+        register_generation_candidate(panel, panel, result, candidate_id=candidate_id)
+        revision = save_manga_json(request, project_id, manga)
         return PanelImageGenerationResponse(
-            project_id=project_id, panel_id=panel_id, manga_json=manga
+            project_id=project_id, panel_id=panel_id, manga_json=manga, revision=revision
         )
 
     @app.post(
@@ -541,11 +554,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         character.reference_image_asset = asset_id
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         return CharacterReferenceResponse(
             character_id=character_id,
             asset=asset_id,
             manga_json=manga,
+            revision=revision,
         )
 
     @app.post(
@@ -571,8 +585,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         location.reference_image_asset = asset_id
-        save_manga_json(request, project_id, manga)
-        return ReferenceAssetResponse(target_id=location_id, asset=asset_id, manga_json=manga)
+        revision = save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(
+            target_id=location_id, asset=asset_id, manga_json=manga, revision=revision
+        )
 
     @app.post(
         "/api/projects/{project_id}/panels/{panel_id:path}/controls/{kind}/reference-image",
@@ -610,8 +626,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             panel.control_references.append(control)
             target_id = control.id
-        save_manga_json(request, project_id, manga)
-        return ReferenceAssetResponse(target_id=target_id, asset=asset_id, manga_json=manga)
+        revision = save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(
+            target_id=target_id, asset=asset_id, manga_json=manga, revision=revision
+        )
 
     @app.post(
         "/api/projects/{project_id}/pages/{page_number}/overlays/{overlay_id:path}/{asset_kind}",
@@ -647,8 +665,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             overlay.mask_asset = asset_id
         else:
             overlay.asset = asset_id
-        save_manga_json(request, project_id, manga)
-        return ReferenceAssetResponse(target_id=overlay_id, asset=asset_id, manga_json=manga)
+        revision = save_manga_json(request, project_id, manga)
+        return ReferenceAssetResponse(
+            target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision
+        )
 
     @app.post(
         "/api/projects/{project_id}/pages/{page_number}/layout/suggest",
@@ -676,12 +696,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             page_index=page_index,
             total_pages=len(manga.pages),
         )
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         return LayoutSuggestResponse(
             project_id=project_id,
             page=page_number,
             layout_family=page.layout_family,
             manga_json=manga,
+            revision=revision,
         )
 
     @app.post(
@@ -733,13 +754,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         page.render_status = "done"
         page.rendered_at = now_utc()
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
         return PageRenderResponse(
             project_id=project_id,
             page=page_number,
             page_asset=asset_to_id(page_asset, settings.export_dir),
             manga_json=manga,
+            revision=revision,
             warnings=warnings,
             preflight=_to_preflight_response(project_id, page_number, issues),
         )
@@ -761,12 +783,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = next(item for item in manga.pages if item.page == page_number)
         page.render_status = "done"
         page.rendered_at = now_utc()
-        save_manga_json(request, project_id, manga)
+        revision = save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
             panel_id=panel_id,
             page_asset=asset_to_id(page_asset, settings.export_dir),
             manga_json=manga,
+            revision=revision,
             warnings=warnings,
         )
 
@@ -1208,7 +1231,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     manager: JobManager = app.state.job_manager
     try:
 
-        def set_running(panel) -> None:
+        def set_running(panel, page) -> None:
             panel.generation.status = "running"
             panel.generation.message = "画像候補を生成中です"
 
@@ -1287,7 +1310,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 created_at=now_utc(),
             )
 
-            def add_candidate(target_panel, new_candidate=candidate) -> None:
+            def add_candidate(target_panel, target_page, new_candidate=candidate) -> None:
                 target_panel.image_candidates.append(new_candidate)
                 current = target_panel.selected_candidate_id
                 # 開始時の選択、またはジョブ自身が直前に自動選択した状態から変わっていなければ
@@ -1299,6 +1322,10 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 ):
                     apply_candidate_selection(target_panel, new_candidate)
                     selection_state["auto"] = new_candidate.id
+                    # 採用画像が変わったので、対象ページを再レンダリング対象へ戻す。
+                    if target_page is not None:
+                        target_page.render_status = "pending"
+                        target_page.rendered_at = None
                 else:
                     selection_state["allow"] = False
 
@@ -1341,7 +1368,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
 def mark_panel_job_stopped(
     app: FastAPI, job: GenerationJob, message: str, error: bool = False
 ) -> None:
-    def mutate(panel) -> None:
+    def mutate(panel, page) -> None:
         panel.generation.status = "error" if error else "skipped"
         panel.generation.message = message
 
@@ -1517,11 +1544,16 @@ def find_panel(manga: MangaProject, panel_id: str):
 
 
 def find_panel_optional(manga: MangaProject, panel_id: str):
+    panel, _page = find_panel_and_page(manga, panel_id)
+    return panel
+
+
+def find_panel_and_page(manga: MangaProject, panel_id: str):
     for page in manga.pages:
         for panel in page.panels:
             if panel.panel_id == panel_id:
-                return panel
-    return None
+                return panel, page
+    return None, None
 
 
 def page_render_signature(manga: MangaProject, page) -> str:
@@ -1593,10 +1625,11 @@ def update_panel_in_latest(
                 raise RuntimeError("プロジェクトが見つかりません")
             expected = record.revision
             manga = parse_manga_json(record.manga_json)
-            panel = find_panel_optional(manga, panel_id)
+            panel, page = find_panel_and_page(manga, panel_id)
             if panel is None:
                 raise RuntimeError("コマが見つかりません")
-            mutate(panel)
+            # mutateは対象パネルと所属ページを受け取る（ページのdirty化に使う）。
+            mutate(panel, page)
             normalize_manga_assets(manga, app.state.settings.export_dir)
             result = session.execute(
                 sqlalchemy_update(ProjectRecord)
@@ -1631,12 +1664,12 @@ def apply_generation_result(panel, result) -> None:
     panel.generation.prompt_id = result.prompt_id
 
 
-def register_generation_candidate(panel, generated_panel, result) -> None:
+def register_generation_candidate(panel, generated_panel, result, candidate_id=None) -> None:
     if result.asset_path is None:
         apply_generation_result(panel, result)
         return
     candidate = ImageCandidate(
-        id=str(uuid.uuid4()),
+        id=candidate_id or str(uuid.uuid4()),
         asset=str(result.asset_path),
         backend=result.backend,
         status=result.status,
@@ -1655,7 +1688,12 @@ def register_generation_candidate(panel, generated_panel, result) -> None:
     apply_candidate_selection(panel, candidate)
 
 
-def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> None:
+def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> int:
+    """manga_jsonを保存し、更新後のrevisionを返す。
+
+    各更新APIは戻り値のrevisionを応答へ含め、クライアントがselected.revisionを
+    最新化できるようにする（応答にrevisionが無いと次の保存で誤って409になる）。
+    """
     normalize_manga_assets(manga, request.app.state.settings.export_dir)
     with request.app.state.SessionLocal() as session:
         writable = session.get(ProjectRecord, project_id)
@@ -1665,6 +1703,7 @@ def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> N
         writable.revision += 1
         writable.updated_at = now_utc()
         session.commit()
+        return writable.revision
 
 
 def to_knowledge_source(record: KnowledgeSourceRecord) -> KnowledgeSourceResponse:

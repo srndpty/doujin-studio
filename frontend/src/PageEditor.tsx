@@ -36,7 +36,8 @@ type Props = {
   pageNumber: number;
   assetVersion: number;
   busy: boolean;
-  onChange: (manga: MangaProject) => void;
+  // revisionを伴う場合(サーバ保存後)は親が楽観ロック用に同期する。
+  onChange: (manga: MangaProject, revision?: number) => void;
   onSave: (manga: MangaProject) => Promise<void> | void;
   onSuggest: (family: string | null) => Promise<void> | void;
   setMessage: (text: string) => void;
@@ -305,18 +306,18 @@ export function PageEditor({
       body: JSON.stringify(manga)
     });
     if (!saveResponse.ok) throw new Error(await saveResponse.text());
-    const saved = (await saveResponse.json()) as { manga_json: MangaProject };
+    const saved = (await saveResponse.json()) as { manga_json: MangaProject; revision: number };
     setManga(saved.manga_json);
-    onChange(saved.manga_json);
+    onChange(saved.manga_json, saved.revision);
 
     const response = await fetch(
       `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlay.id)}/${kind}`,
       { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }
     );
     if (!response.ok) throw new Error(await response.text());
-    const result = (await response.json()) as { manga_json: MangaProject };
+    const result = (await response.json()) as { manga_json: MangaProject; revision: number };
     setManga(result.manga_json);
-    onChange(result.manga_json);
+    onChange(result.manga_json, result.revision);
     // 同名アセットへ上書き保存されるためURLが変わらない。キャッシュバスターを進めて差し替えを反映する。
     onAssetVersionBump?.();
     setMessage(kind === "asset" ? "overlay画像を登録しました" : "overlayマスクを登録しました");

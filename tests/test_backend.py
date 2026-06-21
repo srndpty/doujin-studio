@@ -213,7 +213,7 @@ def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> Non
             app,
             project_id,
             "p01_01",
-            lambda panel: setattr(panel.generation, "message", "マージ済み"),
+            lambda panel, page: setattr(panel.generation, "message", "マージ済み"),
         )
 
         updated = client.get(f"/api/projects/{project_id}").json()["manga_json"]
@@ -304,7 +304,7 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
                         app,
                         project_id_,
                         "p01_01",
-                        lambda target_panel: setattr(
+                        lambda target_panel, target_page: setattr(
                             target_panel, "selected_candidate_id", user_pick
                         ),
                     )
@@ -384,6 +384,71 @@ def test_stop_comfyui_skips_unrelated_generation(monkeypatch) -> None:
     # 対象prompt_idがキューに無ければグローバルinterruptもqueue削除もしない。
     assert main_module.stop_comfyui_generation(settings, "pid") == "not_requested"
     assert posted == []
+
+
+def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # generate-imageはジョブ完了まで待つため、終了後にキャンセルする。
+        generated = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert generated.status_code == 200
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        job = jobs[0]
+        assert job["status"] == "done"
+
+        cancelled = client.post(f"/api/generation-jobs/{job['id']}/cancel")
+        assert cancelled.status_code == 200
+        # 完了済みジョブのキャンセルは何もしない（doneのまま）。
+        assert cancelled.json()["status"] == "done"
+        # 成功したコマがskippedへ巻き戻らない。
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] != "skipped"
+        assert panel["selected_candidate_id"]
+
+
+def test_use_stub_creates_unique_candidate_files(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assets = [candidate["asset"] for candidate in panel["image_candidates"]]
+        assert len(assets) == 2
+        # 候補ごとに別ファイルになっており、選び直しても画像が上書きされない。
+        assert assets[0] != assets[1]
+        assert all((tmp_path / "exports" / asset).exists() for asset in assets)
+
+
+def test_auto_adopt_marks_page_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # ページ1をレンダリング済み(done)にする。
+        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        page1 = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page1["render_status"] == "done"
+
+        # ページ1のコマで候補を生成→自動採用されると、当該ページはpendingへ戻る。
+        client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        page1_after = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page1_after["render_status"] == "pending"
 
 
 def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
@@ -1044,15 +1109,21 @@ def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
         )
         session.commit()
     manager = JobManager(session_factory)
-    job = manager.create("project", "panel", 2)
-    manager.update(job, status="running", progress=45, message="生成中")
+    # running(ComfyUI投入済みかもしれない) と queued(未開始) を1つずつ用意する。
+    running_job = manager.create("project", "panel-a", 2)
+    manager.update(running_job, status="running", progress=45, message="生成中", prompt_id="pid")
+    queued_job = manager.create("project", "panel-b", 1)
 
     restored_manager = JobManager(session_factory)
     restored = restored_manager.restore_pending()
-    assert len(restored) == 1
-    assert restored[0].id == job.id
+    # 未開始のqueuedジョブだけ再開対象になる。
+    assert [job.id for job in restored] == [queued_job.id]
     assert restored[0].status == "queued"
-    assert restored_manager.get(job.id).message == "バックエンド再起動後に生成を再開します"
+    # runningだったジョブは二重投入を避けるためerror(要再実行)へ。再開はしない。
+    recovered_running = restored_manager.get(running_job.id)
+    assert recovered_running.status == "error"
+    assert "再起動により中断" in recovered_running.message
+    assert recovered_running.prompt_id is None
 
 
 def test_generate_sixteen_page_name(tmp_path: Path) -> None:

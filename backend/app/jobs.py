@@ -89,6 +89,22 @@ class JobManager:
             jobs: list[GenerationJob] = []
             for record in records:
                 job = self.from_record(record)
+                if record.status == "running":
+                    # 再起動前にComfyUIへ投入済みの可能性があり、再キューすると二重生成になる。
+                    # MVPではerror(要再実行)にし、ユーザー判断で再実行させる。
+                    job.status = "error"
+                    job.progress = 0
+                    job.current = 0
+                    job.total = 0
+                    job.node = None
+                    job.prompt_id = None
+                    job.message = (
+                        "バックエンド再起動により中断されました。必要なら再実行してください"
+                    )
+                    job.updated_at = utc_now()
+                    self.persist(job)
+                    continue
+                # まだ開始していないqueuedジョブだけ安全に再開できる。
                 job.status = "queued"
                 job.progress = 0
                 job.current = 0
@@ -230,13 +246,20 @@ class JobManager:
             pass
         return job
 
-    def cancel(self, job: GenerationJob) -> None:
+    def cancel(self, job: GenerationJob) -> bool:
+        """queued/runningからのみcancelledへ遷移する。状態遷移の唯一の窓口。
+
+        遷移したらTrue、既にdone/error/cancelledなら何もせずFalseを返す。
+        完了直後のキャンセルで成功済みコマをskipped扱いにしないため、呼び出し側は
+        Trueのときだけリモート停止やパネル状態更新を行うこと。
+        """
         if job.status in TERMINAL_JOB_STATUSES:
-            return
+            return False
         task = self.tasks.get(job.id)
         if task:
             task.cancel()
         self.update(job, status="cancelled", message="生成をキャンセルしました")
+        return True
 
     async def shutdown(self) -> None:
         self.shutting_down = True

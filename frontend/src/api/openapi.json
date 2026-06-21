@@ -2369,6 +2369,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -3519,6 +3524,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -4043,6 +4053,11 @@
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -4250,6 +4265,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -4276,6 +4296,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "warnings": {
             "items": {
@@ -4624,6 +4649,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -4697,6 +4727,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "warnings": {
             "items": {
