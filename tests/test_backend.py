@@ -370,6 +370,9 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
         project_id = create_generated_project(client)
 
         class EditingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
             async def generate_panel(
                 self,
                 project_id_,
@@ -379,11 +382,16 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
                 progress_callback=None,
                 on_prompt_id=None,
             ):
-                def change_input(target_panel, target_page) -> None:
-                    target_panel.prompt = "NEW_PROMPT"
-                    target_panel.generation.prompt = "NEW_PROMPT"
+                self.count += 1
+                if self.count == 2:
 
-                main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                    def change_input(target_panel, target_page) -> None:
+                        target_panel.prompt = "NEW_PROMPT"
+                        target_panel.generation.prompt = "NEW_PROMPT"
+
+                    main_module.update_panel_in_latest(
+                        app, project_id_, "p01_01", change_input
+                    )
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "old input result")
@@ -391,7 +399,7 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
         monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
-            json={"candidate_count": 1},
+            json={"candidate_count": 2},
         )
         assert response.status_code == 200
         panel = response.json()["manga_json"]["pages"][0]["panels"][0]

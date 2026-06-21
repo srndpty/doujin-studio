@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -860,13 +861,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = build_production_status(project_id, snapshot, settings.export_dir)
         blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
         # CBZ完成まではDBをdoneへ進めない。失敗時は全ページpendingのまま残る。
-        pages_dir = settings.export_dir / project_id / "pages"
-        existing_page_assets = set(pages_dir.glob("*.png")) if pages_dir.is_dir() else set()
+        published_by_request: dict[Path, bool] = {}
         page_assets, render_warnings = render_snapshot_pages(
-            project_id, snapshot, settings.export_dir, record.revision
+            project_id,
+            snapshot,
+            settings.export_dir,
+            record.revision,
+            ownership=published_by_request,
         )
         cbz_path = export_confirmed_cbz(
-            project_id, snapshot.title, page_assets, settings.export_dir, record.revision
+            project_id,
+            snapshot.title,
+            page_assets,
+            settings.export_dir,
+            record.revision,
+            ownership=published_by_request,
         )
         try:
             manga, revision = commit_rendered_pages(
@@ -879,9 +888,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except Exception:
             # 入力競合で409になった古いCBZをopen-folderの候補へ残さない。
-            cbz_path.unlink(missing_ok=True)
+            if published_by_request.get(cbz_path, False):
+                cbz_path.unlink(missing_ok=True)
+            referenced = current_render_asset_paths(request.app, project_id)
             for page_asset in page_assets:
-                if page_asset not in existing_page_assets:
+                if published_by_request.get(page_asset, False) and page_asset not in referenced:
                     page_asset.unlink(missing_ok=True)
             raise
         return ExportResponse(
@@ -1462,7 +1473,19 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                     latest, target_panel, app.state.settings.export_dir
                 )
                 if latest_hash != job.generation_input_hash:
+                    owned_candidate_ids = set(job.candidate_ids)
+                    target_panel.image_candidates = [
+                        item
+                        for item in target_panel.image_candidates
+                        if item.id not in owned_candidate_ids
+                    ]
+                    if target_panel.selected_candidate_id in owned_candidate_ids:
+                        target_panel.selected_candidate_id = None
+                        target_panel.image_asset = None
+                    if owned_candidate_ids and target_page is not None:
+                        mark_page_dirty(target_page)
                     target_panel.generation.status = "pending"
+                    target_panel.generation.prompt_id = None
                     target_panel.generation.message = (
                         "生成中に入力が変更されたため、古い候補を破棄しました"
                     )
@@ -1750,6 +1773,7 @@ def render_snapshot_page(
     page_number: int,
     export_dir: Path,
     revision: int,
+    ownership: dict[Path, bool] | None = None,
 ) -> tuple[Path, list[str]]:
     """snapshotを一時描画し、入力hash付き不変PNGへ昇格する。DB状態は変更しない。"""
     staging = (
@@ -1762,8 +1786,9 @@ def render_snapshot_page(
         page = next(item for item in manga.pages if item.page == page_number)
         render_hash = page_render_hash(manga, page)
         target = export_dir / project_id / "pages" / f"page_{page_number:03d}.{render_hash}.png"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staged.replace(target)
+        created = publish_immutable_asset(staged, target)
+        if ownership is not None:
+            ownership[target] = created
         return target, warnings
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1774,6 +1799,7 @@ def render_snapshot_pages(
     manga: MangaProject,
     export_dir: Path,
     revision: int,
+    ownership: dict[Path, bool] | None = None,
 ) -> tuple[list[Path], list[str]]:
     """全ページ成功後に入力hash付き不変PNG群へ昇格する。DB状態は変更しない。"""
     staging = (
@@ -1791,7 +1817,9 @@ def render_snapshot_pages(
             page_number = int(staged.stem.removeprefix("page_"))
             render_hash = page_render_hash(manga, pages[page_number])
             target = target_dir / f"page_{page_number:03d}.{render_hash}.png"
-            staged.replace(target)
+            created = publish_immutable_asset(staged, target)
+            if ownership is not None:
+                ownership[target] = created
             assets.append(target)
         return assets, warnings
     finally:
@@ -1804,6 +1832,7 @@ def export_confirmed_cbz(
     page_assets: list[Path],
     export_dir: Path,
     revision: int,
+    ownership: dict[Path, bool] | None = None,
 ) -> Path:
     """CBZを確定revisionの一時パスで完成させてから正規出力へ昇格する。"""
     staging = export_dir / project_id / ".cbz-staging" / f"revision-{revision}-{uuid.uuid4().hex}"
@@ -1815,13 +1844,51 @@ def export_confirmed_cbz(
         target = (
             export_dir
             / project_id
-            / f"{sanitize_export_filename(title)}-r{revision}-{manifest_hash}.cbz"
+            / (
+                f"{sanitize_export_filename(title)}-r{revision}-{manifest_hash}-"
+                f"{uuid.uuid4().hex}.cbz"
+            )
         )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staged.replace(target)
+        created = publish_immutable_asset(staged, target)
+        if ownership is not None:
+            ownership[target] = created
         return target
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def publish_immutable_asset(staged: Path, target: Path) -> bool:
+    """既存成果物を上書きせず、同内容なら再利用する。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(staged, target)
+        created = True
+    except FileExistsError:
+        if hashlib.sha256(staged.read_bytes()).digest() != hashlib.sha256(
+            target.read_bytes()
+        ).digest():
+            raise RuntimeError(f"不変アセットの内容が一致しません: {target.name}")
+        created = False
+    finally:
+        staged.unlink(missing_ok=True)
+    return created
+
+
+def current_render_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
+    with app.state.SessionLocal() as session:
+        record = session.get(ProjectRecord, project_id)
+        if record is None:
+            return set()
+        manga = parse_manga_json(record.manga_json)
+    paths: set[Path] = set()
+    for page in manga.pages:
+        if not page.render_asset:
+            continue
+        try:
+            paths.add(resolve_asset_path(page.render_asset, app.state.settings.export_dir))
+        except ValueError:
+            continue
+    return paths
 
 
 def commit_rendered_pages(
