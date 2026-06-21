@@ -19,6 +19,9 @@ class ProjectRecord(Base):
     manga_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # manga_json更新ごとに増える楽観ロック用バージョン。古いrevisionでの保存は409にする。
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ページ構成を全置換する操作(ネーム再生成・ストーリー適用・リビジョン復元)で増える世代番号。
+    # 生成ジョブは開始時の世代を保持し、世代が変わったら古いプロンプトの候補混入を防ぐ。
+    generation_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -40,6 +43,8 @@ class GenerationJobRecord(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False, default="生成待ちです")
     # ComfyUIのprompt_id。キャンセル時にリモート停止(interrupt/queue削除)へ使う。
     prompt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ジョブ開始時のproject世代。候補保存時に現在世代と異なれば破棄する。
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     candidate_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -149,10 +154,18 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
             )
+        if "generation_epoch" not in project_columns:
+            connection.execute(
+                text("ALTER TABLE projects ADD COLUMN generation_epoch INTEGER NOT NULL DEFAULT 0")
+            )
         job_rows = connection.execute(text("PRAGMA table_info(generation_jobs)")).all()
         job_columns = {row[1] for row in job_rows}
         if "prompt_id" not in job_columns:
             connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN prompt_id TEXT"))
+        if "epoch" not in job_columns:
+            connection.execute(
+                text("ALTER TABLE generation_jobs ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0")
+            )
 
 
 def create_session_factory(database_url: str) -> sessionmaker:

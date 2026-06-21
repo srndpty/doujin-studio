@@ -68,3 +68,16 @@ Alembic 全面導入の前段として、最低限:
 
 本格対応: 候補単位の prompt ID・生成試行・出力先を永続化し、ComfyUI の queue/history と
 照合して「実は完了していた／まだ走っている」を判定して復旧する。
+
+## 進捗メモ
+
+- 全更新APIをCAS化（`ProjectMutationService` 経由）。`save_manga_json` 廃止。
+  `update_manga_json` は `revision` 必須。CAS callbackは純粋なJSON変更のみとし、
+  レンダリング/CBZ等の副作用は確定manga/revisionに対しcommit後に1回だけ実行する。
+- 構成全置換（ネーム再生成・ストーリー適用・リビジョン復元）は `generation_epoch` を進め、
+  進行中ジョブを停止する。生成ジョブは開始時epochを保持し、候補保存時に世代不一致なら
+  破棄してjobをcancelledにする（旧プロンプト候補の新作品への混入防止）。
+- 生成登録（generate-image / generation-jobs / batch）は panel queued化・JobRecord追加・
+  revision更新を `GenerationService.enqueue()` で単一CASトランザクション化。
+- PNG/CBZは確定revisionを含む一時パスで完成させ、成功後に正規出力へ昇格する。
+- 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。

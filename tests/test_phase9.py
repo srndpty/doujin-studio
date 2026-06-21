@@ -28,6 +28,7 @@ def create_generated_project(client: TestClient) -> str:
     client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
+            "revision": 0,
             "work_name": "作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -139,7 +140,10 @@ def test_layout_suggest_api_repropose_keeps_content(tmp_path: Path) -> None:
 def test_layout_locked_survives_manga_json_save(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
         manga["pages"][0]["layout_locked"] = True
-        saved = client.put(f"/api/projects/{project_id}/manga-json", json=manga).json()
+        saved = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        ).json()
         assert saved["manga_json"]["pages"][0]["layout_locked"] is True

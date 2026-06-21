@@ -398,11 +398,13 @@ export function App() {
     }
   }
 
-  // 入力中の内容を消さず、サーバの最新revisionだけ取り込む（生成/キャンセル/失敗後など、
-  // manga_jsonを伴わない経路でselected.revisionが古いまま残るのを防ぐ）。
-  async function syncSelectedRevision(projectId: string) {
+  // ジョブ終端後など、サーバ側でmanga_json/revisionが進んだ経路で最新を丸ごと反映する。
+  // revisionだけ先行させると古いmanga_jsonを最新revisionで保存でき、サーバの候補・生成状態を
+  // 巻き戻せてしまうため、必ずmanga_jsonごと取り込む。
+  async function reloadSelectedProject(projectId: string) {
     const latest = await api.get<Project>(`/api/projects/${projectId}`);
-    setSelected((prev) => (prev && prev.id === projectId ? { ...prev, revision: latest.revision } : prev));
+    setSelected((prev) => (prev && prev.id === projectId ? latest : prev));
+    setJsonText(JSON.stringify(latest.manga_json, null, 2));
   }
 
   // 更新APIの応答(manga_json + revision)をselectedへ反映する。
@@ -627,9 +629,9 @@ export function App() {
     } finally {
       setActiveJobIds([]);
       await refreshJobHistory(projectId);
-      // ジョブ登録・生成・失敗・キャンセルでサーバ側revisionが進むため、最新へ同期する
-      // （この後の通常保存が古いrevisionで誤って409にならないように）。
-      await syncSelectedRevision(projectId);
+      // ジョブ登録・生成・失敗・キャンセルでサーバ側のmanga_json/revisionが進むため、
+      // 最新プロジェクト全体を取り込む（revisionだけ進めて古いJSONを残さない）。
+      await reloadSelectedProject(projectId);
     }
   }
 
@@ -1380,6 +1382,7 @@ export function App() {
         {activeTab === "story" && selected && (
           <StoryPanel
             projectId={selected.id}
+            revision={selected.revision}
             workName={selected.work_name}
             onApplied={() => {
               void loadProject(selected.id);

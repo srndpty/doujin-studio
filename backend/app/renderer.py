@@ -21,9 +21,13 @@ TEXT_FLOOR_SIZE = 18
 
 
 def render_project_pages(
-    project_id: str, manga: MangaProject, export_dir: Path
+    project_id: str,
+    manga: MangaProject,
+    export_dir: Path,
+    *,
+    output_dir: Path | None = None,
 ) -> tuple[list[Path], list[str]]:
-    pages_dir = export_dir / project_id / "pages"
+    pages_dir = output_dir or export_dir / project_id / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     assets: list[Path] = []
     warnings: list[str] = []
@@ -35,9 +39,14 @@ def render_project_pages(
 
 
 def render_project_page(
-    project_id: str, manga: MangaProject, page_number: int, export_dir: Path
+    project_id: str,
+    manga: MangaProject,
+    page_number: int,
+    export_dir: Path,
+    *,
+    output_dir: Path | None = None,
 ) -> tuple[Path, list[str]]:
-    pages_dir = export_dir / project_id / "pages"
+    pages_dir = output_dir or export_dir / project_id / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     page = next((item for item in manga.pages if item.page == page_number), None)
     if page is None:
@@ -74,10 +83,17 @@ def _render_single_page(
     return target, [f"{page.page}ページ {message}" for message in warnings]
 
 
-def export_cbz(project_id: str, title: str, page_assets: list[Path], export_dir: Path) -> Path:
+def export_cbz(
+    project_id: str,
+    title: str,
+    page_assets: list[Path],
+    export_dir: Path,
+    *,
+    output_dir: Path | None = None,
+) -> Path:
     safe_title = sanitize_export_filename(title)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = export_dir / project_id / f"{safe_title}-{timestamp}.cbz"
+    target = (output_dir or export_dir / project_id) / f"{safe_title}-{timestamp}.cbz"
     target.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(target, "w", ZIP_DEFLATED) as archive:
         for asset in sorted(page_assets):

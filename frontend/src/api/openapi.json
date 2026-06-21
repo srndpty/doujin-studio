@@ -242,16 +242,9 @@
           {
             "name": "revision",
             "in": "query",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
               "title": "Revision"
             }
           }
@@ -2013,6 +2006,15 @@
               "type": "string",
               "title": "Session Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -2103,6 +2105,15 @@
             "schema": {
               "type": "string",
               "title": "Revision Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
             }
           }
         ],
@@ -2650,6 +2661,11 @@
       },
       "GenerateNameRequest": {
         "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
           "work_name": {
             "type": "string",
             "maxLength": 120,
@@ -2693,6 +2709,7 @@
         },
         "type": "object",
         "required": [
+          "revision",
           "work_name",
           "character_a",
           "character_b",

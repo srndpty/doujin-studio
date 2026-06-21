@@ -37,6 +37,8 @@ class GenerationJob:
     candidate_ids: list[str] = field(default_factory=list)
     # ComfyUIのprompt_id（リモート生成中のみ）。キャンセル時のリモート停止に使う。
     prompt_id: str | None = None
+    # ジョブ開始時のproject世代。構成全置換後の古い候補混入を防ぐ。
+    epoch: int = 0
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     revision: int = 0
@@ -67,14 +69,25 @@ class JobManager:
         self.session_factory = session_factory
         self.shutting_down = False
 
-    def create(self, project_id: str, panel_id: str, candidate_count: int) -> GenerationJob:
+    def create(
+        self, project_id: str, panel_id: str, candidate_count: int, epoch: int = 0
+    ) -> GenerationJob:
         job = GenerationJob(
-            project_id=project_id, panel_id=panel_id, candidate_count=candidate_count
+            project_id=project_id,
+            panel_id=panel_id,
+            candidate_count=candidate_count,
+            epoch=epoch,
         )
         self.jobs[job.id] = job
         self.events[job.id] = asyncio.Event()
         self.persist(job)
         return job
+
+    def register_in_memory(self, job: GenerationJob) -> None:
+        """既に同一トランザクションでGenerationJobRecordを永続化したジョブを、
+        メモリキャッシュへ登録する（persistはしない）。enqueueの単一トランザクション用。"""
+        self.jobs[job.id] = job
+        self.events[job.id] = asyncio.Event()
 
     def restore_pending(self) -> tuple[list[GenerationJob], list[GenerationJob]]:
         """(再開するqueuedジョブ, 中断扱いにしたrunningジョブ) を返す。
@@ -169,6 +182,7 @@ class JobManager:
             message=record.message,
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
             prompt_id=record.prompt_id,
+            epoch=record.epoch,
             created_at=record.created_at.replace(tzinfo=timezone.utc)
             if record.created_at.tzinfo is None
             else record.created_at,
@@ -225,6 +239,7 @@ class JobManager:
                     project_id=job.project_id,
                     panel_id=job.panel_id,
                     candidate_count=job.candidate_count,
+                    epoch=job.epoch,
                     created_at=job.created_at,
                     updated_at=job.updated_at,
                 )

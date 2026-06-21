@@ -10,13 +10,7 @@ from sqlalchemy.orm import Session
 
 from . import knowledge, layout_engine
 from .config import Settings
-from .database import (
-    KnowledgeChunkRecord,
-    ProjectRecord,
-    ProjectRevisionRecord,
-    StoryGenerationSessionRecord,
-    now_utc,
-)
+from .database import KnowledgeChunkRecord, StoryGenerationSessionRecord, now_utc
 from .generator import (
     DEFAULT_COMMON_NEGATIVE_PROMPT,
     DEFAULT_COMMON_POSITIVE_PROMPT,
@@ -849,27 +843,10 @@ def script_to_manga(
     )
 
 
-def save_revision(
-    session: Session, project_id: str, manga_json: str, label: str
-) -> ProjectRevisionRecord:
-    revision = ProjectRevisionRecord(
-        id=str(uuid.uuid4()),
-        project_id=project_id,
-        label=label,
-        manga_json=manga_json,
-        created_at=now_utc(),
-    )
-    session.add(revision)
-    # commitは呼び出し側(apply_session/restore_revision)に委ね、リビジョン保存と
-    # manga_json更新を1トランザクションにする（途中失敗で片方だけ残さない）。
-    session.flush()
-    return revision
-
-
 def apply_session(
     session: Session,
     record: StoryGenerationSessionRecord,
-    project: ProjectRecord,
+    base: MangaProject,
 ) -> MangaProject:
     stages = load_stages(record)
     if stages["script"]["status"] != "approved" or stages["script"]["data"] is None:
@@ -877,7 +854,6 @@ def apply_session(
     script = ScriptStage.model_validate(stages["script"]["data"])
     if len(script.pages) not in {4, 8, 16}:
         raise StoryError("ページ数は4・8・16のいずれかにしてください")
-    base = MangaProject.model_validate(json.loads(project.manga_json))
     # 知識DBのキャラ画像情報(trigger_promptなど)をCharacterプロファイルへ反映する。
     merge_knowledge_characters(base, build_characters_from_knowledge(session, record.work_name))
     # 台詞の無いコマ向けに、ページ構成段階の登場人物をフォールバックとして渡す。
@@ -887,25 +863,8 @@ def apply_session(
         for outline in pages_data.get("pages", [])
         if outline.get("page")
     }
-    # 適用前のManga JSONをリビジョン保存する。
-    save_revision(
-        session, project.id, project.manga_json, f"ストーリー適用前 ({now_utc().isoformat()})"
-    )
-    manga = script_to_manga(script, base, page_characters)
-    project.manga_json = manga.model_dump_json()
-    project.revision += 1
-    project.updated_at = now_utc()
-    session.commit()
-    return manga
+    return script_to_manga(script, base, page_characters)
 
 
-def restore_revision(
-    session: Session, project: ProjectRecord, revision: ProjectRevisionRecord
-) -> MangaProject:
-    # 復元時も現在状態を新しいリビジョンとして保存する。
-    save_revision(session, project.id, project.manga_json, f"復元前 ({now_utc().isoformat()})")
-    project.manga_json = revision.manga_json
-    project.revision += 1
-    project.updated_at = now_utc()
-    session.commit()
-    return MangaProject.model_validate(json.loads(revision.manga_json))
+def restore_revision(manga_json: str) -> MangaProject:
+    return MangaProject.model_validate(json.loads(manga_json))

@@ -14,7 +14,7 @@ from PIL import Image
 
 import backend.app.main as main_module
 from backend.app.config import Settings
-from backend.app.database import ProjectRecord, create_session_factory
+from backend.app.database import ProjectRecord, ProjectRevisionRecord, create_session_factory
 from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
@@ -43,6 +43,12 @@ def make_client(
     return TestClient(create_app(settings))
 
 
+def put_manga(client: TestClient, project_id: str, manga: dict):
+    # manga-jsonは楽観ロックでrevision必須。最新revisionを取得して保存する。
+    revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+    return client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+
+
 def create_generated_project(client: TestClient) -> str:
     response = client.post("/api/projects", json={"title": "テスト本", "work_name": "テスト作品"})
     assert response.status_code == 200
@@ -50,6 +56,7 @@ def create_generated_project(client: TestClient) -> str:
     response = client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
+            "revision": 0,
             "work_name": "テスト作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -166,7 +173,7 @@ def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
         response = client.post("/api/projects", json={"title": "不正テスト", "work_name": ""})
         project_id = response.json()["id"]
         response = client.put(
-            f"/api/projects/{project_id}/manga-json",
+            f"/api/projects/{project_id}/manga-json?revision=0",
             json={
                 "title": "不正",
                 "target_pages": 4,
@@ -191,9 +198,27 @@ def test_manga_json_optimistic_lock_rejects_stale_revision(tmp_path: Path) -> No
         stale = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
         assert stale.status_code == 409
 
-        # revision未指定なら従来通り保存できる。
-        no_check = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
-        assert no_check.status_code == 200
+        # revisionは必須。未指定の無条件保存は許可しない（古いJSONでの巻き戻し防止）。
+        missing = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert missing.status_code == 422
+
+
+def test_generate_name_rejects_stale_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        stale = client.post(
+            f"/api/projects/{project_id}/generate-name",
+            json={
+                "revision": 0,
+                "work_name": "別作品",
+                "character_a": "A",
+                "character_b": "B",
+                "situation": "別の場面",
+                "ending_direction": "別の結末",
+            },
+        )
+        assert stale.status_code == 409
+        assert client.get(f"/api/projects/{project_id}").json()["work_name"] == "テスト作品"
 
 
 def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> None:
@@ -206,7 +231,7 @@ def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> Non
         for panel in manga["pages"][0]["panels"]:
             if panel["panel_id"] == "p01_02":
                 panel["prompt"] = "ユーザー編集後のプロンプト"
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         # 生成完了が開始時点の古いスナップショットではなく最新へp01_01だけマージする。
         main_module.update_panel_in_latest(
@@ -229,7 +254,7 @@ def test_duplicate_panel_id_is_rejected(tmp_path: Path) -> None:
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         panels = manga["pages"][0]["panels"]
         panels[1]["panel_id"] = panels[0]["panel_id"]
-        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        response = put_manga(client, project_id, manga)
         assert response.status_code == 422
 
 
@@ -244,7 +269,7 @@ def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
 
         # メタ変更（タイトル）だけでは全ページをpendingに戻さない。
         manga["title"] = "新しいタイトル"
-        meta_only = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        meta_only = put_manga(client, project_id, manga)
         assert meta_only.status_code == 200
         assert all(
             page["render_status"] == "done" for page in meta_only.json()["manga_json"]["pages"]
@@ -255,7 +280,7 @@ def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
         manga2["pages"][0]["panels"][0]["dialogue"].append(
             {"speaker": "char_a", "text": "追加の台詞"}
         )
-        render_change = client.put(f"/api/projects/{project_id}/manga-json", json=manga2)
+        render_change = put_manga(client, project_id, manga2)
         assert render_change.status_code == 200
         pages = render_change.json()["manga_json"]["pages"]
         assert pages[0]["render_status"] == "pending"
@@ -268,7 +293,7 @@ def test_duplicate_workflow_preset_id_is_rejected(tmp_path: Path) -> None:
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         preset = manga["workflow_presets"][0]
         manga["workflow_presets"] = [preset, {**preset, "name": "重複ID"}]
-        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        response = put_manga(client, project_id, manga)
         assert response.status_code == 422
 
 
@@ -748,6 +773,26 @@ def test_cbz_returns_revision_and_client_can_sync(tmp_path: Path) -> None:
         assert client.get(f"/api/projects/{project_id}").json()["revision"] == exported_revision
 
 
+def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, monkeypatch) -> None:
+    export_dir = tmp_path / "exports"
+    canonical = export_dir / "project" / "pages" / "page_001.png"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"old-page")
+
+    def fail_after_staging(project_id, manga, page_number, root, *, output_dir=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "page_001.png").write_bytes(b"incomplete-page")
+        raise RuntimeError("描画失敗")
+
+    monkeypatch.setattr(main_module, "render_project_page", fail_after_staging)
+    with pytest.raises(RuntimeError, match="描画失敗"):
+        main_module.render_confirmed_page(
+            "project", MangaProject(title="test"), 1, export_dir, revision=3
+        )
+    assert canonical.read_bytes() == b"old-page"
+    assert not list((export_dir / "project" / ".render-staging").glob("revision-*"))
+
+
 def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
     from backend.app.mutation import ProjectConflictError, ProjectMutationService
 
@@ -775,6 +820,122 @@ def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
         "p", lambda manga: setattr(manga, "premise", "x"), expected_revision=0
     )
     assert revision == 1
+
+
+def test_mutation_service_epoch_mismatch(tmp_path: Path) -> None:
+    from backend.app.mutation import EpochMismatchError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'epoch.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=MangaProject(title="t").model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+    # 世代不一致(構成全置換後の古いジョブ相当)はEpochMismatchError。
+    with pytest.raises(EpochMismatchError):
+        service.mutate("p", lambda manga: None, expected_epoch=5)
+
+
+def test_structural_replace_saves_history_and_epoch_atomically(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectConflictError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'structural.db'}")
+    original = MangaProject(title="変更前", premise="旧構成")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=original.title,
+                work_name="",
+                manga_json=original.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    with pytest.raises(ProjectConflictError):
+        service.replace_with_history(
+            "p",
+            lambda _session, manga: manga,
+            expected_revision=9,
+            history_label="保存されない履歴",
+        )
+    with session_factory() as session:
+        assert session.query(ProjectRevisionRecord).count() == 0
+
+    replacement, revision = service.replace_with_history(
+        "p",
+        lambda _session, manga: manga.model_copy(update={"title": "変更後", "premise": "新構成"}),
+        expected_revision=0,
+        history_label="変更前",
+    )
+    assert replacement.title == "変更後"
+    assert revision == 1
+    with session_factory() as session:
+        project = session.get(ProjectRecord, "p")
+        history = session.query(ProjectRevisionRecord).one()
+        assert project.revision == 1
+        assert project.generation_epoch == 1
+        assert MangaProject.model_validate_json(history.manga_json).premise == "旧構成"
+
+
+def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EpochBumpingBackend:
+            def __init__(self) -> None:
+                self.done = False
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # 生成中にネーム再生成・ストーリー適用相当で世代が進んだ状況を再現する。
+                if not self.done:
+                    self.done = True
+                    with app.state.SessionLocal() as session:
+                        record = session.get(ProjectRecord, project_id_)
+                        record.generation_epoch += 1
+                        session.commit()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+        )
+
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        panel = next(
+            p
+            for p in response.json()["manga_json"]["pages"][0]["panels"]
+            if p["panel_id"] == "p01_01"
+        )
+        # 世代が変わったため、古いプロンプトの候補は新作品へ混入しない。
+        assert panel["image_candidates"] == []
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert jobs[0]["status"] == "cancelled"
 
 
 def test_character_profiles_are_composed_without_duplicates() -> None:
@@ -1037,7 +1198,7 @@ def test_reference_upload_keeps_colliding_ids_separate(
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         manga["characters"][0]["id"] = left
         manga["characters"][1]["id"] = right
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for character_id, color in ((left, "red"), (right, "blue")):
@@ -1072,7 +1233,7 @@ def test_location_upload_keeps_colliding_ids_separate(
             {**template, "id": left, "display_name": left},
             {**template, "id": right, "display_name": right},
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for location_id, color in ((left, "red"), (right, "blue")):
@@ -1109,7 +1270,7 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
                 "box": [0.2, 0.2, 0.4, 0.5],
             }
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         image = Image.new("RGBA", (32, 32), (255, 0, 0, 128))
         buffer = io.BytesIO()
@@ -1126,7 +1287,7 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
 
         manga = response.json()["manga_json"]
         manga["pages"][0]["reading_order"] = ["unknown-panel"]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
         preflight_response = client.post(f"/api/projects/{project_id}/preflight")
         assert preflight_response.status_code == 200
         assert any(
@@ -1145,7 +1306,7 @@ def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, 
             {"id": overlay_id, "source_panel_id": panel_id, "box": [0.2, 0.2, 0.4, 0.5]}
             for overlay_id in (left, right)
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for overlay_id, color in ((left, "red"), (right, "blue")):
@@ -1233,6 +1394,7 @@ def test_generate_sixteen_page_name(tmp_path: Path) -> None:
         response = client.post(
             f"/api/projects/{project_id}/generate-name",
             json={
+                "revision": 0,
                 "work_name": "作品",
                 "character_a": "A",
                 "character_b": "B",
@@ -1312,7 +1474,7 @@ def test_long_dialogue_renders_with_auto_font_shrink(tmp_path: Path) -> None:
                 )
             ],
         )
-        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga.model_dump())
+        response = put_manga(client, project_id, manga.model_dump())
         assert response.status_code == 200
         response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
         assert response.status_code == 200

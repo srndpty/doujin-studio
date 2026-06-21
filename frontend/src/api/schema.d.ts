@@ -1027,6 +1027,8 @@ export interface components {
         };
         /** GenerateNameRequest */
         GenerateNameRequest: {
+            /** Revision */
+            revision: number;
             /** Work Name */
             work_name: string;
             /** Character A */
@@ -2442,8 +2444,8 @@ export interface operations {
     };
     update_manga_json_api_projects__project_id__manga_json_put: {
         parameters: {
-            query?: {
-                revision?: number | null;
+            query: {
+                revision: number;
             };
             header?: never;
             path: {
@@ -3639,7 +3641,9 @@ export interface operations {
     };
     apply_story_session_api_story_sessions__session_id__apply_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -3701,7 +3705,9 @@ export interface operations {
     };
     restore_project_revision_api_projects__project_id__revisions__revision_id__restore_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;

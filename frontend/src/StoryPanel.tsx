@@ -67,11 +67,13 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
 
 export function StoryPanel({
   projectId,
+  revision,
   workName,
   onApplied,
   onBusyChange
 }: {
   projectId: string;
+  revision: number;
   workName: string;
   onApplied: () => void;
   onBusyChange?: (busy: boolean, label: string) => void;
@@ -222,7 +224,7 @@ export function StoryPanel({
   async function applySession() {
     if (!session) return;
     await run(async () => {
-      await sendJson(`/api/story-sessions/${session.id}/apply`, "POST");
+      await sendJson(`/api/story-sessions/${session.id}/apply?revision=${revision}`, "POST");
       setMessage("プロジェクトへ適用しました。適用前の状態はリビジョンに保存されています");
       await refreshRevisions();
       onApplied();
@@ -231,7 +233,7 @@ export function StoryPanel({
 
   async function restoreRevision(id: string) {
     await run(async () => {
-      await sendJson(`/api/projects/${projectId}/revisions/${id}/restore`, "POST");
+      await sendJson(`/api/projects/${projectId}/revisions/${id}/restore?revision=${revision}`, "POST");
       setMessage("リビジョンを復元しました");
       await refreshRevisions();
       onApplied();

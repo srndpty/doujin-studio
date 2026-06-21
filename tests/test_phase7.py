@@ -40,6 +40,7 @@ def create_project(client: TestClient, work_name: str = "テスト作品", targe
     client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
+            "revision": 0,
             "work_name": work_name,
             "character_a": "春香",
             "character_b": "千早",
@@ -201,7 +202,8 @@ def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
         first_theme = before["pages"][0]["theme"]
 
         session_id = run_full_stub_flow(client, project_id, 4)
-        applied = client.post(f"/api/story-sessions/{session_id}/apply")
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        applied = client.post(f"/api/story-sessions/{session_id}/apply?revision={revision}")
         assert applied.status_code == 200
         manga = applied.json()["manga_json"]
         assert len(manga["pages"]) == 4
@@ -220,8 +222,9 @@ def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
         revisions = client.get(f"/api/projects/{project_id}/revisions").json()
         assert len(revisions) == 1
 
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
         restored = client.post(
-            f"/api/projects/{project_id}/revisions/{revisions[0]['id']}/restore"
+            f"/api/projects/{project_id}/revisions/{revisions[0]['id']}/restore?revision={revision}"
         ).json()
         assert restored["manga_json"]["pages"][0]["theme"] == first_theme
         # 復元時も現在状態を新リビジョンとして保存する。
@@ -412,7 +415,10 @@ def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
                 == 200
             )
 
-        manga = client.post(f"/api/story-sessions/{session_id}/apply").json()["manga_json"]
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        manga = client.post(f"/api/story-sessions/{session_id}/apply?revision={revision}").json()[
+            "manga_json"
+        ]
 
         mika = next((c for c in manga["characters"] if c["display_name"] == "城ヶ崎美嘉"), None)
         assert mika is not None, "知識のキャラがプロジェクトへ反映されること"
