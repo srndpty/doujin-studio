@@ -267,6 +267,29 @@ def test_overlay_asset_upload_preserves_alpha(tmp_path: Path) -> None:
         assert saved.getpixel((0, 0))[3] == 0
 
 
+def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # ページ1をレンダリングしてrender_status=doneにする。
+        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 本文側にだけ収まらない長文を仕込む（DBは変更しない）。
+        dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
+        dialogue["text"] = "あ" * 300
+        dialogue["box"] = [0.0, 0.0, 0.12, 0.08]
+        manga["pages"][0]["panels"][0]["bbox"] = [0.05, 0.05, 0.18, 0.1]
+
+        response = client.post(f"/api/projects/{project_id}/pages/1/preflight", json=manga)
+        assert response.status_code == 200
+        codes = {issue["code"] for issue in response.json()["warnings"]}
+        assert "dialogue_overflow" in codes  # 本文の内容が検査される
+
+        # 非破壊: DBは変わらず、render_statusはdoneのまま、台詞も元のまま。
+        after = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert after["pages"][0]["render_status"] == "done"
+        assert after["pages"][0]["panels"][0]["dialogue"][0]["text"] != "あ" * 300
+
+
 def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)

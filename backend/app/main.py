@@ -634,10 +634,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response_model=PreflightResponse,
     )
     def preflight_page_endpoint(
-        project_id: str, page_number: int, request: Request
+        project_id: str,
+        page_number: int,
+        request: Request,
+        payload: MangaProject | None = Body(default=None),
     ) -> PreflightResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
+        # 本文でManga JSONが渡されれば非破壊で検査する（保存せずレンダリング状態を維持）。
+        if payload is not None:
+            manga = payload
+        else:
+            record = load_project_record(request, project_id)
+            manga = parse_manga_json(record.manga_json)
         page = next((item for item in manga.pages if item.page == page_number), None)
         if page is None:
             raise HTTPException(status_code=404, detail="ページが見つかりません")

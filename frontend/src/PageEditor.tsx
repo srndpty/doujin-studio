@@ -95,16 +95,11 @@ export function PageEditor({
 
   const runPreflight = async () => {
     try {
-      // 未保存の編集を先に保存する。検査はサーバー保存済みのManga JSONを対象に動くため、
-      // 保存しないと直前の編集で生じた重なり・はみ出しを見逃す。
-      const saved = await fetch(`/api/projects/${projectId}/manga-json`, {
-        method: "PUT",
+      // 現在の編集内容を本文で渡し、非破壊で検査する（保存しないのでレンダリング状態を消さない）。
+      const response = await fetch(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(manga)
-      });
-      if (!saved.ok) throw new Error(await saved.text());
-      const response = await fetch(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, {
-        method: "POST"
       });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
@@ -254,6 +249,21 @@ export function PageEditor({
 
   if (!page) return <p className="hint">ページがありません。先にネームを生成してください。</p>;
 
+  const renderOverlay = (overlay: OverlayElement) => (
+    <OverlayNode
+      key={overlay.id}
+      overlay={overlay}
+      version={assetVersion}
+      selected={selection?.kind === "overlay" && selection.overlayId === overlay.id}
+      onSelect={() => setSelection({ kind: "overlay", overlayId: overlay.id })}
+      onMove={(box) => patchOverlay(overlay.id, { box })}
+    />
+  );
+  // サーバーの描画順に合わせ、背面overlayはコマより先、前面overlayはコマより後に描く。
+  const sortedOverlays = [...(page.overlay_elements ?? [])].sort((a, b) => a.z_index - b.z_index);
+  const backOverlays = sortedOverlays.filter((overlay) => overlay.layer === "back");
+  const frontOverlays = sortedOverlays.filter((overlay) => overlay.layer === "front");
+
   return (
     <div className="page-editor">
       <div className="page-editor-canvas">
@@ -266,6 +276,7 @@ export function PageEditor({
           }}
         >
           <Layer scaleX={SCALE} scaleY={SCALE}>
+            {backOverlays.map(renderOverlay)}
             {page.panels.map((panel) => (
               <PanelNode
                 key={panel.panel_id}
@@ -311,18 +322,7 @@ export function PageEditor({
                 }
               />
             ))}
-            {[...(page.overlay_elements ?? [])]
-              .sort((a, b) => a.z_index - b.z_index)
-              .map((overlay) => (
-                <OverlayNode
-                  key={overlay.id}
-                  overlay={overlay}
-                  version={assetVersion}
-                  selected={selection?.kind === "overlay" && selection.overlayId === overlay.id}
-                  onSelect={() => setSelection({ kind: "overlay", overlayId: overlay.id })}
-                  onMove={(box) => patchOverlay(overlay.id, { box })}
-                />
-              ))}
+            {frontOverlays.map(renderOverlay)}
             <Transformer
               ref={transformerRef}
               rotateEnabled={false}
