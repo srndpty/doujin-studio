@@ -1375,6 +1375,51 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
         assert jobs[0]["status"] == "cancelled"
 
 
+def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EpochBumpingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                # 1件目の生成中に構成全置換(ネーム再生成・並べ替え)で世代を進める。
+                if self.count == 1:
+                    with app.state.SessionLocal() as session:
+                        record = session.get(ProjectRecord, project_id_)
+                        record.generation_epoch += 1
+                        session.commit()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+        )
+
+        # 開始時epochで固定された/renderは、途中で世代が変わると409で止まる。
+        response = client.post(f"/api/projects/{project_id}/render", json={"force": True})
+        assert response.status_code == 409
+        # 新しい作品構成へ後続ジョブを積まない（最初の1件だけで中止する）。
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "cancelled"
+        # 構成置換後のページをdoneへ確定しない。
+        pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
+        assert all(page["render_status"] == "pending" for page in pages)
+
+
 def test_character_profiles_are_composed_without_duplicates() -> None:
     manga = MangaProject.model_validate(
         {

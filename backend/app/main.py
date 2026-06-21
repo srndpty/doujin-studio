@@ -118,7 +118,10 @@ from .story import StoryError
 # 同期生成API(generate-image / render)の追加エラー契約をOpenAPIへ明示する。
 # 実行時にキャンセルは409、生成バックエンド失敗は502を返す。
 GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
-    409: {"model": ApiErrorResponse, "description": "生成がキャンセルされた（入力変更・構成置換など）"},
+    409: {
+        "model": ApiErrorResponse,
+        "description": "生成がキャンセルされた（入力変更・構成置換など）",
+    },
     502: {"model": ApiErrorResponse, "description": "画像生成バックエンドが失敗した"},
 }
 
@@ -288,24 +291,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = request.app.state.settings
         force = payload.force if payload else False
         manager: JobManager = request.app.state.job_manager
+        # /render開始時の世代を固定する。途中でネーム再生成・ストーリー適用・全文構造変更が
+        # 起きたら、古い/render要求が新しい作品構成へ生成・確定し続けないよう409で止める。
+        started_epoch = record.generation_epoch
+
+        def ensure_same_epoch() -> None:
+            if request.app.state.mutation.current_epoch(project_id) != started_epoch:
+                raise HTTPException(
+                    status_code=409,
+                    detail="レンダリング中に作品構成が更新されました。最新で再実行してください。",
+                )
 
         # ComfyUI呼び出しはジョブワーカーに一本化する。ここでは生成ジョブを積んで完了を待つ。
         for page in manga.pages:
             for panel in page.panels:
                 if not (force or not panel.image_asset):
                     continue
+                ensure_same_epoch()
                 job = find_active_panel_job(manager, project_id, panel.panel_id)
                 if job is None:
+                    # expected_epochで、構成置換後の新作品へジョブを積むのを防ぐ（不一致は409）。
                     job = enqueue_panel_jobs(
                         request.app,
                         project_id,
                         [panel.panel_id],
                         1,
                         "全体生成ジョブを登録しました",
+                        expected_epoch=started_epoch,
                     )[0]
                     manager.start(job, run_generation_job(request.app, job))
                 ensure_generation_succeeded(await await_job(request.app, job))
+                ensure_same_epoch()
 
+        ensure_same_epoch()
         latest = load_project_record(request, project_id)
         snapshot = parse_manga_json(latest.manga_json)
         # publish開始からcommitまで一つのtry/exceptで囲い、途中失敗でも公開済みPNGを回収する。
@@ -318,7 +336,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latest.revision,
                 ownership=published_by_request,
             )
-            manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+            # 確定も開始時epoch条件のCASにし、構成置換後のdone確定を防ぐ。
+            manga, revision = commit_rendered_pages(
+                request.app, project_id, snapshot, page_assets, expected_epoch=started_epoch
+            )
         except Exception:
             cleanup_published_assets(request.app, project_id, published_by_request)
             raise
@@ -2290,6 +2311,7 @@ def enqueue_panel_jobs(
     message: str,
     *,
     skip_active: bool = False,
+    expected_epoch: int | None = None,
 ) -> list[GenerationJob]:
     """panelのqueued化・GenerationJobRecord追加・revision更新を単一トランザクションで確定する。
 
@@ -2304,6 +2326,7 @@ def enqueue_panel_jobs(
             candidate_count,
             message,
             skip_active=skip_active,
+            expected_epoch=expected_epoch,
         )
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc

@@ -36,18 +36,24 @@ class GenerationService:
         *,
         attempts: int = 5,
         skip_active: bool = False,
+        expected_epoch: int | None = None,
     ) -> list[GenerationJob]:
-        """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。"""
-        initial_epoch: int | None = None
+        """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
+
+        expected_epoch指定時は、呼び出し元が固定した世代と一致する場合のみ登録する。
+        長時間の/renderが構成全置換をまたいで新作品へジョブを積むのを防ぐ。
+        """
+        # expected_epoch指定なら最初から固定。未指定なら初回読み取りで固定する。
+        required_epoch: int | None = expected_epoch
         for _ in range(attempts):
             with self.session_factory() as session:
                 record = session.get(ProjectRecord, project_id)
                 if record is None:
                     raise ProjectNotFoundError()
                 base_revision = record.revision
-                if initial_epoch is None:
-                    initial_epoch = record.generation_epoch
-                elif record.generation_epoch != initial_epoch:
+                if required_epoch is None:
+                    required_epoch = record.generation_epoch
+                elif record.generation_epoch != required_epoch:
                     raise EpochMismatchError()
                 manga = parse_manga(record.manga_json)
                 panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
@@ -94,7 +100,7 @@ class GenerationService:
                     .where(
                         ProjectRecord.id == project_id,
                         ProjectRecord.revision == base_revision,
-                        ProjectRecord.generation_epoch == initial_epoch,
+                        ProjectRecord.generation_epoch == required_epoch,
                     )
                     .values(
                         manga_json=manga.model_dump_json(),
