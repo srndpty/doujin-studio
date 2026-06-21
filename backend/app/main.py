@@ -1809,9 +1809,22 @@ def selected_panel_asset_is_valid(panel, export_dir: Path) -> bool:
 def find_inconsistent_selected_panel(manga: MangaProject, export_dir: Path):
     """採用candidate指定済みなのにassetが欠損/不整合なpanelを返す（無ければNone）。"""
     for page in manga.pages:
-        for panel in page.panels:
-            if panel.selected_candidate_id and not selected_panel_asset_is_valid(panel, export_dir):
-                return panel
+        inconsistent = find_inconsistent_selected_panel_for_page(manga, page.page, export_dir)
+        if inconsistent is not None:
+            return inconsistent
+    return None
+
+
+def find_inconsistent_selected_panel_for_page(
+    manga: MangaProject, page_number: int, export_dir: Path
+):
+    """対象ページ内で、採用candidate指定済みなのにassetが欠損/不整合なpanelを返す。"""
+    page = next((item for item in manga.pages if item.page == page_number), None)
+    if page is None:
+        return None
+    for panel in page.panels:
+        if panel.selected_candidate_id and not selected_panel_asset_is_valid(panel, export_dir):
+            return panel
     return None
 
 
@@ -1977,6 +1990,44 @@ def publish_immutable_asset(staged: Path, target: Path) -> bool:
     return created
 
 
+def iter_manga_asset_strings(manga: MangaProject):
+    """Manga JSON内の「アセットを指すフィールド」だけを列挙する。
+
+    prompt・台詞・作品名など任意文字列をパス候補にすると、長文で
+    OSError(File name too long)を誘発し、cleanupを巻き込んでジョブを停止不能にする。
+    そのためassetフィールドを明示的に収集する。
+    """
+    for character in manga.characters:
+        if character.reference_image_asset:
+            yield character.reference_image_asset
+    for location in manga.locations:
+        if location.reference_image_asset:
+            yield location.reference_image_asset
+    for page in manga.pages:
+        if page.render_asset:
+            yield page.render_asset
+        for overlay in page.overlay_elements:
+            if overlay.asset:
+                yield overlay.asset
+            if overlay.mask_asset:
+                yield overlay.mask_asset
+        for panel in page.panels:
+            if panel.image_asset:
+                yield panel.image_asset
+            for control in panel.control_references:
+                if control.asset:
+                    yield control.asset
+            for reference in panel.generation.reference_images:
+                if reference.asset:
+                    yield reference.asset
+            for candidate in panel.image_candidates:
+                if candidate.asset:
+                    yield candidate.asset
+                for reference in candidate.reference_images:
+                    if reference.asset:
+                        yield reference.asset
+
+
 def referenced_project_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
     with app.state.SessionLocal() as session:
         record = session.get(ProjectRecord, project_id)
@@ -1989,31 +2040,25 @@ def referenced_project_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
             .filter(ProjectRevisionRecord.project_id == project_id)
             .all()
         )
+    export_dir = app.state.settings.export_dir
     paths: set[Path] = set()
     for raw in raw_documents:
         try:
-            document = json.loads(raw)
-        except json.JSONDecodeError:
+            manga = MangaProject.model_validate(json.loads(raw))
+        except (json.JSONDecodeError, ValidationError):
             continue
-        for value in iter_json_strings(document):
+        for value in iter_manga_asset_strings(manga):
             try:
-                path = resolve_asset_path(value, app.state.settings.export_dir)
+                path = resolve_asset_path(value, export_dir)
             except ValueError:
                 continue
-            if path.is_file():
-                paths.add(path)
+            # 参照確認はcleanupの補助。is_fileのOSError等で本来の409/502を上書きしない。
+            try:
+                if path.is_file():
+                    paths.add(path)
+            except OSError:
+                continue
     return paths
-
-
-def iter_json_strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for child in value.values():
-            yield from iter_json_strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from iter_json_strings(child)
 
 
 def cleanup_published_assets(app: FastAPI, project_id: str, ownership: dict[Path, bool]) -> None:
@@ -2084,6 +2129,19 @@ def render_and_commit_page(
     snapshot_revision: int,
     page_number: int,
 ) -> tuple[Path, list[str], MangaProject, int]:
+    # 全体render・CBZと同じ不変条件をここに集約する。直接ページrender・候補選択後renderも
+    # この経路を通るため、採用candidateとassetが不整合ならプレースホルダを確定せず409にする。
+    inconsistent = find_inconsistent_selected_panel_for_page(
+        snapshot, page_number, app.state.settings.export_dir
+    )
+    if inconsistent is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{inconsistent.panel_id}: 採用画像が欠損/不整合です。"
+                "再選択または再生成してください。"
+            ),
+        )
     published_by_request: dict[Path, bool] = {}
     try:
         asset, warnings = render_snapshot_page(
