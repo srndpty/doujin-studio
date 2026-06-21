@@ -860,8 +860,9 @@ def save_revision(
         created_at=now_utc(),
     )
     session.add(revision)
-    session.commit()
-    session.refresh(revision)
+    # commitは呼び出し側(apply_session/restore_revision)に委ね、リビジョン保存と
+    # manga_json更新を1トランザクションにする（途中失敗で片方だけ残さない）。
+    session.flush()
     return revision
 
 
@@ -892,6 +893,7 @@ def apply_session(
     )
     manga = script_to_manga(script, base, page_characters)
     project.manga_json = manga.model_dump_json()
+    project.revision += 1
     project.updated_at = now_utc()
     session.commit()
     return manga
@@ -903,6 +905,7 @@ def restore_revision(
     # 復元時も現在状態を新しいリビジョンとして保存する。
     save_revision(session, project.id, project.manga_json, f"復元前 ({now_utc().isoformat()})")
     project.manga_json = revision.manga_json
+    project.revision += 1
     project.updated_at = now_utc()
     session.commit()
     return MangaProject.model_validate(json.loads(revision.manga_json))

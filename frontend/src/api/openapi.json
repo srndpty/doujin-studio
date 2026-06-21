@@ -238,6 +238,22 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -354,6 +370,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationJobCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -4392,6 +4425,11 @@
             "type": "string",
             "title": "Work Name"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4517,6 +4555,11 @@
           "work_name": {
             "type": "string",
             "title": "Work Name"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "created_at": {
             "type": "string",

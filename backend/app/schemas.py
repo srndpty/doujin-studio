@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # 旧balloon値から新しい吹き出し種別への対応表。
 BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
@@ -364,6 +364,45 @@ class MangaProject(BaseModel):
     active_workflow_preset_id: str | None = None
     pages: list[Page] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "MangaProject":
+        """保存不能な構造破綻のみを弾く。
+
+        参照切れ・読み順・occlusion・target_pages不一致など「制作上の警告」は
+        preflight側が担当する（savableなままユーザーに気づかせる）。ここでは
+        コマID/ページ番号の一意性やworkflow_preset参照のような、後段のlookupが
+        破綻して原因不明の不具合になる種類の不整合だけをエラーにする。
+        """
+        errors: list[str] = []
+        preset_ids = {preset.id for preset in self.workflow_presets}
+
+        page_numbers = [page.page for page in self.pages]
+        if len(page_numbers) != len(set(page_numbers)):
+            errors.append("ページ番号が重複しています")
+
+        if self.active_workflow_preset_id and self.active_workflow_preset_id not in preset_ids:
+            errors.append(
+                f"active_workflow_preset_idが存在しません: {self.active_workflow_preset_id}"
+            )
+
+        all_panel_ids: list[str] = []
+        for page in self.pages:
+            panel_ids = [panel.panel_id for panel in page.panels]
+            all_panel_ids.extend(panel_ids)
+            if len(panel_ids) != len(set(panel_ids)):
+                errors.append(f"{page.page}ページでコマIDが重複しています")
+            for panel in page.panels:
+                preset_id = panel.generation.workflow_preset_id
+                if preset_id and preset_id not in preset_ids:
+                    errors.append(f"{panel.panel_id}が存在しないworkflow_presetを参照: {preset_id}")
+
+        if len(all_panel_ids) != len(set(all_panel_ids)):
+            errors.append("コマIDがページ間で重複しています")
+
+        if errors:
+            raise ValueError("; ".join(errors))
+        return self
+
 
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
@@ -375,6 +414,8 @@ class ProjectSummary(BaseModel):
     id: str
     title: str
     work_name: str
+    # manga_jsonの楽観ロック用バージョン。PUT時にこの値を添えて競合を検出する。
+    revision: int = 0
     created_at: datetime
     updated_at: datetime
 

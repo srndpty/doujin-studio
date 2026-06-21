@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, Text, create_engine, event, text
+from sqlalchemy import DateTime, ForeignKey, Integer, Text, create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -17,6 +17,8 @@ class ProjectRecord(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     work_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     manga_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # manga_json更新ごとに増える楽観ロック用バージョン。古いrevisionでの保存は409にする。
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -25,7 +27,9 @@ class GenerationJobRecord(Base):
     __tablename__ = "generation_jobs"
 
     id: Mapped[str] = mapped_column(primary_key=True)
-    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     panel_id: Mapped[str] = mapped_column(Text, nullable=False)
     candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
@@ -34,6 +38,8 @@ class GenerationJobRecord(Base):
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     node: Mapped[str | None] = mapped_column(Text, nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="生成待ちです")
+    # ComfyUIのprompt_id。キャンセル時にリモート停止(interrupt/queue削除)へ使う。
+    prompt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidate_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -55,7 +61,9 @@ class KnowledgeChunkRecord(Base):
     __tablename__ = "knowledge_chunks"
 
     id: Mapped[str] = mapped_column(primary_key=True)
-    source_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("knowledge_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     work_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     usage: Mapped[str] = mapped_column(Text, nullable=False, default="reference")
     kind: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -72,7 +80,9 @@ class StoryGenerationSessionRecord(Base):
     __tablename__ = "story_generation_sessions"
 
     id: Mapped[str] = mapped_column(primary_key=True)
-    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     work_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     target_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     instruction: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -85,7 +95,9 @@ class ProjectRevisionRecord(Base):
     __tablename__ = "project_revisions"
 
     id: Mapped[str] = mapped_column(primary_key=True)
-    project_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     label: Mapped[str] = mapped_column(Text, nullable=False, default="")
     manga_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -124,6 +136,16 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE knowledge_chunks ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
             )
+        project_rows = connection.execute(text("PRAGMA table_info(projects)")).all()
+        project_columns = {row[1] for row in project_rows}
+        if "revision" not in project_columns:
+            connection.execute(
+                text("ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+            )
+        job_rows = connection.execute(text("PRAGMA table_info(generation_jobs)")).all()
+        job_columns = {row[1] for row in job_rows}
+        if "prompt_id" not in job_columns:
+            connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN prompt_id TEXT"))
 
 
 def create_session_factory(database_url: str) -> sessionmaker:
@@ -133,9 +155,12 @@ def create_session_factory(database_url: str) -> sessionmaker:
 
         @event.listens_for(engine, "connect")
         def configure_sqlite(dbapi_connection, _connection_record) -> None:
+            # 個人用ローカルアプリ向けに、耐障害性と性能のバランスを取る設定。
+            # WAL+NORMALはプロセス強制終了やOSクラッシュでもコミット済みデータを保つ。
             cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=OFF")
-            cursor.execute("PRAGMA synchronous=OFF")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
     Base.metadata.create_all(engine)

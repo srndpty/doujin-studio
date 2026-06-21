@@ -1807,6 +1807,11 @@ export interface components {
             /** Work Name */
             work_name: string;
             /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
              * Created At
              * Format: date-time
              */
@@ -1862,6 +1867,11 @@ export interface components {
             title: string;
             /** Work Name */
             work_name: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /**
              * Created At
              * Format: date-time
@@ -2392,7 +2402,9 @@ export interface operations {
     };
     update_manga_json_api_projects__project_id__manga_json_put: {
         parameters: {
-            query?: never;
+            query?: {
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2470,7 +2482,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["GenerationJobCreate"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

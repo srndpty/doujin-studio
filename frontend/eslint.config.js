@@ -15,7 +15,8 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       ...jsxA11y.configs.recommended.rules,
-      "react-hooks/exhaustive-deps": "off",
+      // 原則有効化し、意図的に依存を絞る箇所だけ局所的にdisableする。
+      "react-hooks/exhaustive-deps": "error",
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/preserve-manual-memoization": "off",
       "@typescript-eslint/no-explicit-any": "error",

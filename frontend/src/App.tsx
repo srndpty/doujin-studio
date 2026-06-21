@@ -9,8 +9,14 @@ import {
   useState
 } from "react";
 import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
+import type { components } from "./api/schema";
 import { KnowledgePanel } from "./KnowledgePanel";
+import { composePromptPreview } from "./prompt-preview";
 import { StoryPanel } from "./StoryPanel";
+
+// OpenAPIスキーマを唯一の正とする。座標タプル(bbox/box)を含む型はOpenAPIが
+// 固定長タプルを表現できないため、エディタ/ジオメトリ側の都合で手書きを維持する。
+type Schemas = components["schemas"];
 
 const PageEditor = lazy(() => import("./PageEditor").then((module) => ({ default: module.PageEditor })));
 
@@ -87,84 +93,17 @@ export type Panel = {
   };
 };
 
-type LoRABinding = { node_id: string; lora_name: string; strength_model: number; strength_clip: number };
-type ReferenceImageBinding = { node_id: string; asset: string; character_id: string; kind: string };
-type PanelControlReference = {
-  id: string;
-  kind: "pose" | "depth" | "lineart" | "background";
-  asset: string;
-  load_node_id: string;
-};
-type WorkflowPreset = {
-  id: string;
-  name: string;
-  checkpoint_node_id: string;
-  checkpoint_name: string;
-  vae_node_id: string;
-  vae_name: string;
-  sampler_node_id: string;
-  sampler_name: string;
-  scheduler: string;
-  steps: number | null;
-  cfg: number | null;
-  denoise: number | null;
-};
-type LocationProfile = {
-  id: string;
-  display_name: string;
-  prompt: string;
-  negative_prompt: string;
-  reference_image_asset: string | null;
-  reference_load_node_id: string;
-};
+type LoRABinding = Schemas["LoRABinding"];
+type ReferenceImageBinding = Schemas["ReferenceImageBinding"];
+type PanelControlReference = Schemas["PanelControlReference"];
+type WorkflowPreset = Schemas["WorkflowPreset"];
+type LocationProfile = Schemas["LocationProfile"];
 
-type ImageCandidate = {
-  id: string;
-  asset: string;
-  backend: "stub" | "comfyui";
-  status: "done" | "fallback" | "error";
-  prompt: string;
-  negative_prompt: string;
-  characters: string[];
-  loras: LoRABinding[];
-  reference_images: ReferenceImageBinding[];
-  workflow_preset: WorkflowPreset | null;
-  seed: number;
-  prompt_id: string | null;
-  message: string;
-  created_at: string;
-};
+type ImageCandidate = Schemas["ImageCandidate"];
 
-type Character = {
-  id: string;
-  display_name: string;
-  role: string;
-  speech_style: string;
-  visual_notes: string;
-  trigger_prompt: string;
-  appearance_prompt: string;
-  outfit_prompt: string;
-  negative_prompt: string;
-  lora_node_id: string;
-  lora_name: string;
-  lora_strength_model: number;
-  lora_strength_clip: number;
-  reference_image_asset: string | null;
-  reference_load_node_id: string;
-};
+type Character = Schemas["Character"];
 
-type GenerationJob = {
-  id: string;
-  project_id: string;
-  panel_id: string;
-  status: "queued" | "running" | "done" | "error" | "cancelled";
-  progress: number;
-  current: number;
-  total: number;
-  node: string | null;
-  message: string;
-  candidate_ids: string[];
-};
+type GenerationJob = Schemas["GenerationJobResponse"];
 
 export type OverlayElement = {
   id: string;
@@ -214,47 +153,18 @@ export type MangaProject = {
   pages: MangaPage[];
 };
 
-type ProductionStatus = {
-  project_id: string;
-  status: "incomplete" | "ready" | "complete";
-  adopted_panels: number;
-  total_panels: number;
-  rendered_pages: number;
-  total_pages: number;
-  pages: {
-    page: number;
-    status: "incomplete" | "ready" | "complete";
-    adopted_panels: number;
-    total_panels: number;
-    rendered: boolean;
-    blockers: string[];
-  }[];
-  blockers: string[];
-};
+type ProductionStatus = Schemas["ProjectProductionStatus"];
 
+type ProjectSummary = Schemas["ProjectSummary"];
+
+type ComfyUIStatus = Schemas["ComfyUIStatusResponse"];
+
+// manga_jsonはタプル座標を含む手書きMangaProjectを使うため、ProjectDetailは別管理にする。
 type Project = {
   id: string;
   title: string;
   work_name: string;
   manga_json: MangaProject;
-};
-
-type ProjectSummary = {
-  id: string;
-  title: string;
-  work_name: string;
-  updated_at: string;
-};
-
-type ComfyUIStatus = {
-  backend: string;
-  base_url: string;
-  workflow_path: string;
-  connected: boolean;
-  workflow_exists: boolean;
-  workflow_valid: boolean;
-  missing_nodes: string[];
-  message: string;
 };
 
 type TaskProgress = {
@@ -322,6 +232,8 @@ export function App() {
     startY: number;
     box: [number, number, number, number];
   } | null>(null);
+  // 進行中の生成ウォッチャ（WebSocket/polling）の中断関数。unmount時に必ず止める。
+  const jobWatchersRef = useRef<Set<() => void>>(new Set());
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
@@ -349,10 +261,21 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // unmount時、開いているWebSocketとpollingを必ず停止する。
+    const watchers = jobWatchersRef.current;
+    return () => {
+      for (const abort of Array.from(watchers)) abort();
+      watchers.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     if (selected) {
       void refreshProductionStatus(selected.id);
       void refreshJobHistory(selected.id);
     }
+    // プロジェクトIDが変わったときだけ再取得する（selected全体の変化では再実行しない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
 
   useEffect(() => {
@@ -648,19 +571,47 @@ export function App() {
   }
 
   function watchGenerationJob(initialJob: GenerationJob): Promise<GenerationJob> {
-    return new Promise((resolve) => {
+    const TERMINAL = ["done", "error", "cancelled"];
+    const MAX_POLL_ATTEMPTS = 8;
+    return new Promise<GenerationJob>((resolve, reject) => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(
-        `${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`
-      );
       let settled = false;
-      let polling = false;
+      let socket: WebSocket | null = null;
+      let pollTimer: number | null = null;
+      let pollFailures = 0;
+
+      const cleanup = () => {
+        if (socket) {
+          socket.onmessage = socket.onerror = socket.onclose = null;
+          try {
+            socket.close();
+          } catch {
+            /* 既にクローズ済みでも無視する */
+          }
+          socket = null;
+        }
+        if (pollTimer !== null) {
+          window.clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+        jobWatchersRef.current.delete(abort);
+      };
       const finish = (job: GenerationJob) => {
         if (settled) return;
         settled = true;
-        socket.close();
+        cleanup();
         resolve(job);
       };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error("生成ジョブの監視に失敗しました"));
+      };
+      // unmountやキャンセルから安全に止めるための中断関数。
+      const abort = () => fail(new Error("生成ジョブの監視を中断しました"));
+      jobWatchersRef.current.add(abort);
+
       const update = (job: GenerationJob) => {
         setProgress({
           label: job.node
@@ -670,27 +621,67 @@ export function App() {
           total: 100,
           indeterminate: job.status === "queued" && job.progress === 0
         });
-        if (["done", "error", "cancelled"].includes(job.status)) finish(job);
+        if (TERMINAL.includes(job.status)) finish(job);
       };
-      socket.onmessage = (event) => update(JSON.parse(event.data) as GenerationJob);
-      const startPolling = () => {
-        if (settled || polling) return;
-        polling = true;
-        socket.close();
-        void pollGenerationJob(initialJob.id).then(finish);
-      };
-      socket.onerror = startPolling;
-      socket.onclose = startPolling;
-    });
-  }
 
-  async function pollGenerationJob(jobId: string): Promise<GenerationJob> {
-    while (true) {
-      const job = await api.get<GenerationJob>(`/api/generation-jobs/${jobId}`);
-      setProgress({ label: job.message, current: job.progress, total: 100 });
-      if (["done", "error", "cancelled"].includes(job.status)) return job;
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    }
+      const poll = async () => {
+        if (settled) return;
+        try {
+          const job = await api.get<GenerationJob>(`/api/generation-jobs/${initialJob.id}`);
+          pollFailures = 0;
+          update(job);
+          if (settled) return;
+        } catch (error) {
+          pollFailures += 1;
+          if (pollFailures >= MAX_POLL_ATTEMPTS) {
+            fail(error);
+            return;
+          }
+        }
+        if (settled) return;
+        // 指数バックオフ（1s,2s,4s…最大8s）で再接続を試みる。
+        const delay = Math.min(1000 * 2 ** Math.max(0, pollFailures), 8000);
+        setProgress({
+          label: pollFailures > 0 ? `再接続中 (${pollFailures}回目)…` : "生成状況を確認中…",
+          current: 0,
+          total: 100,
+          indeterminate: true
+        });
+        pollTimer = window.setTimeout(() => void poll(), delay);
+      };
+
+      const startPolling = () => {
+        if (settled) return;
+        if (socket) {
+          socket.onmessage = socket.onerror = socket.onclose = null;
+          try {
+            socket.close();
+          } catch {
+            /* 無視 */
+          }
+          socket = null;
+        }
+        if (pollTimer === null) void poll();
+      };
+
+      try {
+        socket = new WebSocket(
+          `${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`
+        );
+        socket.onmessage = (event) => {
+          try {
+            update(JSON.parse(event.data) as GenerationJob);
+          } catch (error) {
+            fail(error);
+          }
+        };
+        socket.onerror = startPolling;
+        socket.onclose = startPolling;
+      } catch {
+        // WebSocketを開けない環境ではpollingへ退避する。
+        startPolling();
+      }
+    });
   }
 
   async function cancelActiveJob() {
@@ -1112,41 +1103,6 @@ export function App() {
     return `${cleanPrefix}, ${cleanPrompt}`;
   }
 
-  function composePromptPreview(manga: MangaProject, panel: Panel): { positive: string; negative: string } {
-    const characterMap = new Map(manga.characters.map((character) => [character.id, character]));
-    const positive = [manga.common_positive_prompt];
-    const negative = [manga.common_negative_prompt];
-    for (const characterId of panel.characters) {
-      const character = characterMap.get(characterId);
-      if (!character) continue;
-      positive.push(
-        character.trigger_prompt || character.display_name,
-        character.appearance_prompt,
-        character.outfit_prompt
-      );
-      negative.push(character.negative_prompt);
-    }
-    positive.push(panel.generation.prompt || panel.prompt);
-    negative.push(panel.generation.negative_prompt);
-    return { positive: mergePromptParts(positive), negative: mergePromptParts(negative) };
-  }
-
-  function mergePromptParts(parts: string[]): string {
-    const seen = new Set<string>();
-    const tags: string[] = [];
-    for (const part of parts) {
-      for (const rawTag of part.split(",")) {
-        const tag = rawTag.trim();
-        const key = tag.toLocaleLowerCase();
-        if (tag && !seen.has(key)) {
-          tags.push(tag);
-          seen.add(key);
-        }
-      }
-    }
-    return tags.join(", ");
-  }
-
   const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
 
   return (
@@ -1392,11 +1348,11 @@ export function App() {
                 <span>
                   ページ {productionStatus.rendered_pages}/{productionStatus.total_pages}
                 </span>
-                {productionStatus.blockers.length > 0 && (
+                {(productionStatus.blockers ?? []).length > 0 && (
                   <details>
-                    <summary>未完了 {productionStatus.blockers.length}件</summary>
+                    <summary>未完了 {(productionStatus.blockers ?? []).length}件</summary>
                     <ul>
-                      {productionStatus.blockers.map((blocker) => (
+                      {(productionStatus.blockers ?? []).map((blocker) => (
                         <li key={blocker}>{blocker}</li>
                       ))}
                     </ul>
@@ -2315,13 +2271,13 @@ export function App() {
                             </div>
                             <details>
                               <summary>生成条件</summary>
-                              <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
-                              {candidate.loras.map((lora) => (
+                              <small>{(candidate.characters ?? []).join(", ") || "キャラ指定なし"}</small>
+                              {(candidate.loras ?? []).map((lora) => (
                                 <small key={`${candidate.id}-${lora.node_id}`}>
                                   LoRA {lora.node_id}: {lora.lora_name}
                                 </small>
                               ))}
-                              {candidate.reference_images.map((reference) => (
+                              {(candidate.reference_images ?? []).map((reference) => (
                                 <small key={`${candidate.id}-${reference.node_id}`}>
                                   参照 {reference.node_id}: {reference.character_id}
                                 </small>

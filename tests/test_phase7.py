@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 
 from backend.app import database, knowledge, story
 from backend.app.config import Settings
-from backend.app.database import create_session_factory
+from backend.app.database import ProjectRecord, create_session_factory
+from backend.app.database import now_utc as db_now_utc
 from backend.app.llm import LLMError, OpenAICompatibleClient
 from backend.app.main import create_app
 
@@ -559,6 +560,20 @@ def generate_brief_with(tmp_path: Path, llm) -> dict:
     factory = create_session_factory(f"sqlite:///{tmp_path / 'story.db'}")
     settings = Settings()
     with factory() as session:
+        # story_generation_sessions.project_idはprojectsへの外部キー。親を先に作る。
+        # 同一tmp_pathで複数回呼ばれることがあるため重複作成を避ける。
+        if session.get(ProjectRecord, "p1") is None:
+            session.add(
+                ProjectRecord(
+                    id="p1",
+                    title="t",
+                    work_name="作品",
+                    manga_json="{}",
+                    created_at=db_now_utc(),
+                    updated_at=db_now_utc(),
+                )
+            )
+            session.commit()
         record = story.create_session(
             session, project_id="p1", work_name="作品", target_pages=4, instruction="日常"
         )

@@ -102,14 +102,9 @@ def list_local_works(knowledge_dir: Path) -> list[LocalKnowledgeWork]:
 
 def sync_local_work(session: Session, work: LocalKnowledgeWork) -> list[KnowledgeSourceRecord]:
     marker = f"{LOCAL_SOURCE_PREFIX}{work.work_id}:"
-    existing = (
-        session.query(KnowledgeSourceRecord)
-        .filter(KnowledgeSourceRecord.title.like(f"{escape_like(marker)}%", escape="\\"))
-        .all()
-    )
-    for source in existing:
-        delete_source(session, source.id)
-    imported: list[KnowledgeSourceRecord] = []
+    # まず全ファイルを読み込み・パースしてから一括で差し替える。途中失敗時は
+    # rollbackして旧データを保持し、「旧データは消えたが新データは一部だけ」を防ぐ。
+    documents: list[tuple[str, str]] = []
     for document in work.documents:
         try:
             content = document.path.read_text(encoding="utf-8")
@@ -117,16 +112,31 @@ def sync_local_work(session: Session, work: LocalKnowledgeWork) -> list[Knowledg
             raise LocalKnowledgeError(
                 f"知識ファイルを読み込めません: {document.path.name}"
             ) from exc
-        imported.append(
+        documents.append((f"{marker}{document.path.name}", content))
+
+    existing = (
+        session.query(KnowledgeSourceRecord)
+        .filter(KnowledgeSourceRecord.title.like(f"{escape_like(marker)}%", escape="\\"))
+        .all()
+    )
+    try:
+        for source in existing:
+            delete_source(session, source.id)
+        imported: list[KnowledgeSourceRecord] = [
             import_source(
                 session,
                 work_name=work.work_name,
-                title=f"{marker}{document.path.name}",
+                title=title,
                 doc_type="json",
                 usage=document.usage,
                 content=content,
             )
-        )
+            for (title, content), document in zip(documents, work.documents, strict=True)
+        ]
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return imported
 
 
@@ -254,6 +264,10 @@ def import_source(
         created_at=now_utc(),
     )
     session.add(source)
+    # 親(source)を先にflushしてからチャンクを追加する。SQLAlchemyはrelationship無しの
+    # 単なるForeignKeyではinsert順を保証しないため、foreign_keys=ON下でFK違反になる。
+    # commitはせず呼び出し側のトランザクションに委ね、複数ソース取り込みを原子的にする。
+    session.flush()
     for position, chunk in enumerate(chunks):
         record = KnowledgeChunkRecord(
             id=str(uuid.uuid4()),
@@ -270,8 +284,9 @@ def import_source(
         )
         session.add(record)
         insert_fts(session, record)
-    session.commit()
-    session.refresh(source)
+    # autoflush=Off環境でも、同一セッションの後続クエリ(検索など)が取り込んだ
+    # チャンクを参照できるようflushしておく（commitは呼び出し側）。
+    session.flush()
     return source
 
 
@@ -311,7 +326,8 @@ def delete_source(session: Session, source_id: str) -> bool:
         )
     session.query(KnowledgeChunkRecord).filter(KnowledgeChunkRecord.source_id == source_id).delete()
     session.delete(source)
-    session.commit()
+    # commitは呼び出し側に委ねる（同期処理での原子的な差し替えを壊さないため）。
+    session.flush()
     return True
 
 

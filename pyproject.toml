@@ -60,13 +60,10 @@ cache_dir = "reports/mypy-cache"
 incremental = false
 sqlite_cache = false
 
+# mypyの型チェック対象を段階的に拡大中。まずjobs/database/knowledge/image_backendsを有効化。
 [[tool.mypy.overrides]]
 module = [
-    "backend.app.database",
     "backend.app.generator",
-    "backend.app.image_backends",
-    "backend.app.jobs",
-    "backend.app.knowledge",
     "backend.app.llm",
     "backend.app.main",
     "backend.app.story",

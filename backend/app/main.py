@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import subprocess
@@ -9,6 +10,7 @@ from asyncio import CancelledError
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -200,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
             record.work_name = payload.work_name
             record.manga_json = manga.model_dump_json()
+            record.revision += 1
             record.updated_at = now_utc()
             session.commit()
             session.refresh(record)
@@ -207,19 +210,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/projects/{project_id}/manga-json", response_model=ProjectDetail)
     def update_manga_json(
-        project_id: str, payload: MangaProject, request: Request
+        project_id: str,
+        payload: MangaProject,
+        request: Request,
+        revision: int | None = None,
     ) -> ProjectDetail:
         normalize_manga_assets(payload, request.app.state.settings.export_dir)
-        for page in payload.pages:
-            page.render_status = "pending"
-            page.rendered_at = None
         with request.app.state.SessionLocal() as session:
             record = session.get(ProjectRecord, project_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+            # 楽観ロック: クライアントが読み込んだ時点より新しい更新があれば409にする。
+            if revision is not None and revision != record.revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "他の操作（生成完了や別タブの保存）で更新されています。"
+                        "最新を読み込み直してください。"
+                    ),
+                )
+            previous = parse_manga_json(record.manga_json)
+            # 描画入力が変わったページだけ未レンダリングに戻す（メタ変更では戻さない）。
+            invalidate_changed_pages(payload, previous)
             record.title = payload.title
             record.work_name = payload.work_name
             record.manga_json = payload.model_dump_json()
+            record.revision += 1
             record.updated_at = now_utc()
             session.commit()
             session.refresh(record)
@@ -234,16 +250,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
-        backend = build_image_backend(settings)
         force = payload.force if payload else False
+        manager: JobManager = request.app.state.job_manager
 
+        # ComfyUI呼び出しはジョブワーカーに一本化する。ここでは生成ジョブを積んで完了を待つ。
         for page in manga.pages:
             for panel in page.panels:
-                if force or not panel.image_asset:
-                    prepared = prepare_panel_for_generation(manga, panel)
-                    result = await backend.generate_panel(project_id, prepared, settings.export_dir)
-                    register_generation_candidate(panel, prepared, result)
+                if not (force or not panel.image_asset):
+                    continue
+                job = find_active_panel_job(manager, project_id, panel.panel_id)
+                if job is None:
+                    job = manager.create(project_id, panel.panel_id, 1)
+                    manager.start(job, run_generation_job(request.app, job))
+                await await_job(request.app, job)
 
+        # 生成ジョブが最新manga_jsonへマージした結果を読み直してからレンダリングする。
+        record = load_project_record(request, project_id)
+        manga = parse_manga_json(record.manga_json)
         page_assets, warnings = render_project_pages(project_id, manga, settings.export_dir)
         for page in manga.pages:
             page.render_status = "done"
@@ -264,18 +287,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project_id: str,
         panel_id: str,
         request: Request,
+        payload: GenerationJobCreate | None = Body(default=None),
     ) -> PanelImageGenerationResponse:
         record = load_project_record(request, project_id)
         manga = parse_manga_json(record.manga_json)
         panel = find_panel(manga, panel_id)
-        settings = request.app.state.settings
-        backend = build_image_backend(settings)
-        prepared = prepare_panel_for_generation(manga, panel)
-        result = await backend.generate_panel(project_id, prepared, settings.export_dir)
-        register_generation_candidate(panel, prepared, result)
+        manager: JobManager = request.app.state.job_manager
+        if find_active_panel_job(manager, project_id, panel_id):
+            raise HTTPException(status_code=409, detail="このコマは画像生成中です")
+        # 同期レスポンスが欲しい直接生成APIも、ジョブを作って完了待ちする薄いラッパーにする。
+        candidate_count = payload.candidate_count if payload else 1
+        job = manager.create(project_id, panel_id, candidate_count)
+        panel.generation.status = "queued"
+        panel.generation.message = "画像生成ジョブを登録しました"
         save_manga_json(request, project_id, manga)
+        manager.start(job, run_generation_job(request.app, job))
+        await await_job(request.app, job)
+        latest = load_project_record(request, project_id)
         return PanelImageGenerationResponse(
-            project_id=project_id, panel_id=panel_id, manga_json=manga
+            project_id=project_id, panel_id=panel_id, manga_json=parse_manga_json(latest.manga_json)
         )
 
     @app.get(
@@ -387,7 +417,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
         manager: JobManager = request.app.state.job_manager
         job = get_job_or_404(request, job_id)
+        # ローカルTaskを止める前にprompt_idを控え、ComfyUI側も停止する。
+        remote = stop_comfyui_generation(request.app.state.settings, job)
         manager.cancel(job)
+        if remote is False:
+            # ローカルではキャンセル済みだがリモート停止に失敗した状態を区別して伝える。
+            manager.update(
+                job,
+                status="cancelled",
+                message="ローカルではキャンセルしましたが、ComfyUI側の停止に失敗しました",
+            )
         mark_panel_job_stopped(request.app, job, "生成をキャンセルしました")
         return to_job_response(job)
 
@@ -839,6 +878,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     content=file.content,
                 )
                 sources.append(to_knowledge_source(record))
+            # import_sourceは内部commitを持たないため、まとめて1トランザクションで確定する。
+            session.commit()
         return KnowledgeImportResponse(sources=sources)
 
     @app.post("/api/knowledge/documents", response_model=KnowledgeSourceResponse)
@@ -854,6 +895,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 usage=payload.usage,
                 content=payload.content,
             )
+            session.commit()
             return to_knowledge_source(record)
 
     @app.get("/api/knowledge/sources", response_model=list[KnowledgeSourceResponse])
@@ -871,6 +913,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with request.app.state.SessionLocal() as session:
             if not knowledge_db.delete_source(session, source_id):
                 raise HTTPException(status_code=404, detail="知識ソースが見つかりません")
+            session.commit()
         return {"ok": True}
 
     @app.post("/api/knowledge/search", response_model=KnowledgeSearchResponse)
@@ -917,6 +960,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 manga.work_name = work_name
                 project.work_name = work_name
                 project.manga_json = manga.model_dump_json()
+                project.revision += 1
                 project.updated_at = now_utc()
                 session.commit()
             story_record = story_module.create_session(
@@ -1066,6 +1110,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+async def await_job(app: FastAPI, job: GenerationJob) -> GenerationJob:
+    """既に開始済みのジョブの完了を待つ（ComfyUI呼び出しはワーカー側に一本化）。"""
+    manager: JobManager = app.state.job_manager
+    task = manager.tasks.get(job.id)
+    if task is not None:
+        # run_generation_jobは例外を内部で握って状態に反映するため、ここでは伝播させない。
+        await asyncio.gather(task, return_exceptions=True)
+    return manager.get(job.id) or job
+
+
+def find_active_panel_job(
+    manager: JobManager, project_id: str, panel_id: str
+) -> GenerationJob | None:
+    return next(
+        (
+            item
+            for item in manager.jobs.values()
+            if item.project_id == project_id
+            and item.panel_id == panel_id
+            and item.status not in TERMINAL_JOB_STATUSES
+        ),
+        None,
+    )
+
+
+def stop_comfyui_generation(settings: Settings, job: GenerationJob) -> bool | None:
+    """ComfyUI側の生成を停止する。停止不要ならNone、成功でTrue、失敗でFalse。"""
+    if settings.image_backend.lower() != "comfyui" or not job.prompt_id:
+        return None
+    base = settings.comfyui_base_url.rstrip("/")
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            # 実行中ならinterrupt、キュー待ちならprompt_id指定でqueueから削除する。
+            client.post(f"{base}/interrupt")
+            client.post(f"{base}/queue", json={"delete": [job.prompt_id]})
+        return True
+    except Exception:
+        return False
+
+
 async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
     manager: JobManager = app.state.job_manager
     manager.update(job, message="生成キューで待機中です")
@@ -1087,11 +1171,14 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
 async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     manager: JobManager = app.state.job_manager
     try:
-        manga = load_manga_for_app(app, job.project_id)
+
+        def set_running(panel) -> None:
+            panel.generation.status = "running"
+            panel.generation.message = "画像候補を生成中です"
+
+        # 最新を読み直して対象パネルだけ更新し、並行編集を踏みつぶさない。
+        manga = update_panel_in_latest(app, job.project_id, job.panel_id, set_running)
         panel = find_panel(manga, job.panel_id)
-        panel.generation.status = "running"
-        panel.generation.message = "画像候補を生成中です"
-        save_manga_json_for_app(app, job.project_id, manga)
         manager.update(job, status="running", message="画像候補を生成中です")
         backend = build_image_backend(app.state.settings)
 
@@ -1125,13 +1212,20 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                     message=f"候補 {candidate_number + 1}/{job.candidate_count}: {message}",
                 )
 
+            async def store_prompt_id(prompt_id: str) -> None:
+                manager.update(job, prompt_id=prompt_id)
+
             result = await backend.generate_panel(
                 job.project_id,
                 generated_panel,
                 app.state.settings.export_dir,
                 target_path=target,
                 progress_callback=report_progress,
+                on_prompt_id=store_prompt_id,
             )
+            # キャンセル要求後に生成物が返っても、対象ジョブがキャンセル済みなら保存しない。
+            if job.status == "cancelled":
+                return
             if result.asset_path is None:
                 raise RuntimeError("生成画像の保存先が返りませんでした")
             candidate = ImageCandidate(
@@ -1150,9 +1244,13 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 message=result.message,
                 created_at=now_utc(),
             )
-            panel.image_candidates.append(candidate)
-            apply_candidate_selection(panel, candidate)
-            save_manga_json_for_app(app, job.project_id, manga)
+
+            def add_candidate(target_panel, new_candidate=candidate) -> None:
+                target_panel.image_candidates.append(new_candidate)
+                apply_candidate_selection(target_panel, new_candidate)
+
+            # 候補ごとに最新を読み直してマージし、生成中のユーザー編集を残す。
+            update_panel_in_latest(app, job.project_id, job.panel_id, add_candidate)
             job.candidate_ids.append(candidate_id)
             manager.update(
                 job,
@@ -1161,7 +1259,12 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             )
 
         manager.update(
-            job, status="done", progress=100, node=None, message="画像候補の生成が完了しました"
+            job,
+            status="done",
+            progress=100,
+            node=None,
+            prompt_id=None,
+            message="画像候補の生成が完了しました",
         )
     except CancelledError:
         if manager.shutting_down:
@@ -1180,35 +1283,15 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
         )
 
 
-def load_manga_for_app(app: FastAPI, project_id: str) -> MangaProject:
-    with app.state.SessionLocal() as session:
-        record = session.get(ProjectRecord, project_id)
-        if record is None:
-            raise RuntimeError("プロジェクトが見つかりません")
-        manga = parse_manga_json(record.manga_json)
-        return normalize_manga_assets(manga, app.state.settings.export_dir)
-
-
-def save_manga_json_for_app(app: FastAPI, project_id: str, manga: MangaProject) -> None:
-    normalize_manga_assets(manga, app.state.settings.export_dir)
-    with app.state.SessionLocal() as session:
-        record = session.get(ProjectRecord, project_id)
-        if record is None:
-            raise RuntimeError("プロジェクトが見つかりません")
-        record.manga_json = manga.model_dump_json()
-        record.updated_at = now_utc()
-        session.commit()
-
-
 def mark_panel_job_stopped(
     app: FastAPI, job: GenerationJob, message: str, error: bool = False
 ) -> None:
-    try:
-        manga = load_manga_for_app(app, job.project_id)
-        panel = find_panel(manga, job.panel_id)
+    def mutate(panel) -> None:
         panel.generation.status = "error" if error else "skipped"
         panel.generation.message = message
-        save_manga_json_for_app(app, job.project_id, manga)
+
+    try:
+        update_panel_in_latest(app, job.project_id, job.panel_id, mutate)
     except Exception:
         return
 
@@ -1323,18 +1406,45 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         return record
 
 
+# 1コマ画像として現実的な上限。展開後のピクセル数で「圧縮爆弾」を弾く。
+MAX_IMAGE_PIXELS = 64_000_000  # 約8000x8000
+MAX_IMAGE_DIMENSION = 12_000
+# Pillow自体の圧縮爆弾検知も明示的に有効化する（巨大画像でDecompressionBombErrorを投げる）。
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
 async def save_request_image(request: Request, target: Path, preserve_alpha: bool = False) -> None:
     content = await request.body()
     if not content or len(content) > 20 * 1024 * 1024:
         raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
     try:
         with Image.open(io.BytesIO(content)) as source:
+            # 圧縮後が小さくても展開後に巨大化しうるため、ピクセル数・縦横を先に検査する。
+            width, height = source.size
+            if (
+                width <= 0
+                or height <= 0
+                or width > MAX_IMAGE_DIMENSION
+                or height > MAX_IMAGE_DIMENSION
+                or width * height > MAX_IMAGE_PIXELS
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="画像サイズが大きすぎます（最大8000x8000・約64メガピクセル）",
+                )
             # 透過オーバーフレーム（人物切り抜き等）はアルファを保持する。
             image = source.convert("RGBA" if preserve_alpha else "RGB")
+    except HTTPException:
+        raise
+    except Image.DecompressionBombError as exc:
+        raise HTTPException(status_code=422, detail="画像サイズが大きすぎます") from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
     target.parent.mkdir(parents=True, exist_ok=True)
-    image.save(target, format="PNG")
+    # 検証済み画像を一時ファイルへ書き出し、成功後にreplaceで原子的に差し替える。
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    image.save(temporary, format="PNG")
+    temporary.replace(target)
 
 
 def parse_manga_json(raw: str) -> MangaProject:
@@ -1345,11 +1455,94 @@ def parse_manga_json(raw: str) -> MangaProject:
 
 
 def find_panel(manga: MangaProject, panel_id: str):
+    panel = find_panel_optional(manga, panel_id)
+    if panel is None:
+        raise HTTPException(status_code=404, detail="コマが見つかりません")
+    return panel
+
+
+def find_panel_optional(manga: MangaProject, panel_id: str):
     for page in manga.pages:
         for panel in page.panels:
             if panel.panel_id == panel_id:
                 return panel
-    raise HTTPException(status_code=404, detail="コマが見つかりません")
+    return None
+
+
+def page_render_signature(manga: MangaProject, page) -> str:
+    """ページの描画結果に影響する入力だけを取り出した安定シグネチャ。
+
+    一致する限り既存のレンダリング状態を保持し、台詞・レイアウトなど
+    画像に影響しないメタ変更では再レンダリングを促さない。
+    """
+    payload = {
+        "typography": manga.typography.model_dump(),
+        "page_layout": manga.page_layout.model_dump(),
+        "reading_direction": manga.reading_direction,
+        "overlays": [overlay.model_dump() for overlay in page.overlay_elements],
+        "panels": [
+            {
+                "panel_id": panel.panel_id,
+                "bbox": panel.bbox,
+                "image_asset": panel.image_asset,
+                "dialogue": [line.model_dump() for line in panel.dialogue],
+                "sfx": [item.model_dump() for item in panel.sfx],
+                "crop": {
+                    "fit_mode": panel.generation.fit_mode,
+                    "crop_anchor": panel.generation.crop_anchor,
+                    "crop_scale": panel.generation.crop_scale,
+                    "crop_offset_x": panel.generation.crop_offset_x,
+                    "crop_offset_y": panel.generation.crop_offset_y,
+                    "focal_x": panel.generation.focal_x,
+                    "focal_y": panel.generation.focal_y,
+                },
+            }
+            for panel in page.panels
+        ],
+    }
+    return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> None:
+    """描画入力が変わったページのみpendingにし、それ以外は前回状態を引き継ぐ。"""
+    previous_by_number = {page.page: page for page in previous.pages}
+    previous_signatures = {
+        page.page: page_render_signature(previous, page) for page in previous.pages
+    }
+    for page in payload.pages:
+        old_page = previous_by_number.get(page.page)
+        if old_page is not None and previous_signatures.get(page.page) == page_render_signature(
+            payload, page
+        ):
+            page.render_status = old_page.render_status
+            page.rendered_at = old_page.rendered_at
+        else:
+            page.render_status = "pending"
+            page.rendered_at = None
+
+
+def update_panel_in_latest(app: FastAPI, project_id: str, panel_id: str, mutate) -> MangaProject:
+    """最新のmanga_jsonを読み直し、対象パネルだけにmutateを適用して保存する。
+
+    生成完了時に開始時点の古いスナップショットを丸ごと保存すると、その間の
+    ユーザー編集（他パネルの台詞・別ページの候補選択）を踏みつぶす。読み直して
+    対象パネルだけマージすることで、生成とユーザー編集の競合面を最小化する。
+    """
+    with app.state.SessionLocal() as session:
+        record = session.get(ProjectRecord, project_id)
+        if record is None:
+            raise RuntimeError("プロジェクトが見つかりません")
+        manga = parse_manga_json(record.manga_json)
+        panel = find_panel_optional(manga, panel_id)
+        if panel is None:
+            raise RuntimeError("コマが見つかりません")
+        mutate(panel)
+        normalize_manga_assets(manga, app.state.settings.export_dir)
+        record.manga_json = manga.model_dump_json()
+        record.revision += 1
+        record.updated_at = now_utc()
+        session.commit()
+    return manga
 
 
 def find_panel_page_number(manga: MangaProject, panel_id: str) -> int:
@@ -1399,6 +1592,7 @@ def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> N
         if writable is None:
             raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         writable.manga_json = manga.model_dump_json()
+        writable.revision += 1
         writable.updated_at = now_utc()
         session.commit()
 
@@ -1447,6 +1641,7 @@ def to_summary(record: ProjectRecord) -> ProjectSummary:
         id=record.id,
         title=record.title,
         work_name=record.work_name,
+        revision=record.revision,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

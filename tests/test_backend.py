@@ -14,7 +14,8 @@ from PIL import Image
 
 import backend.app.main as main_module
 from backend.app.config import Settings
-from backend.app.database import create_session_factory
+from backend.app.database import ProjectRecord, create_session_factory
+from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
     ComfyUIWorkflowConfig,
@@ -134,7 +135,10 @@ def test_export_filename_is_safe_for_windows() -> None:
 
 
 def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
-    with make_client(tmp_path, image_backend="comfyui") as client:
+    # ワークフローは正しいが接続不可（一時障害）のときはstubへ退避する。
+    workflow_path = tmp_path / "workflow_api.json"
+    workflow_path.write_text(json.dumps(sample_workflow()), encoding="utf-8")
+    with make_client(tmp_path, image_backend="comfyui", workflow_path=workflow_path) as client:
         project_id = create_generated_project(client)
         response = client.post(f"/api/projects/{project_id}/render")
         assert response.status_code == 200
@@ -143,6 +147,17 @@ def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
         assert first_panel["generation"]["backend"] == "comfyui"
         assert first_panel["generation"]["status"] == "fallback"
         assert first_panel["image_asset"]
+
+
+def test_comfyui_missing_workflow_is_error_not_silent_stub(tmp_path: Path) -> None:
+    # 設定不備（ワークフロー欠如）は黙ってstubへ退避せず、エラーとして表面化させる。
+    with make_client(tmp_path, image_backend="comfyui") as client:
+        project_id = create_generated_project(client)
+        response = client.post(f"/api/projects/{project_id}/render")
+        assert response.status_code == 200
+        first_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        assert first_panel["generation"]["status"] == "error"
+        assert first_panel["image_asset"] is None
 
 
 def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
@@ -158,6 +173,92 @@ def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
             },
         )
         assert response.status_code == 422
+
+
+def test_manga_json_optimistic_lock_rejects_stale_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        detail = client.get(f"/api/projects/{project_id}").json()
+        revision = detail["revision"]
+        manga = detail["manga_json"]
+
+        first = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+        assert first.status_code == 200
+        assert first.json()["revision"] == revision + 1
+
+        # 古いrevisionでの保存は409で弾く（生成完了・別タブ保存との競合）。
+        stale = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+        assert stale.status_code == 409
+
+        # revision未指定なら従来通り保存できる。
+        no_check = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert no_check.status_code == 200
+
+
+def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+
+        # ユーザーがp01_02のプロンプトを編集して保存する。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        for panel in manga["pages"][0]["panels"]:
+            if panel["panel_id"] == "p01_02":
+                panel["prompt"] = "ユーザー編集後のプロンプト"
+        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+
+        # 生成完了が開始時点の古いスナップショットではなく最新へp01_01だけマージする。
+        main_module.update_panel_in_latest(
+            app,
+            project_id,
+            "p01_01",
+            lambda panel: setattr(panel.generation, "message", "マージ済み"),
+        )
+
+        updated = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = {panel["panel_id"]: panel for panel in updated["pages"][0]["panels"]}
+        # p01_01のマージが反映され、かつp01_02のユーザー編集が消えていない。
+        assert panels["p01_01"]["generation"]["message"] == "マージ済み"
+        assert panels["p01_02"]["prompt"] == "ユーザー編集後のプロンプト"
+
+
+def test_duplicate_panel_id_is_rejected(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = manga["pages"][0]["panels"]
+        panels[1]["panel_id"] = panels[0]["panel_id"]
+        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert response.status_code == 422
+
+
+def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert all(page["render_status"] == "done" for page in manga["pages"])
+
+        # メタ変更（タイトル）だけでは全ページをpendingに戻さない。
+        manga["title"] = "新しいタイトル"
+        meta_only = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert meta_only.status_code == 200
+        assert all(
+            page["render_status"] == "done" for page in meta_only.json()["manga_json"]["pages"]
+        )
+
+        # 描画に影響する変更（1ページ目の台詞追加）は当該ページだけpendingにする。
+        manga2 = meta_only.json()["manga_json"]
+        manga2["pages"][0]["panels"][0]["dialogue"].append(
+            {"speaker": "char_a", "text": "追加の台詞"}
+        )
+        render_change = client.put(f"/api/projects/{project_id}/manga-json", json=manga2)
+        assert render_change.status_code == 200
+        pages = render_change.json()["manga_json"]["pages"]
+        assert pages[0]["render_status"] == "pending"
+        assert all(page["render_status"] == "done" for page in pages[1:])
 
 
 def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
@@ -804,6 +905,19 @@ def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:
 
 def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
     session_factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    # generation_jobs.project_idはprojectsへの外部キーなので親レコードを先に作る。
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="project",
+                title="t",
+                work_name="",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
     manager = JobManager(session_factory)
     job = manager.create("project", "panel", 2)
     manager.update(job, status="running", progress=45, message="生成中")

@@ -134,6 +134,8 @@ export function StoryPanel({
     setSession(null);
     void refreshSessions();
     void refreshRevisions();
+    // プロジェクトIDが変わったときだけ再取得する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   function syncDrafts(next: StorySession) {

@@ -5,7 +5,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, cast
 
 from sqlalchemy.orm import sessionmaker
 
@@ -13,6 +13,9 @@ from .database import GenerationJobRecord
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 TERMINAL_JOB_STATUSES = {"done", "error", "cancelled"}
+# 終了ジョブをメモリキャッシュに残す猶予（UI通知・直後の再取得用）。
+# これ以降はDBが履歴の正本となり、必要分はDBからページングして取得する。
+TERMINAL_CACHE_GRACE_SECONDS = 60.0
 
 
 def utc_now() -> datetime:
@@ -32,6 +35,8 @@ class GenerationJob:
     node: str | None = None
     message: str = "生成待ちです"
     candidate_ids: list[str] = field(default_factory=list)
+    # ComfyUIのprompt_id（リモート生成中のみ）。キャンセル時のリモート停止に使う。
+    prompt_id: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     revision: int = 0
@@ -106,8 +111,10 @@ class JobManager:
             if record is None:
                 return None
             job = self.from_record(record)
-            self.jobs[job.id] = job
-            self.events[job.id] = asyncio.Event()
+            # 終了済みジョブはキャッシュへ載せない（DBが正本・メモリ肥大を防ぐ）。
+            if job.status not in TERMINAL_JOB_STATUSES:
+                self.jobs[job.id] = job
+                self.events[job.id] = asyncio.Event()
             return job
 
     def list_for_project(self, project_id: str) -> list[GenerationJob]:
@@ -130,13 +137,14 @@ class JobManager:
             project_id=record.project_id,
             panel_id=record.panel_id,
             candidate_count=record.candidate_count,
-            status=record.status,
+            status=cast(JobStatus, record.status),
             progress=record.progress,
             current=record.current,
             total=record.total,
             node=record.node,
             message=record.message,
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
+            prompt_id=record.prompt_id,
             created_at=record.created_at.replace(tzinfo=timezone.utc)
             if record.created_at.tzinfo is None
             else record.created_at,
@@ -146,7 +154,33 @@ class JobManager:
         )
 
     def start(self, job: GenerationJob, coroutine) -> None:
-        self.tasks[job.id] = asyncio.create_task(coroutine)
+        task = asyncio.create_task(coroutine)
+        self.tasks[job.id] = task
+        job_id = job.id
+        # 完了・失敗・キャンセル後にTask参照を確実に解放する。
+        task.add_done_callback(lambda _task: self._on_task_done(job_id))
+
+    def _on_task_done(self, job_id: str) -> None:
+        self.tasks.pop(job_id, None)
+        if self.shutting_down:
+            return
+        job = self.jobs.get(job_id)
+        if job is None or job.status not in TERMINAL_JOB_STATUSES:
+            return
+        # 終端ジョブは猶予後にメモリキャッシュ(jobs/events)から除外する。
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._evict(job_id)
+            return
+        loop.call_later(TERMINAL_CACHE_GRACE_SECONDS, self._evict, job_id)
+
+    def _evict(self, job_id: str) -> None:
+        job = self.jobs.get(job_id)
+        if job is None or job.status not in TERMINAL_JOB_STATUSES:
+            return
+        self.jobs.pop(job_id, None)
+        self.events.pop(job_id, None)
 
     def update(self, job: GenerationJob, **changes) -> None:
         for key, value in changes.items():
@@ -178,6 +212,7 @@ class JobManager:
             record.node = job.node
             record.message = job.message
             record.candidate_ids_json = json.dumps(job.candidate_ids)
+            record.prompt_id = job.prompt_id
             record.updated_at = job.updated_at
             session.commit()
 
