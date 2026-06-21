@@ -2584,6 +2584,9 @@
             "title": "Revision",
             "default": 0
           },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -2596,7 +2599,8 @@
         "required": [
           "project_id",
           "cbz_asset",
-          "absolute_path"
+          "absolute_path",
+          "manga_json"
         ],
         "title": "ExportResponse"
       },
@@ -3979,6 +3983,28 @@
               }
             ],
             "title": "Rendered At"
+          },
+          "render_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Asset"
+          },
+          "render_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Hash"
           }
         },
         "additionalProperties": false,

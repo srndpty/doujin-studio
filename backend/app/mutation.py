@@ -48,6 +48,8 @@ def mark_page_dirty(page: Page) -> None:
     """
     page.render_status = "pending"
     page.rendered_at = None
+    page.render_asset = None
+    page.render_hash = None
 
 
 def parse_manga(raw: str) -> MangaProject:

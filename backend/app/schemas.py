@@ -288,6 +288,9 @@ class Page(BaseModel):
     panels: list[Panel] = Field(min_length=1)
     render_status: Literal["pending", "done"] = "pending"
     rendered_at: datetime | None = None
+    # 描画入力hashを含む不変PNG。古い描画が新しい描画を上書きしないための正本。
+    render_asset: str | None = None
+    render_hash: str | None = None
 
 
 class Character(BaseModel):
@@ -605,6 +608,7 @@ class ExportResponse(BaseModel):
     absolute_path: str
     # CBZ出力時にページ再レンダリングでrevisionが進むため返す（クライアント同期用）。
     revision: int = 0
+    manga_json: MangaProject
     warnings: list[str] = Field(default_factory=list)
 
 

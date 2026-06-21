@@ -96,8 +96,9 @@ def export_cbz(
     target = (output_dir or export_dir / project_id) / f"{safe_title}-{timestamp}.cbz"
     target.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(target, "w", ZIP_DEFLATED) as archive:
-        for asset in sorted(page_assets):
-            archive.write(asset, asset.name)
+        for index, asset in enumerate(sorted(page_assets), start=1):
+            # 内部assetは入力hash付き不変名だが、CBZ内は閲覧ソフト向けの連番名にする。
+            archive.write(asset, f"page_{index:03d}.png")
     return target
 
 

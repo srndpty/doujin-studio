@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import shutil
@@ -41,7 +42,7 @@ from .database import (
     create_session_factory,
     now_utc,
 )
-from .generation_service import GenerationService, PanelNotFoundError
+from .generation_service import ActiveJobConflictError, GenerationService, PanelNotFoundError
 from .generator import generate_four_page_name
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
 from .jobs import TERMINAL_JOB_STATUSES, GenerationJob, JobManager
@@ -206,7 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return to_detail(record, request.app.state.settings.export_dir)
 
     @app.post("/api/projects/{project_id}/generate-name", response_model=ProjectDetail)
-    def generate_name(
+    async def generate_name(
         project_id: str, payload: GenerateNameRequest, request: Request
     ) -> ProjectDetail:
         record = load_project_record(request, project_id)
@@ -219,9 +220,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ending_direction=payload.ending_direction,
             target_pages=payload.target_pages,
         )
-        # ページ構成を全置換するので、進行中ジョブを止めてから世代を進める
-        # （古いプロンプトの候補が新作品へ混入しないように）。
-        cancel_active_project_jobs(request.app, project_id)
         replace_project(
             request.app.state.mutation,
             project_id,
@@ -229,9 +227,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expected_revision=payload.revision,
             increment_epoch=True,
         )
-        # cancel()直前に登録されたジョブも終端化する。epoch不一致チェックが候補保存の
-        # 最終防壁になるため、構造置換との競合でも新作品には混入しない。
-        cancel_active_project_jobs(request.app, project_id)
+        new_epoch = request.app.state.mutation.current_epoch(project_id)
+        await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
         return to_detail(load_project_record(request, project_id))
 
     @app.put("/api/projects/{project_id}/manga-json", response_model=ProjectDetail)
@@ -270,27 +267,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manager: JobManager = request.app.state.job_manager
 
         # ComfyUI呼び出しはジョブワーカーに一本化する。ここでは生成ジョブを積んで完了を待つ。
-        epoch = request.app.state.mutation.current_epoch(project_id)
         for page in manga.pages:
             for panel in page.panels:
                 if not (force or not panel.image_asset):
                     continue
                 job = find_active_panel_job(manager, project_id, panel.panel_id)
                 if job is None:
-                    job = manager.create(project_id, panel.panel_id, 1, epoch=epoch)
+                    job = enqueue_panel_jobs(
+                        request.app,
+                        project_id,
+                        [panel.panel_id],
+                        1,
+                        "全体生成ジョブを登録しました",
+                    )[0]
                     manager.start(job, run_generation_job(request.app, job))
                 await await_job(request.app, job)
 
-        # CASでrender_statusを確定し、レンダリング(副作用)は確定mangaに対しcommit後に1回行う。
-        def finalize(manga: MangaProject) -> None:
-            for page in manga.pages:
-                page.render_status = "done"
-                page.rendered_at = now_utc()
-
-        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, finalize)
-        page_assets, warnings = render_confirmed_pages(
-            project_id, manga, settings.export_dir, revision
+        latest = load_project_record(request, project_id)
+        snapshot = parse_manga_json(latest.manga_json)
+        page_assets, warnings = render_snapshot_pages(
+            project_id, snapshot, settings.export_dir, latest.revision
         )
+        manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
         return RenderResponse(
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
@@ -402,6 +400,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target_ids,
             options.candidate_count,
             "一括生成キューへ登録しました",
+            skip_active=True,
         )
         for job in jobs:
             manager.start(job, run_generation_job(request.app, job))
@@ -441,7 +440,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status="cancelled",
                 message="ローカルではキャンセルしましたが、ComfyUI側の停止に失敗しました",
             )
-        # panel状態の更新は生成Task側(run_generation_job)へ一本化する（ここでは行わない）。
+        # panel状態の更新は生成Task側へ一本化し、その完了後に応答する。
+        task = manager.tasks.get(job.id)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
         return to_job_response(job)
 
     @app.websocket("/api/generation-jobs/{job_id}/ws")
@@ -486,13 +488,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             apply_candidate_selection(panel, candidate)
             page_number = find_panel_page_number(manga, panel_id)
             page = next(item for item in manga.pages if item.page == page_number)
-            page.render_status = "done"
-            page.rendered_at = now_utc()
+            mark_page_dirty(page)
             return page_number
 
         page_number, manga, revision = run_mutation(request.app.state.mutation, project_id, select)
-        page_asset, warnings = render_confirmed_page(
-            project_id, manga, page_number, settings.export_dir, revision
+        page_asset, warnings, manga, revision = render_and_commit_page(
+            request.app, project_id, manga, revision, page_number
         )
         return PanelPageRenderResponse(
             project_id=project_id,
@@ -778,17 +779,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> PageRenderResponse:
         settings = request.app.state.settings
 
-        def mark_done(manga: MangaProject) -> None:
-            page = next((item for item in manga.pages if item.page == page_number), None)
-            if page is None:
-                raise HTTPException(status_code=404, detail="ページが見つかりません")
-            page.render_status = "done"
-            page.rendered_at = now_utc()
-
-        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mark_done)
-        # 確定mangaに対してレンダリング・preflightを行う。
-        page_asset, warnings = render_confirmed_page(
-            project_id, manga, page_number, settings.export_dir, revision
+        record = load_project_record(request, project_id)
+        snapshot = parse_manga_json(record.manga_json)
+        if not any(page.page == page_number for page in snapshot.pages):
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        page_asset, warnings, manga, revision = render_and_commit_page(
+            request.app, project_id, snapshot, record.revision, page_number
         )
         page = next(item for item in manga.pages if item.page == page_number)
         issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
@@ -811,18 +807,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> PanelPageRenderResponse:
         settings = request.app.state.settings
 
-        def mark_done(manga: MangaProject) -> int:
-            page_number = find_panel_page_number(manga, panel_id)
-            page = next(item for item in manga.pages if item.page == page_number)
-            page.render_status = "done"
-            page.rendered_at = now_utc()
-            return page_number
-
-        page_number, manga, revision = run_mutation(
-            request.app.state.mutation, project_id, mark_done
-        )
-        page_asset, warnings = render_confirmed_page(
-            project_id, manga, page_number, settings.export_dir, revision
+        record = load_project_record(request, project_id)
+        snapshot = parse_manga_json(record.manga_json)
+        page_number = find_panel_page_number(snapshot, panel_id)
+        page_asset, warnings, manga, revision = render_and_commit_page(
+            request.app, project_id, snapshot, record.revision, page_number
         )
         return PanelPageRenderResponse(
             project_id=project_id,
@@ -839,39 +828,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # preflight・production statusはCAS各試行で読んだ「確定する最新manga」に対して判定する
         # （古いスナップショットで検査して、競合で入った重大エラーを見逃さないように）。
-        def finalize(manga: MangaProject) -> list[str]:
-            preflight_errors = [
-                issue
-                for issue in preflight_module.preflight_project(manga, settings.export_dir)
-                if issue.level == "error"
-            ]
-            if preflight_errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail="プリフライトで重大エラーが見つかりました: "
-                    + "; ".join(
-                        f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
-                    ),
-                )
-            status = build_production_status(project_id, manga)
-            for page in manga.pages:
-                page.render_status = "done"
-                page.rendered_at = now_utc()
-            return [blocker for blocker in status.blockers if "採用画像" in blocker]
-
-        blockers, manga, revision = run_mutation(request.app.state.mutation, project_id, finalize)
-        # レンダリング・CBZ書き出し(副作用)は確定mangaに対して1回だけ行う。
-        page_assets, render_warnings = render_confirmed_pages(
-            project_id, manga, settings.export_dir, revision
+        record = load_project_record(request, project_id)
+        snapshot = parse_manga_json(record.manga_json)
+        preflight_errors = [
+            issue
+            for issue in preflight_module.preflight_project(snapshot, settings.export_dir)
+            if issue.level == "error"
+        ]
+        if preflight_errors:
+            raise HTTPException(
+                status_code=422,
+                detail="プリフライトで重大エラーが見つかりました: "
+                + "; ".join(
+                    f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
+                ),
+            )
+        status = build_production_status(project_id, snapshot)
+        blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
+        # CBZ完成まではDBをdoneへ進めない。失敗時は全ページpendingのまま残る。
+        page_assets, render_warnings = render_snapshot_pages(
+            project_id, snapshot, settings.export_dir, record.revision
         )
         cbz_path = export_confirmed_cbz(
-            project_id, manga.title, page_assets, settings.export_dir, revision
+            project_id, snapshot.title, page_assets, settings.export_dir, record.revision
         )
+        manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
         return ExportResponse(
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
             absolute_path=str(cbz_path.resolve()),
             revision=revision,
+            manga_json=manga,
             warnings=blockers + render_warnings,
         )
 
@@ -1130,14 +1117,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return story_module.session_to_response(record)
 
     @app.post("/api/story-sessions/{session_id}/apply", response_model=ProjectDetail)
-    def apply_story_session(session_id: str, request: Request, revision: int) -> ProjectDetail:
+    async def apply_story_session(
+        session_id: str, request: Request, revision: int
+    ) -> ProjectDetail:
         with request.app.state.SessionLocal() as session:
             record = session.get(StoryGenerationSessionRecord, session_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="ストーリーセッションが見つかりません")
             project_id = record.project_id
-        # 構成全置換の前に進行中ジョブを止める（世代も進めて候補混入を防ぐ）。
-        cancel_active_project_jobs(request.app, project_id)
 
         def build_applied(session, base: MangaProject) -> MangaProject:
             current = session.get(StoryGenerationSessionRecord, session_id)
@@ -1155,7 +1142,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expected_revision=revision,
             history_label=f"ストーリー適用前 ({now_utc().isoformat()})",
         )
-        cancel_active_project_jobs(request.app, project_id)
+        new_epoch = request.app.state.mutation.current_epoch(project_id)
+        await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
         return to_detail(
             load_project_record(request, project_id), request.app.state.settings.export_dir
         )
@@ -1183,12 +1171,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(
         "/api/projects/{project_id}/revisions/{revision_id}/restore", response_model=ProjectDetail
     )
-    def restore_project_revision(
+    async def restore_project_revision(
         project_id: str, revision_id: str, request: Request, revision: int
     ) -> ProjectDetail:
         load_project_record(request, project_id)
-        # 構成全置換の前に進行中ジョブを止める（世代も進めて候補混入を防ぐ）。
-        cancel_active_project_jobs(request.app, project_id)
 
         def build_restored(session, _base: MangaProject) -> MangaProject:
             stored = session.get(ProjectRevisionRecord, revision_id)
@@ -1203,7 +1189,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expected_revision=revision,
             history_label=f"復元前 ({now_utc().isoformat()})",
         )
-        cancel_active_project_jobs(request.app, project_id)
+        new_epoch = request.app.state.mutation.current_epoch(project_id)
+        await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
         return to_detail(
             load_project_record(request, project_id), request.app.state.settings.export_dir
         )
@@ -1231,17 +1218,22 @@ async def await_job(app: FastAPI, job: GenerationJob) -> GenerationJob:
     return manager.get(job.id) or job
 
 
-def cancel_active_project_jobs(app: FastAPI, project_id: str) -> None:
-    """構成全置換の前に、対象プロジェクトの進行中ジョブを終端化する。
-
-    世代(epoch)チェックで候補混入自体は防げるが、走り続けるジョブを残さないよう
-    明示的にキャンセルする。実行中ならローカルTaskを止める（リモート停止はepoch破棄で
-    候補が捨てられるため必須ではない）。
-    """
+async def cancel_project_jobs_before_epoch(app: FastAPI, project_id: str, new_epoch: int) -> None:
+    """構造置換成功後、旧epochのTaskだけをイベントループ上で停止する。"""
     manager: JobManager = app.state.job_manager
+    cancelled_tasks: list[asyncio.Task] = []
     for item in list(manager.jobs.values()):
-        if item.project_id == project_id and item.status not in TERMINAL_JOB_STATUSES:
-            manager.cancel(item)
+        if (
+            item.project_id == project_id
+            and item.epoch < new_epoch
+            and item.status not in TERMINAL_JOB_STATUSES
+            and manager.cancel(item)
+        ):
+            task = manager.tasks.get(item.id)
+            if task is not None:
+                cancelled_tasks.append(task)
+    if cancelled_tasks:
+        await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
 
 def find_active_panel_job(
@@ -1586,14 +1578,18 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         return record
 
 
-def render_confirmed_page(
+class RenderInputChangedError(Exception):
+    pass
+
+
+def render_snapshot_page(
     project_id: str,
     manga: MangaProject,
     page_number: int,
     export_dir: Path,
     revision: int,
 ) -> tuple[Path, list[str]]:
-    """確定revisionの一時パスへ描画し、成功したPNGだけ正規パスへ昇格する。"""
+    """snapshotを一時描画し、入力hash付き不変PNGへ昇格する。DB状態は変更しない。"""
     staging = (
         export_dir / project_id / ".render-staging" / f"revision-{revision}-{uuid.uuid4().hex}"
     )
@@ -1601,7 +1597,9 @@ def render_confirmed_page(
         staged, warnings = render_project_page(
             project_id, manga, page_number, export_dir, output_dir=staging
         )
-        target = export_dir / project_id / "pages" / staged.name
+        page = next(item for item in manga.pages if item.page == page_number)
+        render_hash = page_render_hash(manga, page)
+        target = export_dir / project_id / "pages" / f"page_{page_number:03d}.{render_hash}.png"
         target.parent.mkdir(parents=True, exist_ok=True)
         staged.replace(target)
         return target, warnings
@@ -1609,13 +1607,13 @@ def render_confirmed_page(
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def render_confirmed_pages(
+def render_snapshot_pages(
     project_id: str,
     manga: MangaProject,
     export_dir: Path,
     revision: int,
 ) -> tuple[list[Path], list[str]]:
-    """全ページ成功後にのみ、一時PNG群を正規出力へ昇格する。"""
+    """全ページ成功後に入力hash付き不変PNG群へ昇格する。DB状態は変更しない。"""
     staging = (
         export_dir / project_id / ".render-staging" / f"revision-{revision}-{uuid.uuid4().hex}"
     )
@@ -1626,8 +1624,11 @@ def render_confirmed_pages(
         target_dir = export_dir / project_id / "pages"
         target_dir.mkdir(parents=True, exist_ok=True)
         assets: list[Path] = []
+        pages = {page.page: page for page in manga.pages}
         for staged in staged_assets:
-            target = target_dir / staged.name
+            page_number = int(staged.stem.removeprefix("page_"))
+            render_hash = page_render_hash(manga, pages[page_number])
+            target = target_dir / f"page_{page_number:03d}.{render_hash}.png"
             staged.replace(target)
             assets.append(target)
         return assets, warnings
@@ -1652,6 +1653,71 @@ def export_confirmed_cbz(
         return target
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def commit_rendered_pages(
+    app: FastAPI,
+    project_id: str,
+    snapshot: MangaProject,
+    assets: list[Path],
+) -> tuple[MangaProject, int]:
+    """最新入力がsnapshotと一致する場合だけdoneと不変assetをCAS確定する。"""
+    snapshot_pages = {page.page: page for page in snapshot.pages}
+    asset_by_page = {int(asset.name.split(".")[0].removeprefix("page_")): asset for asset in assets}
+
+    def finalize(latest: MangaProject) -> None:
+        latest_pages = {page.page: page for page in latest.pages}
+        for page_number, snapshot_page in snapshot_pages.items():
+            latest_page = latest_pages.get(page_number)
+            asset = asset_by_page.get(page_number)
+            if (
+                latest_page is None
+                or asset is None
+                or page_render_hash(latest, latest_page)
+                != page_render_hash(snapshot, snapshot_page)
+            ):
+                raise RenderInputChangedError()
+        for page_number, snapshot_page in snapshot_pages.items():
+            latest_page = latest_pages[page_number]
+            latest_page.render_status = "done"
+            latest_page.rendered_at = now_utc()
+            latest_page.render_hash = page_render_hash(snapshot, snapshot_page)
+            latest_page.render_asset = asset_to_id(
+                asset_by_page[page_number], app.state.settings.export_dir
+            )
+
+    try:
+        _result, manga, revision = app.state.mutation.mutate(project_id, finalize)
+    except RenderInputChangedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="描画中にページ内容が更新されました。再度レンダリングしてください。",
+        ) from exc
+    except ProjectConflictError as exc:
+        raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
+    return manga, revision
+
+
+def render_and_commit_page(
+    app: FastAPI,
+    project_id: str,
+    snapshot: MangaProject,
+    snapshot_revision: int,
+    page_number: int,
+) -> tuple[Path, list[str], MangaProject, int]:
+    asset, warnings = render_snapshot_page(
+        project_id,
+        snapshot,
+        page_number,
+        app.state.settings.export_dir,
+        snapshot_revision,
+    )
+    # 対象ページだけを確定するため、snapshotを対象ページへ絞ったCAS用projectにする。
+    page = next(item for item in snapshot.pages if item.page == page_number)
+    commit_snapshot = snapshot.model_copy(deep=True)
+    commit_snapshot.pages = [page.model_copy(deep=True)]
+    manga, revision = commit_rendered_pages(app, project_id, commit_snapshot, [asset])
+    return asset, warnings, manga, revision
 
 
 # 1コマ画像として現実的な上限。展開後のピクセル数で「圧縮爆弾」を弾く。
@@ -1756,6 +1822,10 @@ def page_render_signature(manga: MangaProject, page) -> str:
     return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
 
 
+def page_render_hash(manga: MangaProject, page) -> str:
+    return hashlib.sha256(page_render_signature(manga, page).encode("utf-8")).hexdigest()[:20]
+
+
 def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> None:
     """描画入力が変わったページのみpendingにし、それ以外は前回状態を引き継ぐ。"""
     previous_by_number = {page.page: page for page in previous.pages}
@@ -1769,9 +1839,10 @@ def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> N
         ):
             page.render_status = old_page.render_status
             page.rendered_at = old_page.rendered_at
+            page.render_asset = old_page.render_asset
+            page.render_hash = old_page.render_hash
         else:
-            page.render_status = "pending"
-            page.rendered_at = None
+            mark_page_dirty(page)
 
 
 def run_mutation(service: ProjectMutationService, project_id: str, mutate, expected_revision=None):
@@ -1869,7 +1940,13 @@ def update_panel_in_latest(
 
 
 def enqueue_panel_jobs(
-    app: FastAPI, project_id: str, panel_ids: list[str], candidate_count: int, message: str
+    app: FastAPI,
+    project_id: str,
+    panel_ids: list[str],
+    candidate_count: int,
+    message: str,
+    *,
+    skip_active: bool = False,
 ) -> list[GenerationJob]:
     """panelのqueued化・GenerationJobRecord追加・revision更新を単一トランザクションで確定する。
 
@@ -1878,11 +1955,21 @@ def enqueue_panel_jobs(
     commit後にメモリ登録し、Taskは呼び出し側がcommit確認後に開始する。
     """
     try:
-        jobs = app.state.generation.enqueue(project_id, panel_ids, candidate_count, message)
+        jobs = app.state.generation.enqueue(
+            project_id,
+            panel_ids,
+            candidate_count,
+            message,
+            skip_active=skip_active,
+        )
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
     except PanelNotFoundError as exc:
         raise HTTPException(status_code=404, detail="コマが見つかりません") from exc
+    except (ActiveJobConflictError, EpochMismatchError) as exc:
+        raise HTTPException(
+            status_code=409, detail="対象コマまたは作品構成が更新されています"
+        ) from exc
     except ProjectConflictError as exc:
         raise HTTPException(
             status_code=409, detail="ジョブ登録中に競合しました。再実行してください。"

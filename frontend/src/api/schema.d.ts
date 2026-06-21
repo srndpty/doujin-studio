@@ -997,6 +997,7 @@ export interface components {
              * @default 0
              */
             revision: number;
+            manga_json: components["schemas"]["MangaProject"];
             /** Warnings */
             warnings?: string[];
         };
@@ -1627,6 +1628,10 @@ export interface components {
             render_status: "pending" | "done";
             /** Rendered At */
             rendered_at?: string | null;
+            /** Render Asset */
+            render_asset?: string | null;
+            /** Render Hash */
+            render_hash?: string | null;
         };
         /**
          * PageLayoutSettings

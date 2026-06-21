@@ -5,15 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from sqlalchemy import update as sqlalchemy_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from .assets import normalize_manga_assets
 from .database import GenerationJobRecord, ProjectRecord, now_utc
 from .jobs import GenerationJob
-from .mutation import ProjectConflictError, ProjectNotFoundError, parse_manga
+from .mutation import EpochMismatchError, ProjectConflictError, ProjectNotFoundError, parse_manga
 
 
 class PanelNotFoundError(Exception):
+    pass
+
+
+class ActiveJobConflictError(Exception):
     pass
 
 
@@ -30,18 +35,44 @@ class GenerationService:
         message: str,
         *,
         attempts: int = 5,
+        skip_active: bool = False,
     ) -> list[GenerationJob]:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。"""
+        initial_epoch: int | None = None
         for _ in range(attempts):
             with self.session_factory() as session:
                 record = session.get(ProjectRecord, project_id)
                 if record is None:
                     raise ProjectNotFoundError()
                 base_revision = record.revision
+                if initial_epoch is None:
+                    initial_epoch = record.generation_epoch
+                elif record.generation_epoch != initial_epoch:
+                    raise EpochMismatchError()
                 manga = parse_manga(record.manga_json)
                 panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
                 if any(panel_id not in panels for panel_id in panel_ids):
                     raise PanelNotFoundError()
+                active_db = {
+                    panel_id
+                    for (panel_id,) in session.query(GenerationJobRecord.panel_id)
+                    .filter(
+                        GenerationJobRecord.project_id == project_id,
+                        GenerationJobRecord.panel_id.in_(panel_ids),
+                        GenerationJobRecord.status.in_(["queued", "running"]),
+                    )
+                    .all()
+                }
+                active_panels = active_db | {
+                    panel_id
+                    for panel_id in panel_ids
+                    if panels[panel_id].generation.status in {"queued", "running"}
+                }
+                if active_panels and not skip_active:
+                    raise ActiveJobConflictError()
+                panel_ids = [panel_id for panel_id in panel_ids if panel_id not in active_panels]
+                if not panel_ids:
+                    raise ActiveJobConflictError()
                 jobs: list[GenerationJob] = []
                 for panel_id in panel_ids:
                     panel = panels[panel_id]
@@ -63,6 +94,7 @@ class GenerationService:
                     .where(
                         ProjectRecord.id == project_id,
                         ProjectRecord.revision == base_revision,
+                        ProjectRecord.generation_epoch == initial_epoch,
                     )
                     .values(
                         manga_json=manga.model_dump_json(),
@@ -88,6 +120,10 @@ class GenerationService:
                             updated_at=job.updated_at,
                         )
                     )
-                session.commit()
-                return jobs
+                try:
+                    session.commit()
+                    return jobs
+                except IntegrityError as exc:
+                    session.rollback()
+                    raise ActiveJobConflictError() from exc
         raise ProjectConflictError()

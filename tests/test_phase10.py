@@ -241,7 +241,8 @@ def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
         render_response = client.post(f"/api/projects/{project_id}/pages/1/render")
         assert render_response.status_code == 200
         body = render_response.json()
-        assert body["page_asset"].endswith("page_001.png")
+        assert "/page_001." in body["page_asset"]
+        assert body["page_asset"].endswith(".png")
         assert (tmp_path / "exports" / body["page_asset"]).exists()
         assert body["preflight"]["ok"] is True
 

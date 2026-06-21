@@ -9,12 +9,18 @@ from zipfile import ZipFile
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
 import backend.app.main as main_module
 from backend.app.config import Settings
-from backend.app.database import ProjectRecord, ProjectRevisionRecord, create_session_factory
+from backend.app.database import (
+    GenerationJobRecord,
+    ProjectRecord,
+    ProjectRevisionRecord,
+    create_session_factory,
+)
 from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
@@ -646,7 +652,8 @@ def test_single_panel_render_page_endpoint_updates_page_png(tmp_path: Path) -> N
         response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
         assert response.status_code == 200
         page_asset = response.json()["page_asset"]
-        assert page_asset == f"{project_id}/pages/page_001.png"
+        assert page_asset.startswith(f"{project_id}/pages/page_001.")
+        assert page_asset.endswith(".png")
         assert (tmp_path / "exports" / page_asset).exists()
 
 
@@ -685,7 +692,7 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
         assert response.status_code == 200
         selected_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
         assert selected_panel["selected_candidate_id"] == first_candidate_id
-        assert response.json()["page_asset"] == f"{project_id}/pages/page_001.png"
+        assert response.json()["page_asset"].startswith(f"{project_id}/pages/page_001.")
 
 
 def test_job_manager_cancels_running_task() -> None:
@@ -786,11 +793,76 @@ def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, mo
 
     monkeypatch.setattr(main_module, "render_project_page", fail_after_staging)
     with pytest.raises(RuntimeError, match="描画失敗"):
-        main_module.render_confirmed_page(
+        main_module.render_snapshot_page(
             "project", MangaProject(title="test"), 1, export_dir, revision=3
         )
     assert canonical.read_bytes() == b"old-page"
     assert not list((export_dir / "project" / ".render-staging").glob("revision-*"))
+
+
+def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "render_project_page",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("描画失敗")),
+        )
+        with pytest.raises(RuntimeError, match="描画失敗"):
+            client.post(f"/api/projects/{project_id}/pages/1/render")
+        page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page["render_status"] == "pending"
+        assert page["render_asset"] is None
+
+
+def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail_a = client.get(f"/api/projects/{project_id}").json()
+        snapshot_a = MangaProject.model_validate(detail_a["manga_json"])
+        asset_a, _ = main_module.render_snapshot_page(
+            project_id, snapshot_a, 1, app.state.settings.export_dir, detail_a["revision"]
+        )
+
+        changed = detail_a["manga_json"]
+        changed["pages"][0]["panels"][0]["bbox"][0] += 0.001
+        saved = put_manga(client, project_id, changed).json()
+        snapshot_b = MangaProject.model_validate(saved["manga_json"])
+        asset_b, _ = main_module.render_snapshot_page(
+            project_id, snapshot_b, 1, app.state.settings.export_dir, saved["revision"]
+        )
+        manga_b, _revision = main_module.commit_rendered_pages(
+            app,
+            project_id,
+            snapshot_b.model_copy(update={"pages": [snapshot_b.pages[0]]}),
+            [asset_b],
+        )
+        with pytest.raises(HTTPException) as conflict:
+            main_module.commit_rendered_pages(
+                app,
+                project_id,
+                snapshot_a.model_copy(update={"pages": [snapshot_a.pages[0]]}),
+                [asset_a],
+            )
+        assert conflict.value.status_code == 409
+        assert asset_a != asset_b
+        assert asset_a.exists() and asset_b.exists()
+        assert manga_b.pages[0].render_asset.endswith(asset_b.name)
+
+
+def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "export_confirmed_cbz",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CBZ失敗")),
+        )
+        with pytest.raises(RuntimeError, match="CBZ失敗"):
+            client.post(f"/api/projects/{project_id}/export/cbz")
+        pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
+        assert all(page["render_status"] == "pending" for page in pages)
 
 
 def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
@@ -887,6 +959,66 @@ def test_structural_replace_saves_history_and_epoch_atomically(tmp_path: Path) -
         assert project.revision == 1
         assert project.generation_epoch == 1
         assert MangaProject.model_validate_json(history.manga_json).premise == "旧構成"
+
+
+def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    from backend.app.generation_service import ActiveJobConflictError, GenerationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'enqueue.db'}")
+    manga = MangaProject(
+        title="t",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="single",
+                panels=[Panel(panel_id="p01_01", bbox=(0, 0, 1, 1), shot="")],
+            )
+        ],
+    )
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = GenerationService(session_factory, tmp_path / "exports")
+    service.enqueue("p", ["p01_01"], 1, "queued")
+    with pytest.raises(ActiveJobConflictError):
+        service.enqueue("p", ["p01_01"], 1, "duplicate")
+    with session_factory() as session:
+        assert session.query(GenerationJobRecord).count() == 1
+        indexes = session.execute(text("PRAGMA index_list(generation_jobs)")).all()
+        assert any(row[1] == "ux_generation_jobs_active_panel" and row[2] == 1 for row in indexes)
+
+
+def test_stale_structural_replace_does_not_cancel_active_job(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "停止されないジョブ")[0]
+        app.state.job_manager.register_in_memory(job)
+        response = client.post(
+            f"/api/projects/{project_id}/generate-name",
+            json={
+                "revision": 0,
+                "work_name": "stale",
+                "character_a": "A",
+                "character_b": "B",
+                "situation": "stale",
+                "ending_direction": "stale",
+            },
+        )
+        assert response.status_code == 409
+        assert app.state.job_manager.get(job.id).status == "queued"
 
 
 def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeypatch) -> None:

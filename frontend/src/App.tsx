@@ -130,6 +130,8 @@ export type MangaPage = {
   panels: Panel[];
   render_status: "pending" | "done";
   rendered_at: string | null;
+  render_asset?: string | null;
+  render_hash?: string | null;
 };
 
 export type MangaProject = {
@@ -504,6 +506,7 @@ export function App() {
       } finally {
         setActiveJobIds([]);
         await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
       }
       const fresh = await api.get<Project>(`/api/projects/${projectId}`);
       let latestManga = fresh.manga_json;
@@ -550,6 +553,7 @@ export function App() {
       } finally {
         setActiveJobIds([]);
         await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
       }
       const latest = await api.get<Project>(`/api/projects/${projectId}`);
       setSelected(latest);
@@ -754,6 +758,7 @@ export function App() {
     await Promise.all(
       activeJobIds.map((jobId) => api.post<GenerationJob>(`/api/generation-jobs/${jobId}/cancel`))
     );
+    if (selected) await reloadSelectedProject(selected.id);
     setMessage("生成キューをキャンセルしました");
   }
 
@@ -827,12 +832,10 @@ export function App() {
         cbz_asset: string;
         absolute_path: string;
         revision: number;
+        manga_json: MangaProject;
         warnings: string[];
       }>(`/api/projects/${selected.id}/export/cbz`);
-      // CBZ出力もページ再レンダリングでrevisionを進めるため同期する。
-      setSelected((prev) =>
-        prev && prev.id === selected.id ? { ...prev, revision: response.revision } : prev
-      );
+      applyMutatedManga(response.manga_json, response.revision);
       const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
       setMessage(`CBZを書き出しました: ${response.absolute_path}${warning}`);
       await refreshProductionStatus(selected.id);

@@ -166,6 +166,30 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE generation_jobs ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0")
             )
+        # 旧DBにactive重複があれば一意制約導入前に片方だけ残して終端化する。
+        connection.execute(
+            text(
+                """
+                UPDATE generation_jobs
+                SET status = 'error', message = '重複ジョブをDB移行時に停止しました'
+                WHERE status IN ('queued', 'running')
+                  AND id NOT IN (
+                    SELECT MIN(id) FROM generation_jobs
+                    WHERE status IN ('queued', 'running')
+                    GROUP BY project_id, panel_id
+                  )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_generation_jobs_active_panel
+                ON generation_jobs(project_id, panel_id)
+                WHERE status IN ('queued', 'running')
+                """
+            )
+        )
 
 
 def create_session_factory(database_url: str) -> sessionmaker:

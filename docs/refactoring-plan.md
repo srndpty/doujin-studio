@@ -78,6 +78,8 @@ Alembic 全面導入の前段として、最低限:
   進行中ジョブを停止する。生成ジョブは開始時epochを保持し、候補保存時に世代不一致なら
   破棄してjobをcancelledにする（旧プロンプト候補の新作品への混入防止）。
 - 生成登録（generate-image / generation-jobs / batch）は panel queued化・JobRecord追加・
-  revision更新を `GenerationService.enqueue()` で単一CASトランザクション化。
-- PNG/CBZは確定revisionを含む一時パスで完成させ、成功後に正規出力へ昇格する。
+  revision更新を `GenerationService.enqueue()` で単一CASトランザクション化。初回epochを
+  CAS条件へ固定し、active panelのSQLite部分一意インデックスでも二重登録を防ぐ。
+- PNGは描画入力hash付きの不変assetへ出力し、描画成功後に最新入力hashが一致した場合だけ
+  `done`をCAS確定する。CBZも全ページ描画・アーカイブ成功後まで状態を進めない。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。
