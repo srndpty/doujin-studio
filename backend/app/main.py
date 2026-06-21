@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -114,6 +115,8 @@ from .schemas import (
     StorySessionSummary,
 )
 from .story import StoryError
+
+logger = logging.getLogger(__name__)
 
 # 同期生成API(generate-image / render)の追加エラー契約をOpenAPIへ明示する。
 # 実行時にキャンセルは409、生成バックエンド失敗は502を返す。
@@ -1518,9 +1521,11 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             if result.asset_path is not None:
                 candidate_assets[Path(result.asset_path).resolve()] = True
             # キャンセル要求後に生成物が返っても、対象ジョブがキャンセル済みなら保存しない。
-            # 今回受領したPNGはcurrent/history未参照なので回収する。
+            # PNGを回収し、panel状態もskippedへ確定する（runningのまま固定されると、
+            # 次回enqueueでactive扱いになり再生成不能になるため）。
             if job.status == "cancelled":
                 cleanup_published_assets(app, job.project_id, candidate_assets)
+                mark_panel_job_stopped(app, job, "生成をキャンセルしました")
                 return
             if result.asset_path is None:
                 raise RuntimeError("生成画像の保存先が返りませんでした")
@@ -1639,9 +1644,15 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             message="生成入力が変わったため古い候補を破棄しました",
         )
     except Exception as exc:
+        # backendがPNGを書いた後に例外化した場合の未参照PNGを回収する。
+        cleanup_published_assets(app, job.project_id, candidate_assets)
         mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
         manager.update(
-            job, status="error", node=None, message=f"画像候補の生成に失敗しました: {exc}"
+            job,
+            status="error",
+            node=None,
+            prompt_id=None,
+            message=f"画像候補の生成に失敗しました: {exc}",
         )
 
 
@@ -2080,7 +2091,11 @@ def cleanup_published_assets(app: FastAPI, project_id: str, ownership: dict[Path
     for path, created_by_request in ownership.items():
         target = path.resolve()
         if created_by_request and target not in referenced:
-            target.unlink(missing_ok=True)
+            # cleanupは補助処理。unlink失敗で本来の409/502を上書きしないよう吸収する。
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("cleanup unlink失敗: %s", target, exc_info=True)
 
 
 def commit_rendered_pages(

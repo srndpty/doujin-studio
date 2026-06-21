@@ -1557,6 +1557,9 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
         project_id = create_generated_project(client)
 
         class CancelledThenReturnBackend:
+            def __init__(self) -> None:
+                self.cancelled_once = False
+
             async def generate_panel(
                 self,
                 project_id_,
@@ -1566,21 +1569,25 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
                 progress_callback=None,
                 on_prompt_id=None,
             ):
-                # ComfyUI等が結果を返す直前にjobがキャンセル済みになった状況を再現する。
-                for job in list(app.state.job_manager.jobs.values()):
-                    if (
-                        job.project_id == project_id_
-                        and job.panel_id == "p01_01"
-                        and job.status == "running"
-                    ):
-                        job.status = "cancelled"
+                # 1回目だけ、結果返却直前にjobがキャンセル済みになった状況を再現する
+                # （backendがCancelledErrorを内部で吸収して遅延PNGを返すケース）。
+                if not self.cancelled_once:
+                    self.cancelled_once = True
+                    manager = app.state.job_manager
+                    for job in list(manager.jobs.values()):
+                        if (
+                            job.project_id == project_id_
+                            and job.panel_id == "p01_01"
+                            and job.status == "running"
+                        ):
+                            # 実際のキャンセル同様、DBへもcancelledを永続化する。
+                            manager.update(job, status="cancelled")
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (7, 8, 9)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: CancelledThenReturnBackend()
-        )
+        shared_backend = CancelledThenReturnBackend()
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: shared_backend)
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 1},
@@ -1589,6 +1596,60 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
         assert response.status_code == 409
         panels_dir = tmp_path / "exports" / project_id / "panels"
         assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+        # panelはrunningのまま固定されず、skippedへ確定する。
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "skipped"
+        # 直後の再生成が受理される（runningのままだと409で再生成不能になる）。
+        retry = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert retry.status_code == 200
+
+
+def test_backend_exception_after_png_write_cleans_up_orphan(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+
+        class WriteThenFailBackend:
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # PNGを書いた後に例外化する（502になるが孤児PNGを残さないこと）。
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (3, 3, 3)).save(target_path)
+                raise RuntimeError("backend爆発")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: WriteThenFailBackend()
+        )
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 502
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "error"
 
 
 def test_character_profiles_are_composed_without_duplicates() -> None:
