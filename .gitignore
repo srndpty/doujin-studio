@@ -3,10 +3,15 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+reports/
+.coverage
 
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 data/*
 !data/.gitkeep
@@ -25,3 +30,5 @@ workflows/*.workflow_api.json
 *.pyo
 *.pyd
 *.log
+
+tmp/

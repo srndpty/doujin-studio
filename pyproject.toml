@@ -16,9 +16,79 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "coverage==7.14.2",
+    "diff-cover==10.0.0",
+    "hypothesis==6.155.6",
+    "mypy==2.1.0",
+    "pip-audit==2.10.1",
+    "pre-commit==4.6.0",
     "pytest>=8.3.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.15.18",
+    "types-pillow==10.2.0.20240822",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "--strict-config --strict-markers"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["frontend", "exports", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4", "PIE"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/app/main.py" = ["B008"]
+"tests/**/*.py" = ["B011"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["backend"]
+check_untyped_defs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+ignore_missing_imports = true
+cache_dir = "reports/mypy-cache"
+incremental = false
+sqlite_cache = false
+
+[[tool.mypy.overrides]]
+module = [
+    "backend.app.database",
+    "backend.app.generator",
+    "backend.app.image_backends",
+    "backend.app.jobs",
+    "backend.app.knowledge",
+    "backend.app.llm",
+    "backend.app.main",
+    "backend.app.story",
+]
+ignore_errors = true
+
+[tool.coverage.run]
+branch = true
+source = ["backend"]
+omit = ["backend/app/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 75
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.html]
+directory = "reports/coverage/backend-html"
+
+[tool.coverage.xml]
+output = "reports/coverage/backend.xml"

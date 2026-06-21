@@ -13,9 +13,9 @@ import httpx
 from PIL import Image, ImageDraw, ImageFont
 from websockets.asyncio.client import ClientConnection, connect
 
+from .assets import resolve_asset_path
 from .config import Settings
 from .schemas import Panel
-
 
 NO_TEXT_PROMPT_SUFFIX = "no text, no speech bubble, no watermark, no manga panel text"
 
@@ -169,21 +169,36 @@ class ComfyUIImageBackend:
                             )
                         except Exception:
                             if progress_callback:
-                                await progress_callback(0, 1, None, "WebSocket監視を継続できないため履歴を確認します")
+                                await progress_callback(
+                                    0, 1, None, "WebSocket監視を継続できないため履歴を確認します"
+                                )
                     finally:
                         await websocket.close()
-                history = await wait_for_history(client, self.base_url, prompt_id, self.timeout_seconds)
+                history = await wait_for_history(
+                    client, self.base_url, prompt_id, self.timeout_seconds
+                )
                 image_ref = find_first_image(history, prompt_id)
                 image_response = await client.get(f"{self.base_url}/view", params=image_ref)
                 image_response.raise_for_status()
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(image_response.content)
-                return ImageResult("comfyui", "done", target, "ComfyUI画像を取得しました", prompt_id=prompt_id)
+                return ImageResult(
+                    "comfyui", "done", target, "ComfyUI画像を取得しました", prompt_id=prompt_id
+                )
         except Exception as exc:
             fallback = await self.fallback.generate_panel(
-                project_id, panel, export_dir, target_path=target, progress_callback=progress_callback
+                project_id,
+                panel,
+                export_dir,
+                target_path=target,
+                progress_callback=progress_callback,
             )
-            return ImageResult("comfyui", "fallback", fallback.asset_path, f"ComfyUI生成に失敗したためstubに戻しました: {exc}")
+            return ImageResult(
+                "comfyui",
+                "fallback",
+                fallback.asset_path,
+                f"ComfyUI生成に失敗したためstubに戻しました: {exc}",
+            )
 
     async def get_status(self) -> ComfyUIStatus:
         workflow_exists = self.workflow_config.workflow_path.exists()
@@ -269,7 +284,9 @@ def load_workflow(config: ComfyUIWorkflowConfig) -> dict:
     return workflow
 
 
-def validate_workflow_nodes(config: ComfyUIWorkflowConfig, workflow: dict | None = None) -> list[str]:
+def validate_workflow_nodes(
+    config: ComfyUIWorkflowConfig, workflow: dict | None = None
+) -> list[str]:
     if workflow is None:
         if not config.workflow_path.exists():
             return []
@@ -293,7 +310,11 @@ def validate_workflow_nodes(config: ComfyUIWorkflowConfig, workflow: dict | None
         config.height_node_id,
         config.save_prefix_node_id,
     ]
-    return [node_id for node_id in required if node_id not in workflow or "inputs" not in workflow[node_id]]
+    return [
+        node_id
+        for node_id in required
+        if node_id not in workflow or "inputs" not in workflow[node_id]
+    ]
 
 
 def apply_panel_to_workflow(
@@ -303,7 +324,9 @@ def apply_panel_to_workflow(
     filename_prefix: str,
 ) -> dict:
     patched = copy.deepcopy(workflow)
-    positive_prompt = apply_text_policy(panel.generation.prompt or panel.prompt, panel.generation.text_policy)
+    positive_prompt = apply_text_policy(
+        panel.generation.prompt or panel.prompt, panel.generation.text_policy
+    )
     patched[config.positive_node_id]["inputs"]["text"] = positive_prompt
     patched[config.negative_node_id]["inputs"]["text"] = panel.generation.negative_prompt
     patched[config.seed_node_id]["inputs"]["seed"] = panel.generation.seed
@@ -315,7 +338,13 @@ def apply_panel_to_workflow(
     preset = panel.generation.workflow_preset
     if preset:
         if preset.checkpoint_node_id and preset.checkpoint_name:
-            patch_workflow_input(patched, preset.checkpoint_node_id, "ckpt_name", preset.checkpoint_name, "checkpoint")
+            patch_workflow_input(
+                patched,
+                preset.checkpoint_node_id,
+                "ckpt_name",
+                preset.checkpoint_name,
+                "checkpoint",
+            )
         if preset.vae_node_id and preset.vae_name:
             patch_workflow_input(patched, preset.vae_node_id, "vae_name", preset.vae_name, "VAE")
         if preset.sampler_node_id:
@@ -328,7 +357,9 @@ def apply_panel_to_workflow(
             }
             for input_name, value in sampler_values.items():
                 if value is not None:
-                    patch_workflow_input(patched, preset.sampler_node_id, input_name, value, "sampler")
+                    patch_workflow_input(
+                        patched, preset.sampler_node_id, input_name, value, "sampler"
+                    )
     lora_nodes: set[str] = set()
     for lora in panel.generation.loras:
         if lora.node_id in lora_nodes:
@@ -358,7 +389,6 @@ async def apply_reference_images_to_workflow(
     export_dir: Path,
     project_id: str,
 ) -> None:
-    export_root = export_dir.resolve()
     reference_nodes: set[str] = set()
     for binding in panel.generation.reference_images:
         if binding.node_id in reference_nodes:
@@ -367,11 +397,12 @@ async def apply_reference_images_to_workflow(
         node = workflow.get(binding.node_id)
         if not node or "inputs" not in node:
             raise ValueError(f"参照画像ノードがworkflowにありません: {binding.node_id}")
-        source = Path(binding.asset)
-        if not source.is_absolute():
-            source = source.resolve()
-        source = source.resolve()
-        if not source.is_relative_to(export_root) or not source.exists():
+        # 参照画像は相対アセットID（project/...形式）で保存されるため、export_dir基準で解決する。
+        try:
+            source = resolve_asset_path(binding.asset, export_dir)
+        except ValueError as exc:
+            raise ValueError(f"参照画像が見つかりません: {binding.asset}") from exc
+        if not source.exists():
             raise ValueError(f"参照画像が見つかりません: {binding.asset}")
         subfolder = f"local-doujin-studio/{project_id}/references"
         with source.open("rb") as image_file:
@@ -398,7 +429,9 @@ def apply_text_policy(prompt: str, text_policy: str) -> str:
     return f"{prompt}, {NO_TEXT_PROMPT_SUFFIX}"
 
 
-async def wait_for_history(client: httpx.AsyncClient, base_url: str, prompt_id: str, timeout_seconds: float) -> dict:
+async def wait_for_history(
+    client: httpx.AsyncClient, base_url: str, prompt_id: str, timeout_seconds: float
+) -> dict:
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     while asyncio.get_running_loop().time() < deadline:
         response = await client.get(f"{base_url}/history/{prompt_id}")
@@ -413,7 +446,9 @@ async def wait_for_history(client: httpx.AsyncClient, base_url: str, prompt_id: 
 async def open_comfyui_websocket(base_url: str, client_id: str) -> ClientConnection | None:
     websocket_url = base_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
     try:
-        return await asyncio.wait_for(connect(f"{websocket_url}/ws?clientId={client_id}"), timeout=2.0)
+        return await asyncio.wait_for(
+            connect(f"{websocket_url}/ws?clientId={client_id}"), timeout=2.0
+        )
     except Exception:
         return None
 

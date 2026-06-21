@@ -1,0 +1,5156 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Local Doujin Studio",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Api Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fonts": {
+      "get": {
+        "summary": "List Fonts",
+        "operationId": "list_fonts_api_fonts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FontsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fonts/dialogue/file": {
+      "get": {
+        "summary": "Get Dialogue Font",
+        "operationId": "get_dialogue_font_api_fonts_dialogue_file_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/comfyui/status": {
+      "get": {
+        "summary": "Comfyui Status",
+        "operationId": "comfyui_status_api_comfyui_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComfyUIStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "summary": "List Projects",
+        "operationId": "list_projects_api_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Projects Api Projects Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Project",
+        "operationId": "create_project_api_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}": {
+      "get": {
+        "summary": "Get Project",
+        "operationId": "get_project_api_projects__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/generate-name": {
+      "post": {
+        "summary": "Generate Name",
+        "operationId": "generate_name_api_projects__project_id__generate_name_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateNameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/manga-json": {
+      "put": {
+        "summary": "Update Manga Json",
+        "operationId": "update_manga_json_api_projects__project_id__manga_json_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MangaProject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/render": {
+      "post": {
+        "summary": "Render Project",
+        "operationId": "render_project_api_projects__project_id__render_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RenderRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/generate-image": {
+      "post": {
+        "summary": "Generate Panel Image",
+        "operationId": "generate_panel_image_api_projects__project_id__panels__panel_id__generate_image_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/prompt-preview": {
+      "get": {
+        "summary": "Preview Panel Prompt",
+        "operationId": "preview_panel_prompt_api_projects__project_id__panels__panel_id__prompt_preview_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/generation-jobs": {
+      "post": {
+        "summary": "Create Generation Job",
+        "operationId": "create_generation_job_api_projects__project_id__panels__panel_id__generation_jobs_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationJobCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/generation-jobs": {
+      "post": {
+        "summary": "Create Batch Generation Jobs",
+        "operationId": "create_batch_generation_jobs_api_projects__project_id__generation_jobs_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BatchGenerationJobCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchGenerationJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Generation Jobs",
+        "operationId": "list_generation_jobs_api_projects__project_id__generation_jobs_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GenerationJobResponse"
+                  },
+                  "title": "Response List Generation Jobs Api Projects  Project Id  Generation Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generation-jobs/{job_id}": {
+      "get": {
+        "summary": "Get Generation Job",
+        "operationId": "get_generation_job_api_generation_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/generation-jobs/{job_id}/cancel": {
+      "post": {
+        "summary": "Cancel Generation Job",
+        "operationId": "cancel_generation_job_api_generation_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/candidates/{candidate_id}/select": {
+      "post": {
+        "summary": "Select Panel Candidate",
+        "operationId": "select_panel_candidate_api_projects__project_id__panels__panel_id__candidates__candidate_id__select_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          },
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelPageRenderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/use-stub": {
+      "post": {
+        "summary": "Use Stub Panel Image",
+        "operationId": "use_stub_panel_image_api_projects__project_id__panels__panel_id__use_stub_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/characters/{character_id}/reference-image": {
+      "post": {
+        "summary": "Upload Character Reference",
+        "operationId": "upload_character_reference_api_projects__project_id__characters__character_id__reference_image_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "character_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Character Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterReferenceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/locations/{location_id}/reference-image": {
+      "post": {
+        "summary": "Upload Location Reference",
+        "operationId": "upload_location_reference_api_projects__project_id__locations__location_id__reference_image_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "location_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Location Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/controls/{kind}/reference-image": {
+      "post": {
+        "summary": "Upload Panel Control Reference",
+        "operationId": "upload_panel_control_reference_api_projects__project_id__panels__panel_id__controls__kind__reference_image_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "load_node_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Load Node Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/pages/{page_number}/overlays/{overlay_id}/{asset_kind}": {
+      "post": {
+        "summary": "Upload Overlay Asset",
+        "operationId": "upload_overlay_asset_api_projects__project_id__pages__page_number__overlays__overlay_id___asset_kind__post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          },
+          {
+            "name": "overlay_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Overlay Id"
+            }
+          },
+          {
+            "name": "asset_kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/pages/{page_number}/layout/suggest": {
+      "post": {
+        "summary": "Suggest Page Layout",
+        "operationId": "suggest_page_layout_api_projects__project_id__pages__page_number__layout_suggest_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LayoutSuggestRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutSuggestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/pages/{page_number}/preflight": {
+      "post": {
+        "summary": "Preflight Page Endpoint",
+        "operationId": "preflight_page_endpoint_api_projects__project_id__pages__page_number__preflight_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MangaProject"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/preflight": {
+      "post": {
+        "summary": "Preflight Project Endpoint",
+        "operationId": "preflight_project_endpoint_api_projects__project_id__preflight_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/pages/{page_number}/render": {
+      "post": {
+        "summary": "Render Page Endpoint",
+        "operationId": "render_page_endpoint_api_projects__project_id__pages__page_number__render_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageRenderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/panels/{panel_id}/render-page": {
+      "post": {
+        "summary": "Render Panel Page",
+        "operationId": "render_panel_page_api_projects__project_id__panels__panel_id__render_page_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "panel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Panel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelPageRenderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/export/cbz": {
+      "post": {
+        "summary": "Export Project Cbz",
+        "operationId": "export_project_cbz_api_projects__project_id__export_cbz_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/export/open-folder": {
+      "post": {
+        "summary": "Open Project Export Folder",
+        "operationId": "open_project_export_folder_api_projects__project_id__export_open_folder_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenExportFolderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/production-status": {
+      "get": {
+        "summary": "Get Production Status",
+        "operationId": "get_production_status_api_projects__project_id__production_status_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectProductionStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/status": {
+      "get": {
+        "summary": "Llm Status",
+        "operationId": "llm_status_api_llm_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/local-works": {
+      "get": {
+        "summary": "List Local Knowledge Works",
+        "operationId": "list_local_knowledge_works_api_knowledge_local_works_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LocalKnowledgeWorkResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Local Knowledge Works Api Knowledge Local Works Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/local-works/{work_id}/sync": {
+      "post": {
+        "summary": "Sync Local Knowledge Work",
+        "operationId": "sync_local_knowledge_work_api_knowledge_local_works__work_id__sync_post",
+        "parameters": [
+          {
+            "name": "work_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Work Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalKnowledgeSyncResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/sources/import": {
+      "post": {
+        "summary": "Import Knowledge Sources",
+        "operationId": "import_knowledge_sources_api_knowledge_sources_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/documents": {
+      "post": {
+        "summary": "Add Knowledge Document",
+        "operationId": "add_knowledge_document_api_knowledge_documents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeDocumentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeSourceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/sources": {
+      "get": {
+        "summary": "List Knowledge Sources",
+        "operationId": "list_knowledge_sources_api_knowledge_sources_get",
+        "parameters": [
+          {
+            "name": "work_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KnowledgeSourceResponse"
+                  },
+                  "title": "Response List Knowledge Sources Api Knowledge Sources Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/sources/{source_id}": {
+      "delete": {
+        "summary": "Delete Knowledge Source",
+        "operationId": "delete_knowledge_source_api_knowledge_sources__source_id__delete",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Delete Knowledge Source Api Knowledge Sources  Source Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge/search": {
+      "post": {
+        "summary": "Search Knowledge",
+        "operationId": "search_knowledge_api_knowledge_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/story-sessions": {
+      "post": {
+        "summary": "Create Story Session",
+        "operationId": "create_story_session_api_projects__project_id__story_sessions_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorySessionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorySessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Story Sessions",
+        "operationId": "list_story_sessions_api_projects__project_id__story_sessions_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StorySessionSummary"
+                  },
+                  "title": "Response List Story Sessions Api Projects  Project Id  Story Sessions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/story-sessions/{session_id}": {
+      "get": {
+        "summary": "Get Story Session",
+        "operationId": "get_story_session_api_story_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorySessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/story-sessions/{session_id}/stages/{stage}/generate": {
+      "post": {
+        "summary": "Generate Story Stage",
+        "operationId": "generate_story_stage_api_story_sessions__session_id__stages__stage__generate_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "stage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stage"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StageGenerateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorySessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/story-sessions/{session_id}/stages/{stage}": {
+      "put": {
+        "summary": "Update Story Stage",
+        "operationId": "update_story_stage_api_story_sessions__session_id__stages__stage__put",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "stage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stage"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorySessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/story-sessions/{session_id}/stages/{stage}/approve": {
+      "post": {
+        "summary": "Approve Story Stage",
+        "operationId": "approve_story_stage_api_story_sessions__session_id__stages__stage__approve_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "stage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stage"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorySessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/story-sessions/{session_id}/apply": {
+      "post": {
+        "summary": "Apply Story Session",
+        "operationId": "apply_story_session_api_story_sessions__session_id__apply_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/revisions": {
+      "get": {
+        "summary": "List Project Revisions",
+        "operationId": "list_project_revisions_api_projects__project_id__revisions_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectRevisionResponse"
+                  },
+                  "title": "Response List Project Revisions Api Projects  Project Id  Revisions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/revisions/{revision_id}/restore": {
+      "post": {
+        "summary": "Restore Project Revision",
+        "operationId": "restore_project_revision_api_projects__project_id__revisions__revision_id__restore_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Revision Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/assets/{asset_id}": {
+      "get": {
+        "summary": "Get Asset",
+        "operationId": "get_asset_api_assets__asset_id__get",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BalloonTail": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "tip": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Tip",
+            "default": [
+              0.5,
+              1.0
+            ]
+          },
+          "base": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Base",
+            "default": 0.5
+          },
+          "width": {
+            "type": "number",
+            "maximum": 0.6,
+            "minimum": 0.02,
+            "title": "Width",
+            "default": 0.16
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "BalloonTail",
+        "description": "話者方向を示す吹き出しの先端（しっぽ）。"
+      },
+      "BatchGenerationJobCreate": {
+        "properties": {
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Candidate Count",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "title": "BatchGenerationJobCreate"
+      },
+      "BatchGenerationJobResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/GenerationJobResponse"
+            },
+            "type": "array",
+            "title": "Jobs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "title": "BatchGenerationJobResponse"
+      },
+      "Character": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aliases"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": ""
+          },
+          "speech_style": {
+            "type": "string",
+            "title": "Speech Style",
+            "default": ""
+          },
+          "visual_notes": {
+            "type": "string",
+            "title": "Visual Notes",
+            "default": ""
+          },
+          "trigger_prompt": {
+            "type": "string",
+            "title": "Trigger Prompt",
+            "default": ""
+          },
+          "appearance_prompt": {
+            "type": "string",
+            "title": "Appearance Prompt",
+            "default": ""
+          },
+          "outfit_prompt": {
+            "type": "string",
+            "title": "Outfit Prompt",
+            "default": ""
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "lora_node_id": {
+            "type": "string",
+            "title": "Lora Node Id",
+            "default": ""
+          },
+          "lora_name": {
+            "type": "string",
+            "title": "Lora Name",
+            "default": ""
+          },
+          "lora_strength_model": {
+            "type": "number",
+            "maximum": 2.0,
+            "minimum": -2.0,
+            "title": "Lora Strength Model",
+            "default": 1.0
+          },
+          "lora_strength_clip": {
+            "type": "number",
+            "maximum": 2.0,
+            "minimum": -2.0,
+            "title": "Lora Strength Clip",
+            "default": 1.0
+          },
+          "reference_image_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Image Asset"
+          },
+          "reference_load_node_id": {
+            "type": "string",
+            "title": "Reference Load Node Id",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "Character"
+      },
+      "CharacterReferenceResponse": {
+        "properties": {
+          "character_id": {
+            "type": "string",
+            "title": "Character Id"
+          },
+          "asset": {
+            "type": "string",
+            "title": "Asset"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "character_id",
+          "asset",
+          "manga_json"
+        ],
+        "title": "CharacterReferenceResponse"
+      },
+      "ComfyUIStatusResponse": {
+        "properties": {
+          "backend": {
+            "type": "string",
+            "title": "Backend"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "workflow_path": {
+            "type": "string",
+            "title": "Workflow Path"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "workflow_exists": {
+            "type": "boolean",
+            "title": "Workflow Exists"
+          },
+          "workflow_valid": {
+            "type": "boolean",
+            "title": "Workflow Valid"
+          },
+          "missing_nodes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Nodes"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "backend",
+          "base_url",
+          "workflow_path",
+          "connected",
+          "workflow_exists",
+          "workflow_valid",
+          "message"
+        ],
+        "title": "ComfyUIStatusResponse"
+      },
+      "Dialogue": {
+        "properties": {
+          "speaker": {
+            "type": "string",
+            "title": "Speaker"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 400,
+            "minLength": 1,
+            "title": "Text"
+          },
+          "balloon": {
+            "type": "string",
+            "enum": [
+              "oval",
+              "cloud",
+              "burst",
+              "caption",
+              "none"
+            ],
+            "title": "Balloon",
+            "default": "oval"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "upper_left",
+              "upper_right",
+              "lower_left",
+              "lower_right",
+              "center"
+            ],
+            "title": "Position",
+            "default": "upper_right"
+          },
+          "box": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Box"
+          },
+          "vertical": {
+            "type": "boolean",
+            "title": "Vertical",
+            "default": true
+          },
+          "font_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 96.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Font Size"
+          },
+          "min_font_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 96.0,
+                "minimum": 8.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Font Size"
+          },
+          "max_lines": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Max Lines",
+            "default": 6
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BalloonTail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "speaker",
+          "text"
+        ],
+        "title": "Dialogue"
+      },
+      "ExportResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "cbz_asset": {
+            "type": "string",
+            "title": "Cbz Asset"
+          },
+          "absolute_path": {
+            "type": "string",
+            "title": "Absolute Path"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "cbz_asset",
+          "absolute_path"
+        ],
+        "title": "ExportResponse"
+      },
+      "FontInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "is_primary": {
+            "type": "boolean",
+            "title": "Is Primary",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "available"
+        ],
+        "title": "FontInfo"
+      },
+      "FontsResponse": {
+        "properties": {
+          "dialogue_font": {
+            "type": "string",
+            "title": "Dialogue Font"
+          },
+          "dialogue_font_available": {
+            "type": "boolean",
+            "title": "Dialogue Font Available"
+          },
+          "fonts": {
+            "items": {
+              "$ref": "#/components/schemas/FontInfo"
+            },
+            "type": "array",
+            "title": "Fonts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dialogue_font",
+          "dialogue_font_available",
+          "fonts"
+        ],
+        "title": "FontsResponse"
+      },
+      "GenerateNameRequest": {
+        "properties": {
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Work Name"
+          },
+          "character_a": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Character A"
+          },
+          "character_b": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Character B"
+          },
+          "situation": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Situation"
+          },
+          "ending_direction": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Ending Direction"
+          },
+          "target_pages": {
+            "type": "integer",
+            "enum": [
+              4,
+              8,
+              16
+            ],
+            "title": "Target Pages",
+            "default": 4
+          }
+        },
+        "type": "object",
+        "required": [
+          "work_name",
+          "character_a",
+          "character_b",
+          "situation",
+          "ending_direction"
+        ],
+        "title": "GenerateNameRequest"
+      },
+      "GenerationInfo": {
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "stub",
+              "comfyui"
+            ],
+            "title": "Backend",
+            "default": "stub"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "default": ""
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed",
+            "default": 1
+          },
+          "workflow_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Id"
+          },
+          "prompt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Id"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4096.0,
+                "minimum": 64.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4096.0,
+                "minimum": 64.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "fit_mode": {
+            "type": "string",
+            "enum": [
+              "cover",
+              "contain"
+            ],
+            "title": "Fit Mode",
+            "default": "cover"
+          },
+          "crop_anchor": {
+            "type": "string",
+            "enum": [
+              "center",
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ],
+            "title": "Crop Anchor",
+            "default": "center"
+          },
+          "crop_scale": {
+            "type": "number",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Crop Scale",
+            "default": 1.0
+          },
+          "crop_offset_x": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Crop Offset X",
+            "default": 0.0
+          },
+          "crop_offset_y": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Crop Offset Y",
+            "default": 0.0
+          },
+          "focal_x": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focal X"
+          },
+          "focal_y": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focal Y"
+          },
+          "text_policy": {
+            "type": "string",
+            "const": "no_text",
+            "title": "Text Policy",
+            "default": "no_text"
+          },
+          "model_notes": {
+            "type": "string",
+            "title": "Model Notes",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "queued",
+              "done",
+              "fallback",
+              "skipped",
+              "error"
+            ],
+            "title": "Status",
+            "default": "pending"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "loras": {
+            "items": {
+              "$ref": "#/components/schemas/LoRABinding"
+            },
+            "type": "array",
+            "title": "Loras"
+          },
+          "reference_images": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceImageBinding"
+            },
+            "type": "array",
+            "title": "Reference Images"
+          },
+          "workflow_preset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Preset Id"
+          },
+          "workflow_preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowPreset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GenerationInfo"
+      },
+      "GenerationJobCreate": {
+        "properties": {
+          "candidate_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Candidate Count",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "title": "GenerationJobCreate"
+      },
+      "GenerationJobResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "panel_id": {
+            "type": "string",
+            "title": "Panel Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "error",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "progress": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Progress"
+          },
+          "current": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Current"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Ids"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "panel_id",
+          "status",
+          "progress",
+          "current",
+          "total",
+          "message",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "GenerationJobResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ImageCandidate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "asset": {
+            "type": "string",
+            "title": "Asset"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "stub",
+              "comfyui"
+            ],
+            "title": "Backend"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "fallback",
+              "error"
+            ],
+            "title": "Status"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "default": ""
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "characters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Characters"
+          },
+          "loras": {
+            "items": {
+              "$ref": "#/components/schemas/LoRABinding"
+            },
+            "type": "array",
+            "title": "Loras"
+          },
+          "reference_images": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceImageBinding"
+            },
+            "type": "array",
+            "title": "Reference Images"
+          },
+          "workflow_preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowPreset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seed"
+          },
+          "prompt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "asset",
+          "backend",
+          "status",
+          "seed",
+          "created_at"
+        ],
+        "title": "ImageCandidate"
+      },
+      "KnowledgeChunkResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "usage": {
+            "type": "string",
+            "enum": [
+              "required",
+              "reference"
+            ],
+            "title": "Usage"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": ""
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "default": ""
+          },
+          "policy": {
+            "type": "string",
+            "title": "Policy",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_id",
+          "work_name",
+          "usage"
+        ],
+        "title": "KnowledgeChunkResponse"
+      },
+      "KnowledgeDocumentRequest": {
+        "properties": {
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Work Name"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Title",
+            "default": ""
+          },
+          "doc_type": {
+            "type": "string",
+            "enum": [
+              "json",
+              "markdown",
+              "txt"
+            ],
+            "title": "Doc Type",
+            "default": "txt"
+          },
+          "usage": {
+            "type": "string",
+            "enum": [
+              "required",
+              "reference"
+            ],
+            "title": "Usage",
+            "default": "reference"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "work_name",
+          "content"
+        ],
+        "title": "KnowledgeDocumentRequest"
+      },
+      "KnowledgeFile": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 2000000,
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "content"
+        ],
+        "title": "KnowledgeFile"
+      },
+      "KnowledgeImportRequest": {
+        "properties": {
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Work Name"
+          },
+          "usage": {
+            "type": "string",
+            "enum": [
+              "required",
+              "reference"
+            ],
+            "title": "Usage",
+            "default": "reference"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeFile"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "work_name",
+          "files"
+        ],
+        "title": "KnowledgeImportRequest"
+      },
+      "KnowledgeImportResponse": {
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceResponse"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "title": "KnowledgeImportResponse"
+      },
+      "KnowledgeSearchHit": {
+        "properties": {
+          "chunk": {
+            "$ref": "#/components/schemas/KnowledgeChunkResponse"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "trigram",
+              "like"
+            ],
+            "title": "Method"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk",
+          "score",
+          "method"
+        ],
+        "title": "KnowledgeSearchHit"
+      },
+      "KnowledgeSearchRequest": {
+        "properties": {
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Work Name"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "required",
+                  "reference"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "work_name",
+          "query"
+        ],
+        "title": "KnowledgeSearchRequest"
+      },
+      "KnowledgeSearchResponse": {
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSearchHit"
+            },
+            "type": "array",
+            "title": "Hits"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hits"
+        ],
+        "title": "KnowledgeSearchResponse"
+      },
+      "KnowledgeSourceResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "doc_type": {
+            "type": "string",
+            "enum": [
+              "json",
+              "markdown",
+              "txt"
+            ],
+            "title": "Doc Type"
+          },
+          "usage": {
+            "type": "string",
+            "enum": [
+              "required",
+              "reference"
+            ],
+            "title": "Usage"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "work_name",
+          "title",
+          "doc_type",
+          "usage",
+          "chunk_count",
+          "created_at"
+        ],
+        "title": "KnowledgeSourceResponse"
+      },
+      "LLMStatusResponse": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "available_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Available Models"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "base_url",
+          "model",
+          "connected",
+          "message"
+        ],
+        "title": "LLMStatusResponse"
+      },
+      "LayoutSuggestRequest": {
+        "properties": {
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family"
+          }
+        },
+        "type": "object",
+        "title": "LayoutSuggestRequest"
+      },
+      "LayoutSuggestResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "layout_family": {
+            "type": "string",
+            "title": "Layout Family"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "page",
+          "layout_family",
+          "manga_json"
+        ],
+        "title": "LayoutSuggestResponse"
+      },
+      "LoRABinding": {
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "lora_name": {
+            "type": "string",
+            "title": "Lora Name"
+          },
+          "strength_model": {
+            "type": "number",
+            "maximum": 2.0,
+            "minimum": -2.0,
+            "title": "Strength Model",
+            "default": 1.0
+          },
+          "strength_clip": {
+            "type": "number",
+            "maximum": 2.0,
+            "minimum": -2.0,
+            "title": "Strength Clip",
+            "default": 1.0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node_id",
+          "lora_name"
+        ],
+        "title": "LoRABinding"
+      },
+      "LocalKnowledgeSyncResponse": {
+        "properties": {
+          "work": {
+            "$ref": "#/components/schemas/LocalKnowledgeWorkResponse"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceResponse"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "work",
+          "sources"
+        ],
+        "title": "LocalKnowledgeSyncResponse"
+      },
+      "LocalKnowledgeWorkResponse": {
+        "properties": {
+          "work_id": {
+            "type": "string",
+            "title": "Work Id"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "work_id",
+          "work_name"
+        ],
+        "title": "LocalKnowledgeWorkResponse"
+      },
+      "LocationProfile": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "default": ""
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "reference_image_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Image Asset"
+          },
+          "reference_load_node_id": {
+            "type": "string",
+            "title": "Reference Load Node Id",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "LocationProfile"
+      },
+      "MangaProject": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name",
+            "default": ""
+          },
+          "premise": {
+            "type": "string",
+            "title": "Premise",
+            "default": ""
+          },
+          "target_pages": {
+            "type": "integer",
+            "title": "Target Pages",
+            "default": 4
+          },
+          "reading_direction": {
+            "type": "string",
+            "enum": [
+              "rtl",
+              "ltr"
+            ],
+            "title": "Reading Direction",
+            "default": "rtl"
+          },
+          "typography": {
+            "$ref": "#/components/schemas/TypographySettings"
+          },
+          "page_layout": {
+            "$ref": "#/components/schemas/PageLayoutSettings"
+          },
+          "common_positive_prompt": {
+            "type": "string",
+            "title": "Common Positive Prompt",
+            "default": ""
+          },
+          "common_negative_prompt": {
+            "type": "string",
+            "title": "Common Negative Prompt",
+            "default": ""
+          },
+          "characters": {
+            "items": {
+              "$ref": "#/components/schemas/Character"
+            },
+            "type": "array",
+            "title": "Characters"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/LocationProfile"
+            },
+            "type": "array",
+            "title": "Locations"
+          },
+          "workflow_presets": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowPreset"
+            },
+            "type": "array",
+            "title": "Workflow Presets"
+          },
+          "active_workflow_preset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Workflow Preset Id"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/Page"
+            },
+            "type": "array",
+            "title": "Pages"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "MangaProject"
+      },
+      "OpenExportFolderResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "folder_path": {
+            "type": "string",
+            "title": "Folder Path"
+          },
+          "cbz_path": {
+            "type": "string",
+            "title": "Cbz Path"
+          },
+          "cbz_exists": {
+            "type": "boolean",
+            "title": "Cbz Exists"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "folder_path",
+          "cbz_path",
+          "cbz_exists"
+        ],
+        "title": "OpenExportFolderResponse"
+      },
+      "OverlayElement": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source_panel_id": {
+            "type": "string",
+            "title": "Source Panel Id",
+            "default": ""
+          },
+          "asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset"
+          },
+          "mask_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mask Asset"
+          },
+          "box": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Box"
+          },
+          "scale": {
+            "type": "number",
+            "maximum": 4.0,
+            "minimum": 0.05,
+            "title": "Scale",
+            "default": 1.0
+          },
+          "opacity": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Opacity",
+            "default": 1.0
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "back",
+              "front"
+            ],
+            "title": "Layer",
+            "default": "front"
+          },
+          "z_index": {
+            "type": "integer",
+            "title": "Z Index",
+            "default": 0
+          },
+          "occluded_by_panel_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Occluded By Panel Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "box"
+        ],
+        "title": "OverlayElement",
+        "description": "コマ枠外へ配置する演出レイヤー（オーバーフレーム）。\n\n透過画像やマスク付き人物を、ページ座標で前面/背面に重ねる。\noccluded_by_panel_idsに挙げたコマの絵だけは手前に再描画され、\n「上のコマには隠れ、中央以降で手前へ出る」表現を実現する。"
+      },
+      "Page": {
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page"
+          },
+          "theme": {
+            "type": "string",
+            "title": "Theme"
+          },
+          "layout_template": {
+            "type": "string",
+            "title": "Layout Template"
+          },
+          "layout_family": {
+            "type": "string",
+            "title": "Layout Family",
+            "default": ""
+          },
+          "intent": {
+            "type": "string",
+            "title": "Intent",
+            "default": ""
+          },
+          "layout_locked": {
+            "type": "boolean",
+            "title": "Layout Locked",
+            "default": false
+          },
+          "reading_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reading Order"
+          },
+          "overlay_elements": {
+            "items": {
+              "$ref": "#/components/schemas/OverlayElement"
+            },
+            "type": "array",
+            "title": "Overlay Elements"
+          },
+          "panels": {
+            "items": {
+              "$ref": "#/components/schemas/Panel"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Panels"
+          },
+          "render_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "done"
+            ],
+            "title": "Render Status",
+            "default": "pending"
+          },
+          "rendered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rendered At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "page",
+          "theme",
+          "layout_template",
+          "panels"
+        ],
+        "title": "Page"
+      },
+      "PageLayoutSettings": {
+        "properties": {
+          "outer_margin": {
+            "type": "number",
+            "maximum": 0.2,
+            "minimum": 0.0,
+            "title": "Outer Margin",
+            "default": 0.04
+          },
+          "gutter": {
+            "type": "number",
+            "maximum": 0.1,
+            "minimum": 0.0,
+            "title": "Gutter",
+            "default": 0.012
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PageLayoutSettings",
+        "description": "ページ余白とコマ間余白を別々に持つ。"
+      },
+      "PageProductionStatus": {
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "incomplete",
+              "ready",
+              "complete"
+            ],
+            "title": "Status"
+          },
+          "adopted_panels": {
+            "type": "integer",
+            "title": "Adopted Panels"
+          },
+          "total_panels": {
+            "type": "integer",
+            "title": "Total Panels"
+          },
+          "rendered": {
+            "type": "boolean",
+            "title": "Rendered"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page",
+          "status",
+          "adopted_panels",
+          "total_panels",
+          "rendered"
+        ],
+        "title": "PageProductionStatus"
+      },
+      "PageRenderResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_asset": {
+            "type": "string",
+            "title": "Page Asset"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "preflight": {
+            "$ref": "#/components/schemas/PreflightResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "page",
+          "page_asset",
+          "manga_json",
+          "preflight"
+        ],
+        "title": "PageRenderResponse"
+      },
+      "Panel": {
+        "properties": {
+          "panel_id": {
+            "type": "string",
+            "title": "Panel Id"
+          },
+          "bbox": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Bbox"
+          },
+          "shot": {
+            "type": "string",
+            "title": "Shot"
+          },
+          "subject_mode": {
+            "type": "string",
+            "enum": [
+              "character_scene",
+              "reaction",
+              "prop_insert",
+              "hand_insert",
+              "background"
+            ],
+            "title": "Subject Mode",
+            "default": "character_scene"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": ""
+          },
+          "emphasis": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Emphasis",
+            "default": 2
+          },
+          "camera": {
+            "type": "string",
+            "title": "Camera",
+            "default": ""
+          },
+          "location_id": {
+            "type": "string",
+            "title": "Location Id",
+            "default": ""
+          },
+          "characters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Characters"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "default": ""
+          },
+          "image_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Asset"
+          },
+          "image_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ImageCandidate"
+            },
+            "type": "array",
+            "title": "Image Candidates"
+          },
+          "selected_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Candidate Id"
+          },
+          "control_references": {
+            "items": {
+              "$ref": "#/components/schemas/PanelControlReference"
+            },
+            "type": "array",
+            "title": "Control References"
+          },
+          "dialogue": {
+            "items": {
+              "$ref": "#/components/schemas/Dialogue"
+            },
+            "type": "array",
+            "title": "Dialogue"
+          },
+          "sfx": {
+            "items": {
+              "$ref": "#/components/schemas/Sfx"
+            },
+            "type": "array",
+            "title": "Sfx"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationInfo"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "panel_id",
+          "bbox",
+          "shot"
+        ],
+        "title": "Panel"
+      },
+      "PanelControlReference": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pose",
+              "depth",
+              "lineart",
+              "background"
+            ],
+            "title": "Kind",
+            "default": "pose"
+          },
+          "asset": {
+            "type": "string",
+            "title": "Asset"
+          },
+          "load_node_id": {
+            "type": "string",
+            "title": "Load Node Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "asset",
+          "load_node_id"
+        ],
+        "title": "PanelControlReference"
+      },
+      "PanelImageGenerationResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "panel_id": {
+            "type": "string",
+            "title": "Panel Id"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "panel_id",
+          "manga_json"
+        ],
+        "title": "PanelImageGenerationResponse"
+      },
+      "PanelPageRenderResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "panel_id": {
+            "type": "string",
+            "title": "Panel Id"
+          },
+          "page_asset": {
+            "type": "string",
+            "title": "Page Asset"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "panel_id",
+          "page_asset",
+          "manga_json"
+        ],
+        "title": "PanelPageRenderResponse"
+      },
+      "PreflightIssue": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "title": "Level"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "panel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panel Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level",
+          "code",
+          "message",
+          "page"
+        ],
+        "title": "PreflightIssue"
+      },
+      "PreflightResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Errors"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "ok"
+        ],
+        "title": "PreflightResponse"
+      },
+      "ProjectCreate": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Work Name",
+            "default": ""
+          },
+          "target_pages": {
+            "type": "integer",
+            "enum": [
+              4,
+              8,
+              16
+            ],
+            "title": "Target Pages",
+            "default": 4
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "ProjectCreate"
+      },
+      "ProjectDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "work_name",
+          "created_at",
+          "updated_at",
+          "manga_json"
+        ],
+        "title": "ProjectDetail"
+      },
+      "ProjectProductionStatus": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "incomplete",
+              "ready",
+              "complete"
+            ],
+            "title": "Status"
+          },
+          "adopted_panels": {
+            "type": "integer",
+            "title": "Adopted Panels"
+          },
+          "total_panels": {
+            "type": "integer",
+            "title": "Total Panels"
+          },
+          "rendered_pages": {
+            "type": "integer",
+            "title": "Rendered Pages"
+          },
+          "total_pages": {
+            "type": "integer",
+            "title": "Total Pages"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageProductionStatus"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "status",
+          "adopted_panels",
+          "total_panels",
+          "rendered_pages",
+          "total_pages",
+          "pages"
+        ],
+        "title": "ProjectProductionStatus"
+      },
+      "ProjectRevisionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "label",
+          "created_at"
+        ],
+        "title": "ProjectRevisionResponse"
+      },
+      "ProjectSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "work_name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProjectSummary"
+      },
+      "PromptPreviewResponse": {
+        "properties": {
+          "panel_id": {
+            "type": "string",
+            "title": "Panel Id"
+          },
+          "positive_prompt": {
+            "type": "string",
+            "title": "Positive Prompt"
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt"
+          },
+          "character_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Character Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "panel_id",
+          "positive_prompt",
+          "negative_prompt"
+        ],
+        "title": "PromptPreviewResponse"
+      },
+      "ReferenceAssetResponse": {
+        "properties": {
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "asset": {
+            "type": "string",
+            "title": "Asset"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target_id",
+          "asset",
+          "manga_json"
+        ],
+        "title": "ReferenceAssetResponse"
+      },
+      "ReferenceImageBinding": {
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "asset": {
+            "type": "string",
+            "title": "Asset"
+          },
+          "character_id": {
+            "type": "string",
+            "title": "Character Id",
+            "default": ""
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "character",
+              "location",
+              "pose",
+              "depth",
+              "lineart",
+              "background"
+            ],
+            "title": "Kind",
+            "default": "character"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node_id",
+          "asset"
+        ],
+        "title": "ReferenceImageBinding"
+      },
+      "RenderRequest": {
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "RenderRequest"
+      },
+      "RenderResponse": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "page_assets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Page Assets"
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "page_assets",
+          "manga_json"
+        ],
+        "title": "RenderResponse"
+      },
+      "Sfx": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Text"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "upper_left",
+              "upper_right",
+              "lower_left",
+              "lower_right",
+              "center"
+            ],
+            "title": "Position",
+            "default": "center"
+          },
+          "style": {
+            "type": "string",
+            "title": "Style",
+            "default": "small_handwritten"
+          },
+          "box": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 2,
+                "minItems": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Box"
+          },
+          "font_size": {
+            "type": "integer",
+            "maximum": 240.0,
+            "minimum": 12.0,
+            "title": "Font Size",
+            "default": 54
+          },
+          "rotation": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Rotation",
+            "default": 0.0
+          },
+          "color": {
+            "type": "string",
+            "title": "Color",
+            "default": "#191919"
+          },
+          "outline_color": {
+            "type": "string",
+            "title": "Outline Color",
+            "default": "#FFFFFF"
+          },
+          "outline_width": {
+            "type": "integer",
+            "maximum": 24.0,
+            "minimum": 0.0,
+            "title": "Outline Width",
+            "default": 4
+          },
+          "vertical": {
+            "type": "boolean",
+            "title": "Vertical",
+            "default": false
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "below",
+              "above"
+            ],
+            "title": "Layer",
+            "default": "above"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "Sfx"
+      },
+      "StageGenerateRequest": {
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Instruction",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "StageGenerateRequest"
+      },
+      "StageUpdateRequest": {
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "title": "StageUpdateRequest"
+      },
+      "StorySessionCreate": {
+        "properties": {
+          "work_name": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Work Name",
+            "default": ""
+          },
+          "knowledge_work_id": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Knowledge Work Id",
+            "default": ""
+          },
+          "target_pages": {
+            "type": "integer",
+            "enum": [
+              4,
+              8,
+              16
+            ],
+            "title": "Target Pages",
+            "default": 4
+          },
+          "instruction": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Instruction",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "StorySessionCreate"
+      },
+      "StorySessionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "target_pages": {
+            "type": "integer",
+            "title": "Target Pages"
+          },
+          "instruction": {
+            "type": "string",
+            "title": "Instruction"
+          },
+          "stages": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StoryStageState"
+            },
+            "type": "object",
+            "title": "Stages"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "work_name",
+          "target_pages",
+          "instruction",
+          "stages",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StorySessionResponse"
+      },
+      "StorySessionSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "work_name": {
+            "type": "string",
+            "title": "Work Name"
+          },
+          "target_pages": {
+            "type": "integer",
+            "title": "Target Pages"
+          },
+          "instruction": {
+            "type": "string",
+            "title": "Instruction"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "work_name",
+          "target_pages",
+          "instruction",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StorySessionSummary"
+      },
+      "StoryStageState": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "empty",
+              "draft",
+              "approved"
+            ],
+            "title": "Status",
+            "default": "empty"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "knowledge_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Knowledge Ids"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "title": "StoryStageState"
+      },
+      "TypographySettings": {
+        "properties": {
+          "primary_font": {
+            "type": "string",
+            "title": "Primary Font",
+            "default": "源暎アンチック"
+          },
+          "default_font_size": {
+            "type": "integer",
+            "maximum": 96.0,
+            "minimum": 10.0,
+            "title": "Default Font Size",
+            "default": 34
+          },
+          "min_font_size": {
+            "type": "integer",
+            "maximum": 96.0,
+            "minimum": 8.0,
+            "title": "Min Font Size",
+            "default": 26
+          },
+          "vertical_default": {
+            "type": "boolean",
+            "title": "Vertical Default",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TypographySettings",
+        "description": "写植の既定設定。"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkflowPreset": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "checkpoint_node_id": {
+            "type": "string",
+            "title": "Checkpoint Node Id",
+            "default": ""
+          },
+          "checkpoint_name": {
+            "type": "string",
+            "title": "Checkpoint Name",
+            "default": ""
+          },
+          "vae_node_id": {
+            "type": "string",
+            "title": "Vae Node Id",
+            "default": ""
+          },
+          "vae_name": {
+            "type": "string",
+            "title": "Vae Name",
+            "default": ""
+          },
+          "sampler_node_id": {
+            "type": "string",
+            "title": "Sampler Node Id",
+            "default": ""
+          },
+          "sampler_name": {
+            "type": "string",
+            "title": "Sampler Name",
+            "default": ""
+          },
+          "scheduler": {
+            "type": "string",
+            "title": "Scheduler",
+            "default": ""
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 200.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "cfg": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 30.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cfg"
+          },
+          "denoise": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denoise"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "WorkflowPreset"
+      }
+    }
+  }
+}

@@ -80,7 +80,9 @@ class OpenAICompatibleClient:
         except httpx.TimeoutException as exc:
             raise LLMError(f"LLM応答がタイムアウトしました: {exc}") from exc
         except httpx.HTTPStatusError as exc:
-            raise LLMError(f"LLMがエラーを返しました: {exc.response.status_code} {exc.response.text[:200]}") from exc
+            raise LLMError(
+                f"LLMがエラーを返しました: {exc.response.status_code} {exc.response.text[:200]}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"LLMへ接続できません: {exc}") from exc
         try:

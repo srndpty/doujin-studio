@@ -77,7 +77,9 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       setSources([]);
       return;
     }
-    setSources(await getJson<KnowledgeSource[]>(`/api/knowledge/sources?work_name=${encodeURIComponent(workName)}`));
+    setSources(
+      await getJson<KnowledgeSource[]>(`/api/knowledge/sources?work_name=${encodeURIComponent(workName)}`)
+    );
   }
 
   useEffect(() => {
@@ -89,7 +91,11 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       const payloadFiles = await Promise.all(
         Array.from(files).map(async (file) => ({ filename: file.name, content: await file.text() }))
       );
-      await sendJson(`/api/knowledge/sources/import`, "POST", { work_name: workName, usage, files: payloadFiles });
+      await sendJson(`/api/knowledge/sources/import`, "POST", {
+        work_name: workName,
+        usage,
+        files: payloadFiles
+      });
       setMessage(`${payloadFiles.length}件のファイルを取り込みました`);
       await refreshSources();
     });
@@ -143,7 +149,11 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       <div className="settings-grid">
         <label>
           作品名（全プロジェクト共有）
-          <input value={workName} onChange={(event) => setWorkName(event.target.value)} placeholder="作品名" />
+          <input
+            value={workName}
+            onChange={(event) => setWorkName(event.target.value)}
+            placeholder="作品名"
+          />
         </label>
         <label>
           区分
@@ -185,9 +195,16 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
         </label>
         <label>
           本文
-          <textarea value={docContent} onChange={(event) => setDocContent(event.target.value)} spellCheck={false} rows={6} />
+          <textarea
+            value={docContent}
+            onChange={(event) => setDocContent(event.target.value)}
+            spellCheck={false}
+            rows={6}
+          />
         </label>
-        <button onClick={addDocument} disabled={busy || !workName}>登録</button>
+        <button onClick={addDocument} disabled={busy || !workName}>
+          登録
+        </button>
       </details>
 
       <div className="knowledge-sources">
@@ -197,9 +214,14 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
           <article key={source.id} className={`source-card ${source.usage}`}>
             <div>
               <strong>{source.title}</strong>
-              <small>{source.doc_type} / {source.usage === "required" ? "必須" : "参考"} / {source.chunk_count}チャンク</small>
+              <small>
+                {source.doc_type} / {source.usage === "required" ? "必須" : "参考"} / {source.chunk_count}
+                チャンク
+              </small>
             </div>
-            <button onClick={() => void deleteSource(source.id)} disabled={busy}>削除</button>
+            <button onClick={() => void deleteSource(source.id)} disabled={busy}>
+              削除
+            </button>
           </article>
         ))}
       </div>
@@ -209,24 +231,35 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
         <div className="settings-grid">
           <label>
             キーワード
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="3文字以上はtrigram検索" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="3文字以上はtrigram検索"
+            />
           </label>
           <label>
             区分フィルタ
-            <select value={searchUsage} onChange={(event) => setSearchUsage(event.target.value as "" | Usage)}>
+            <select
+              value={searchUsage}
+              onChange={(event) => setSearchUsage(event.target.value as "" | Usage)}
+            >
               <option value="">すべて</option>
               <option value="required">required</option>
               <option value="reference">reference</option>
             </select>
           </label>
         </div>
-        <button onClick={search} disabled={busy || !workName || !query.trim()}>検索</button>
+        <button onClick={search} disabled={busy || !workName || !query.trim()}>
+          検索
+        </button>
         <div className="search-results">
           {hits.map((hit) => (
             <article key={hit.chunk.id} className="search-hit">
               <div className="hit-head">
                 <strong>{hit.chunk.title || hit.chunk.kind || "（無題）"}</strong>
-                <small>{hit.method} / {hit.score.toFixed(2)} / {hit.chunk.usage}</small>
+                <small>
+                  {hit.method} / {hit.score.toFixed(2)} / {hit.chunk.usage}
+                </small>
               </div>
               <p>{hit.chunk.content.slice(0, 160)}</p>
               {hit.chunk.tags.length > 0 && <small className="tags">{hit.chunk.tags.join(", ")}</small>}

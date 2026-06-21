@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import database, knowledge, story
 from backend.app.config import Settings
-from backend.app.database import StoryGenerationSessionRecord, create_session_factory
+from backend.app.database import create_session_factory
 from backend.app.llm import LLMError, OpenAICompatibleClient
 from backend.app.main import create_app
 
@@ -32,7 +32,9 @@ def make_session(tmp_path: Path):
 
 
 def create_project(client: TestClient, work_name: str = "テスト作品", target_pages: int = 4) -> str:
-    response = client.post("/api/projects", json={"title": "本", "work_name": work_name, "target_pages": target_pages})
+    response = client.post(
+        "/api/projects", json={"title": "本", "work_name": work_name, "target_pages": target_pages}
+    )
     project_id = response.json()["id"]
     client.post(
         f"/api/projects/{project_id}/generate-name",
@@ -50,6 +52,7 @@ def create_project(client: TestClient, work_name: str = "テスト作品", targe
 
 # --- 知識DBとチャンク分割 ---
 
+
 def test_markdown_txt_json_chunking() -> None:
     md = knowledge.chunk_document("markdown", "# 見出しA\n本文A\n## 見出しB\n本文B", "doc")
     assert [chunk.title for chunk in md] == ["見出しA", "見出しB"]
@@ -59,7 +62,15 @@ def test_markdown_txt_json_chunking() -> None:
     assert len(txt) == 3
 
     payload = json.dumps(
-        [{"kind": "character", "title": "春香", "content": "明るい少女", "policy": "口調維持", "tags": ["主役"]}],
+        [
+            {
+                "kind": "character",
+                "title": "春香",
+                "content": "明るい少女",
+                "policy": "口調維持",
+                "tags": ["主役"],
+            }
+        ],
         ensure_ascii=False,
     )
     js = knowledge.chunk_document("json", payload, "設定")
@@ -84,7 +95,9 @@ def test_trigram_and_short_like_search(tmp_path: Path) -> None:
         title="キャラ",
         doc_type="json",
         usage="reference",
-        content=json.dumps({"kind": "character", "title": "凛", "content": "クールな後輩"}, ensure_ascii=False),
+        content=json.dumps(
+            {"kind": "character", "title": "凛", "content": "クールな後輩"}, ensure_ascii=False
+        ),
     )
 
     hits = knowledge.search_chunks(session, work_name="作品X", query="音楽室", limit=5)
@@ -99,7 +112,7 @@ def test_trigram_and_short_like_search(tmp_path: Path) -> None:
 
 def test_required_always_in_context_reference_by_relevance(tmp_path: Path) -> None:
     session = make_session(tmp_path)
-    required = knowledge.import_source(
+    knowledge.import_source(
         session,
         work_name="作品Y",
         title="必須設定",
@@ -124,6 +137,7 @@ def test_required_always_in_context_reference_by_relevance(tmp_path: Path) -> No
 
 
 # --- スタブによる段階生成フロー ---
+
 
 def run_full_stub_flow(client: TestClient, project_id: str, target_pages: int) -> str:
     session = client.post(
@@ -222,22 +236,29 @@ def test_required_knowledge_recorded_in_stage(tmp_path: Path) -> None:
                 "title": "必須",
                 "doc_type": "json",
                 "usage": "required",
-                "content": json.dumps({"kind": "character", "title": "ヒロイン", "content": "芯の強い少女"}, ensure_ascii=False),
+                "content": json.dumps(
+                    {"kind": "character", "title": "ヒロイン", "content": "芯の強い少女"},
+                    ensure_ascii=False,
+                ),
             },
         )
         project_id = create_project(client, work_name="知識作品")
         session = client.post(
-            f"/api/projects/{project_id}/story-sessions", json={"work_name": "知識作品", "target_pages": 4}
+            f"/api/projects/{project_id}/story-sessions",
+            json={"work_name": "知識作品", "target_pages": 4},
         ).json()
         session_id = session["id"]
         generated = client.post(f"/api/story-sessions/{session_id}/stages/brief/generate").json()
-        assert generated["stages"]["brief"]["knowledge_ids"], "required知識がステージに記録されること"
+        assert generated["stages"]["brief"]["knowledge_ids"], (
+            "required知識がステージに記録されること"
+        )
         # スタブはcharacter種別の知識を登場人物へ反映する。
         names = [c["name"] for c in generated["stages"]["brief"]["data"]["characters"]]
         assert "ヒロイン" in names
 
 
 # --- 知識API ---
+
 
 def test_knowledge_import_and_search_api(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
@@ -265,7 +286,9 @@ def test_knowledge_import_and_search_api(tmp_path: Path) -> None:
 
         delete = client.delete(f"/api/knowledge/sources/{sources[0]['id']}")
         assert delete.status_code == 200
-        assert len(client.get("/api/knowledge/sources", params={"work_name": "API作品"}).json()) == 1
+        assert (
+            len(client.get("/api/knowledge/sources", params={"work_name": "API作品"}).json()) == 1
+        )
 
 
 def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
@@ -329,9 +352,7 @@ def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
             json={"knowledge_work_id": "local-work", "target_pages": 4},
         )
         assert second.status_code == 200
-        sources = client.get(
-            "/api/knowledge/sources", params={"work_name": "ローカル作品"}
-        ).json()
+        sources = client.get("/api/knowledge/sources", params={"work_name": "ローカル作品"}).json()
         assert len(sources) == 1
         search = client.post(
             "/api/knowledge/search",
@@ -381,8 +402,14 @@ def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
             json={"knowledge_work_id": "cg", "target_pages": 4, "instruction": "美嘉の日常"},
         ).json()["id"]
         for stage in ["brief", "plot", "pages", "script"]:
-            assert client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate").status_code == 200
-            assert client.post(f"/api/story-sessions/{session_id}/stages/{stage}/approve").status_code == 200
+            assert (
+                client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate").status_code
+                == 200
+            )
+            assert (
+                client.post(f"/api/story-sessions/{session_id}/stages/{stage}/approve").status_code
+                == 200
+            )
 
         manga = client.post(f"/api/story-sessions/{session_id}/apply").json()["manga_json"]
 
@@ -409,7 +436,10 @@ def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
 def test_validate_stage_accepts_bare_pages_array() -> None:
     # LLMが {"pages":[...]} のラッパーを省いて配列だけ返すケースを吸収する。
     bare = [
-        {"page": 1, "panels": [{"shot": "wide", "dialogue": [{"speaker": "美嘉", "text": "やったね"}]}]}
+        {
+            "page": 1,
+            "panels": [{"shot": "wide", "dialogue": [{"speaker": "美嘉", "text": "やったね"}]}],
+        }
     ]
     validated = story.validate_stage_data("script", bare, target_pages=1)
     assert validated["pages"][0]["page"] == 1
@@ -417,7 +447,9 @@ def test_validate_stage_accepts_bare_pages_array() -> None:
 
 
 def test_script_needs_repaneling_detects_all_single_panel() -> None:
-    one = lambda: {"shot": "wide", "dialogue": []}
+    def one() -> dict:
+        return {"shot": "wide", "dialogue": []}
+
     all_single = {"pages": [{"page": 1, "panels": [one()]}, {"page": 2, "panels": [one()]}]}
     assert story.script_needs_repaneling(all_single) is True
     # 1ページでも複数コマがあれば退化ではない。
@@ -459,7 +491,12 @@ def test_silent_panel_keeps_characters() -> None:
     base = MangaProject(
         title="本",
         characters=[
-            Character(id="mika", display_name="城ヶ崎美嘉", aliases=["美嘉"], trigger_prompt="jougasaki mika"),
+            Character(
+                id="mika",
+                display_name="城ヶ崎美嘉",
+                aliases=["美嘉"],
+                trigger_prompt="jougasaki mika",
+            ),
         ],
     )
     script = ScriptStage.model_validate(

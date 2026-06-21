@@ -4,12 +4,11 @@ import json
 import math
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
-from . import knowledge
+from . import knowledge, layout_engine
 from .config import Settings
 from .database import (
     KnowledgeChunkRecord,
@@ -18,7 +17,12 @@ from .database import (
     StoryGenerationSessionRecord,
     now_utc,
 )
-from .generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT, LAYOUTS
+from .generator import (
+    DEFAULT_COMMON_NEGATIVE_PROMPT,
+    DEFAULT_COMMON_POSITIVE_PROMPT,
+    LAYOUTS,
+    compute_generation_size,
+)
 from .llm import LLMError, StubLLMClient, extract_json_object
 from .schemas import (
     BriefCharacter,
@@ -75,9 +79,16 @@ class StoryError(Exception):
 
 # --- ステージ状態の入出力 ---
 
+
 def empty_stages() -> dict:
     return {
-        name: {"status": "empty", "data": None, "knowledge_ids": [], "error": None, "updated_at": None}
+        name: {
+            "status": "empty",
+            "data": None,
+            "knowledge_ids": [],
+            "error": None,
+            "updated_at": None,
+        }
         for name in STAGE_ORDER
     }
 
@@ -140,6 +151,7 @@ def create_session(
 
 
 # --- 知識コンテキスト ---
+
 
 @dataclass
 class KnowledgeContext:
@@ -222,6 +234,7 @@ def stage_query(stage: str, record: StoryGenerationSessionRecord, stages: dict) 
 
 # --- 段階生成 ---
 
+
 def require_previous_approved(stage: str, stages: dict) -> None:
     index = STAGE_ORDER.index(stage)
     if index == 0:
@@ -247,11 +260,15 @@ def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:
     if stage == "pages":
         assert isinstance(validated, PagesStage)
         if len(validated.pages) != target_pages:
-            raise ValueError(f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）")
+            raise ValueError(
+                f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）"
+            )
     if stage == "script":
         assert isinstance(validated, ScriptStage)
         if len(validated.pages) != target_pages:
-            raise ValueError(f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）")
+            raise ValueError(
+                f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）"
+            )
     return validated.model_dump()
 
 
@@ -333,6 +350,7 @@ def approve_stage(
 
 # --- LLM経由の生成 ---
 
+
 def stage_instruction_text(stage: str) -> str:
     return {
         "brief": (
@@ -400,10 +418,13 @@ def build_stage_messages(
         parts.append("# 承認済みの前段階\n" + "\n\n".join(upstream))
     if retry_error:
         parts.append(
-            "前回の出力は検証に失敗しました。次のエラーを修正し、有効なJSONのみを再出力してください:\n" + retry_error
+            "前回の出力は検証に失敗しました。次のエラーを修正し、有効なJSONのみを再出力してください:\n"
+            + retry_error
         )
     if directive:
-        parts.append("前回の出力には次の問題がありました。修正して再出力してください:\n" + directive)
+        parts.append(
+            "前回の出力には次の問題がありました。修正して再出力してください:\n" + directive
+        )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n\n".join(parts)},
@@ -433,7 +454,9 @@ async def generate_llm_stage(
     instruction: str,
 ) -> dict:
     async def attempt(directive: str | None) -> dict:
-        messages = build_stage_messages(record, stages, stage, context, instruction, directive=directive)
+        messages = build_stage_messages(
+            record, stages, stage, context, instruction, directive=directive
+        )
         last_error: Exception | None = None
         for retry in range(2):
             content = await llm.chat(messages, want_json=True)
@@ -445,8 +468,13 @@ async def generate_llm_stage(
                 if retry == 0:
                     # Pydantic検証失敗時はエラー内容付きで1回だけ修正要求する。
                     messages = build_stage_messages(
-                        record, stages, stage, context, instruction,
-                        retry_error=str(exc), directive=directive,
+                        record,
+                        stages,
+                        stage,
+                        context,
+                        instruction,
+                        retry_error=str(exc),
+                        directive=directive,
                     )
                 else:
                     raise
@@ -464,12 +492,16 @@ async def generate_llm_stage(
 
 # --- スタブ生成 ---
 
+
 def stub_character_names(session: Session, work_name: str) -> list[str]:
     names: list[str] = []
     if work_name:
         chunks = (
             session.query(KnowledgeChunkRecord)
-            .filter(KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.kind == "character")
+            .filter(
+                KnowledgeChunkRecord.work_name == work_name,
+                KnowledgeChunkRecord.kind == "character",
+            )
             .all()
         )
         for chunk in chunks:
@@ -489,7 +521,9 @@ def generate_stub_stage(
     if stage == "brief":
         names = stub_character_names(session, record.work_name) or ["主役", "相方"]
         required = knowledge.get_required_chunks(session, record.work_name)
-        canon = [f"{chunk.title or chunk.kind or '設定'}を守る" for chunk in required] or ["原作の雰囲気を保つ"]
+        canon = [f"{chunk.title or chunk.kind or '設定'}を守る" for chunk in required] or [
+            "原作の雰囲気を保つ"
+        ]
         brief = BriefStage(
             synopsis=(record.instruction or f"{work_name}を舞台にした{target}ページの短編。"),
             tone="原作準拠で軽妙",
@@ -510,7 +544,9 @@ def generate_stub_stage(
             ten="転換: 予想外の出来事で空気が変わる。",
             ketsu="結末: 指定の方向で余韻を残して締める。",
             beats=[f"ビート{index + 1}" for index in range(max(target // 2, 2))],
-            character_arcs=[CharacterArc(name=c.get("name", "主役"), arc="心情が一歩動く") for c in characters],
+            character_arcs=[
+                CharacterArc(name=c.get("name", "主役"), arc="心情が一歩動く") for c in characters
+            ],
         )
         return plot.model_dump()
     if stage == "pages":
@@ -527,7 +563,9 @@ def generate_stub_stage(
                     purpose=f"{beat}を描く",
                     setting="基本の舞台",
                     characters=names[: 2 if page_number % 2 else 1],
-                    hook=f"{page_number + 1}ページへ引く" if page_number < target else "オチで締める",
+                    hook=f"{page_number + 1}ページへ引く"
+                    if page_number < target
+                    else "オチで締める",
                 )
             )
         return PagesStage(pages=outlines).model_dump()
@@ -551,11 +589,17 @@ def generate_stub_stage(
                             f"anime style, {outline.get('purpose', 'scene')}, "
                             f"{'close up expressive face' if panel_index % 2 else 'establishing shot'}"
                         ),
-                        "characters": [speaker] if panel_index == panel_count - 1 else list(characters),
-                        "dialogue": [{"speaker": speaker, "text": f"{outline.get('purpose', '場面')}…"}]
+                        "characters": [speaker]
+                        if panel_index == panel_count - 1
+                        else list(characters),
+                        "dialogue": [
+                            {"speaker": speaker, "text": f"{outline.get('purpose', '場面')}…"}
+                        ]
                         if panel_index != panel_count - 1
                         else [],
-                        "sfx": ["しーん"] if panel_index == panel_count - 1 and page_number % 2 else [],
+                        "sfx": ["しーん"]
+                        if panel_index == panel_count - 1 and page_number % 2
+                        else [],
                     }
                 )
             script_pages.append({"page": page_number, "panels": panels})
@@ -564,6 +608,7 @@ def generate_stub_stage(
 
 
 # --- Manga JSON変換と適用 ---
+
 
 def distribute_rows(panel_count: int, max_cols: int = 3) -> list[int]:
     """コマ数を1行あたり最大max_colsで均等な行構成へ分配する。"""
@@ -575,7 +620,7 @@ def distribute_rows(panel_count: int, max_cols: int = 3) -> list[int]:
 
 
 def grid_layout(
-    panel_count: int, margin: float = 0.05, gap: float = 0.02
+    panel_count: int, margin: float = 0.04, gap: float = 0.012
 ) -> list[tuple[float, float, float, float]]:
     """任意コマ数を行グリッドのbboxへ自動配置する（1〜4以外のフォールバック）。"""
     rows = distribute_rows(panel_count)
@@ -709,13 +754,23 @@ def script_to_manga(
     common_negative = base.common_negative_prompt or DEFAULT_COMMON_NEGATIVE_PROMPT
     page_characters = page_characters or {}
 
+    rtl = base.reading_direction == "rtl"
+    total_pages = len(script.pages)
+    previous_family: str | None = None
     pages: list[Page] = []
-    for script_page in script.pages:
+    for page_index, script_page in enumerate(script.pages):
         panel_count = len(script_page.panels)
-        layout = select_layout(panel_count, script_page.layout)
+        family = layout_engine.choose_family(
+            script_page.layout, page_index, total_pages, panel_count, previous_family
+        )
+        previous_family = family
+        layout = layout_engine.build_page_layout(panel_count, family, base.page_layout, rtl=rtl)
         panels: list[Panel] = []
         for index, script_panel in enumerate(script_page.panels):
             panel_id = f"p{script_page.page:02d}_{index + 1:02d}"
+            role = layout_engine.derive_role(
+                index, panel_count, page_index, total_pages, bool(script_panel.dialogue)
+            )
             # コマ明記の登場人物 + 台詞話者を統合し、無ければページ構成の登場人物で補う。
             names: list[str] = list(script_panel.characters)
             for line in script_panel.dialogue:
@@ -723,7 +778,9 @@ def script_to_manga(
                     names.append(line.speaker)
             character_ids = resolve_character_ids(names, base)
             if not character_ids:
-                character_ids = resolve_character_ids(page_characters.get(script_page.page, []), base)
+                character_ids = resolve_character_ids(
+                    page_characters.get(script_page.page, []), base
+                )
             dialogues = []
             for dialogue_index, line in enumerate(script_panel.dialogue):
                 speaker = match_character_id(line.speaker, base.characters) or line.speaker
@@ -732,24 +789,33 @@ def script_to_manga(
                         speaker=speaker,
                         text=line.text[:120] if line.text else "…",
                         position="upper_right" if dialogue_index % 2 == 0 else "upper_left",
+                        vertical=base.typography.vertical_default,
                     )
                 )
+            panel_bbox = layout[index]
+            gen_w, gen_h = compute_generation_size(panel_bbox)
             panels.append(
                 Panel(
                     panel_id=panel_id,
-                    bbox=layout[index],
+                    bbox=panel_bbox,
                     shot=script_panel.shot or "コマ",
+                    role=role,
+                    emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
                     characters=character_ids,
                     prompt=script_panel.visual_prompt,
                     dialogue=dialogues,
-                    sfx=[Sfx(text=item[:40], position="center") for item in script_panel.sfx if item],
+                    sfx=[
+                        Sfx(text=item[:40], position="center") for item in script_panel.sfx if item
+                    ],
                     generation=GenerationInfo(
                         backend="stub",
                         prompt=script_panel.visual_prompt,
                         negative_prompt=common_negative,
                         seed=script_page.page * 100 + index + 1,
+                        width=gen_w,
+                        height=gen_h,
                         status="pending",
                     ),
                 )
@@ -759,6 +825,8 @@ def script_to_manga(
                 page=script_page.page,
                 theme=f"{script_page.page}ページ",
                 layout_template=f"count_{panel_count}",
+                layout_family=family,
+                reading_order=[panel.panel_id for panel in panels],
                 panels=panels,
             )
         )
@@ -768,6 +836,9 @@ def script_to_manga(
         work_name=base.work_name,
         premise=base.premise,
         target_pages=len(pages),
+        reading_direction=base.reading_direction,
+        typography=base.typography.model_copy(deep=True),
+        page_layout=base.page_layout.model_copy(deep=True),
         common_positive_prompt=common_positive,
         common_negative_prompt=common_negative,
         characters=base.characters,
@@ -778,7 +849,9 @@ def script_to_manga(
     )
 
 
-def save_revision(session: Session, project_id: str, manga_json: str, label: str) -> ProjectRevisionRecord:
+def save_revision(
+    session: Session, project_id: str, manga_json: str, label: str
+) -> ProjectRevisionRecord:
     revision = ProjectRevisionRecord(
         id=str(uuid.uuid4()),
         project_id=project_id,
@@ -814,7 +887,9 @@ def apply_session(
         if outline.get("page")
     }
     # 適用前のManga JSONをリビジョン保存する。
-    save_revision(session, project.id, project.manga_json, f"ストーリー適用前 ({now_utc().isoformat()})")
+    save_revision(
+        session, project.id, project.manga_json, f"ストーリー適用前 ({now_utc().isoformat()})"
+    )
     manga = script_to_manga(script, base, page_characters)
     project.manga_json = manga.model_dump_json()
     project.updated_at = now_utc()
@@ -822,7 +897,9 @@ def apply_session(
     return manga
 
 
-def restore_revision(session: Session, project: ProjectRecord, revision: ProjectRevisionRecord) -> MangaProject:
+def restore_revision(
+    session: Session, project: ProjectRecord, revision: ProjectRevisionRecord
+) -> MangaProject:
     # 復元時も現在状態を新しいリビジョンとして保存する。
     save_revision(session, project.id, project.manga_json, f"復元前 ({now_utc().isoformat()})")
     project.manga_json = revision.manga_json
