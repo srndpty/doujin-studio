@@ -1451,6 +1451,11 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     try:
 
         def set_running(panel, page) -> None:
+            # 復旧した旧形式jobは未設定を許してここで所有権を取得する。新jobがすでに
+            # 所有している場合、遅延した旧Taskはpanelを更新してはならない。
+            if panel.generation.active_job_id not in {None, job.id}:
+                raise JobOwnershipLostError()
+            panel.generation.active_job_id = job.id
             panel.generation.status = "running"
             panel.generation.message = "画像候補を生成中です"
 
@@ -1550,11 +1555,15 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             )
 
             def add_candidate_to_latest(
-                latest: MangaProject, new_candidate: ImageCandidate = candidate
+                latest: MangaProject,
+                new_candidate: ImageCandidate = candidate,
+                is_last_candidate: bool = candidate_index == job.candidate_count - 1,
             ) -> bool:
                 target_panel, target_page = find_panel_and_page(latest, job.panel_id)
                 if target_panel is None:
                     raise RuntimeError("コマが見つかりません")
+                if target_panel.generation.active_job_id != job.id:
+                    raise JobOwnershipLostError()
                 latest_hash = generation_input_hash(
                     latest, target_panel, app.state.settings.export_dir
                 )
@@ -1572,6 +1581,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                         mark_page_dirty(target_page)
                     target_panel.generation.status = "pending"
                     target_panel.generation.prompt_id = None
+                    target_panel.generation.active_job_id = None
                     target_panel.generation.message = (
                         "生成中に入力が変更されたため、古い候補を破棄しました"
                     )
@@ -1592,6 +1602,8 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                         mark_page_dirty(target_page)
                 else:
                     selection_state["allow"] = False
+                if is_last_candidate:
+                    target_panel.generation.active_job_id = None
                 return True
 
             # 候補ごとに最新を読み直してマージし、生成中のユーザー編集を残す。
@@ -1646,6 +1658,16 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             prompt_id=None,
             message="生成入力が変わったため古い候補を破棄しました",
         )
+    except JobOwnershipLostError:
+        # 同epochの後続jobがpanel所有権を取得済み。旧jobは後続状態へ触れず終端化する。
+        cleanup_published_assets(app, job.project_id, candidate_assets)
+        manager.update(
+            job,
+            status="cancelled",
+            node=None,
+            prompt_id=None,
+            message="後続の生成が開始されたため古い生成を破棄しました",
+        )
     except Exception as exc:
         # backendがPNGを書いた後に例外化した場合の未参照PNGを回収する。
         cleanup_published_assets(app, job.project_id, candidate_assets)
@@ -1673,17 +1695,23 @@ def mark_panel_job_stopped(
             if record is None or record.generation_epoch != job.epoch:
                 return
             current = find_panel_optional(parse_manga_json(record.manga_json), job.panel_id)
+            if current is None or current.generation.active_job_id not in {None, job.id}:
+                return
             if (
-                current is not None
-                and current.generation.status == desired_status
+                current.generation.status == desired_status
                 and current.generation.message == message
+                and current.generation.active_job_id is None
             ):
                 return
     except Exception:
         return
 
     def mutate(panel, page) -> None:
+        if panel.generation.active_job_id not in {None, job.id}:
+            return
         panel.generation.status = desired_status
+        panel.generation.prompt_id = None
+        panel.generation.active_job_id = None
         panel.generation.message = message
 
     try:
@@ -1888,6 +1916,10 @@ class RenderInputChangedError(Exception):
 
 
 class GenerationInputMismatchError(Exception):
+    pass
+
+
+class JobOwnershipLostError(Exception):
     pass
 
 

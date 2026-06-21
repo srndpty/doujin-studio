@@ -16,7 +16,7 @@ from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.orm import Session, sessionmaker
 
 from .assets import normalize_manga_assets
-from .database import ProjectRecord, ProjectRevisionRecord, now_utc
+from .database import GenerationJobRecord, ProjectRecord, ProjectRevisionRecord, now_utc
 from .schemas import MangaProject, Page
 
 T = TypeVar("T")
@@ -59,6 +59,7 @@ def reset_inflight_generation_state(manga: MangaProject) -> None:
             if panel.generation.status in {"queued", "running"}:
                 panel.generation.status = "pending"
                 panel.generation.prompt_id = None
+                panel.generation.active_job_id = None
                 panel.generation.message = "作品構成の更新により前の生成を中断しました"
 
 
@@ -109,8 +110,11 @@ class ProjectMutationService:
                     raise ProjectConflictError()
                 base = record.revision
                 manga = parse_manga(record.manga_json)
+                before = manga.model_dump_json()
                 result = mutate(manga)
                 normalize_manga_assets(manga, self.export_dir)
+                if manga.model_dump_json() == before:
+                    return result, manga, base
                 outcome = session.execute(
                     sqlalchemy_update(ProjectRecord)
                     .where(ProjectRecord.id == project_id, ProjectRecord.revision == base)
@@ -154,6 +158,7 @@ class ProjectMutationService:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
                 raise ProjectConflictError()
+            new_epoch = record.generation_epoch + 1 if increment_epoch else record.generation_epoch
             outcome = session.execute(
                 sqlalchemy_update(ProjectRecord)
                 .where(
@@ -176,6 +181,21 @@ class ProjectMutationService:
             if outcome.rowcount != 1:
                 session.rollback()
                 raise ProjectConflictError()
+            if increment_epoch:
+                session.execute(
+                    sqlalchemy_update(GenerationJobRecord)
+                    .where(
+                        GenerationJobRecord.project_id == project_id,
+                        GenerationJobRecord.epoch < new_epoch,
+                        GenerationJobRecord.status.in_(["queued", "running"]),
+                    )
+                    .values(
+                        status="cancelled",
+                        prompt_id=None,
+                        message="作品構成の更新により前の生成を中断しました",
+                        updated_at=now_utc(),
+                    )
+                )
             session.commit()
         return replacement, expected_revision + 1
 
@@ -194,6 +214,7 @@ class ProjectMutationService:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
                 raise ProjectConflictError()
+            new_epoch = record.generation_epoch + 1
             previous_json = record.manga_json
             replacement = build_replacement(session, parse_manga(previous_json))
             reset_inflight_generation_state(replacement)
@@ -216,6 +237,20 @@ class ProjectMutationService:
             if outcome.rowcount != 1:
                 session.rollback()
                 raise ProjectConflictError()
+            session.execute(
+                sqlalchemy_update(GenerationJobRecord)
+                .where(
+                    GenerationJobRecord.project_id == project_id,
+                    GenerationJobRecord.epoch < new_epoch,
+                    GenerationJobRecord.status.in_(["queued", "running"]),
+                )
+                .values(
+                    status="cancelled",
+                    prompt_id=None,
+                    message="作品構成の更新により前の生成を中断しました",
+                    updated_at=now_utc(),
+                )
+            )
             session.add(
                 ProjectRevisionRecord(
                     id=str(uuid.uuid4()),

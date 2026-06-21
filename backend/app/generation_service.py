@@ -95,6 +95,7 @@ class GenerationService:
                     ):
                         panel.generation.status = "pending"
                         panel.generation.prompt_id = None
+                        panel.generation.active_job_id = None
                         panel.generation.message = "対応する生成ジョブがないため状態を復旧しました"
                 active_panels = active_db
                 if active_panels and not skip_active:
@@ -105,18 +106,18 @@ class GenerationService:
                 jobs: list[GenerationJob] = []
                 for panel_id in panel_ids:
                     panel = panels[panel_id]
-                    panel.generation.status = "queued"
-                    panel.generation.message = message
-                    jobs.append(
-                        GenerationJob(
-                            project_id=project_id,
-                            panel_id=panel_id,
-                            candidate_count=candidate_count,
-                            epoch=record.generation_epoch,
-                            status="queued",
-                            message=message,
-                        )
+                    job = GenerationJob(
+                        project_id=project_id,
+                        panel_id=panel_id,
+                        candidate_count=candidate_count,
+                        epoch=record.generation_epoch,
+                        status="queued",
+                        message=message,
                     )
+                    panel.generation.status = "queued"
+                    panel.generation.active_job_id = job.id
+                    panel.generation.message = message
+                    jobs.append(job)
                 normalize_manga_assets(manga, self.export_dir)
                 outcome = session.execute(
                     sqlalchemy_update(ProjectRecord)

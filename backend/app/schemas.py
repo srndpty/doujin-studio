@@ -151,6 +151,8 @@ class GenerationInfo(BaseModel):
     seed: int = Field(default=1, ge=0)
     workflow_id: str | None = None
     prompt_id: str | None = None
+    # panel表示を更新する権利を持つactive job。遅延した旧jobの後着更新を拒否する。
+    active_job_id: str | None = None
     width: int | None = Field(default=None, ge=64, le=4096)
     height: int | None = Field(default=None, ge=64, le=4096)
     fit_mode: Literal["cover", "contain"] = "cover"

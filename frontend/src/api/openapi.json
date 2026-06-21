@@ -2825,6 +2825,17 @@
             ],
             "title": "Prompt Id"
           },
+          "active_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Job Id"
+          },
           "width": {
             "anyOf": [
               {

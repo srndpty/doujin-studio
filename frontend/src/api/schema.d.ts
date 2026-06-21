@@ -1084,6 +1084,8 @@ export interface components {
             workflow_id?: string | null;
             /** Prompt Id */
             prompt_id?: string | null;
+            /** Active Job Id */
+            active_job_id?: string | null;
             /** Width */
             width?: number | null;
             /** Height */

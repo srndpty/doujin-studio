@@ -819,6 +819,33 @@ def test_cancel_before_task_start_releases_panel_and_allows_regeneration(
         assert retried.status_code == 200
 
 
+def test_delayed_old_job_stop_does_not_overwrite_new_job_panel(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        manager = app.state.job_manager
+
+        old_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧ジョブ")[0]
+        manager.register_in_memory(old_job)
+        assert manager.cancel(old_job)
+        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+
+        new_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "新ジョブ")[0]
+        manager.register_in_memory(new_job)
+        before = client.get(f"/api/projects/{project_id}").json()
+        panel_before = before["manga_json"]["pages"][0]["panels"][0]
+        assert panel_before["generation"]["status"] == "queued"
+        assert panel_before["generation"]["active_job_id"] == new_job.id
+
+        # 旧TaskのCancelledError処理が後着しても、新jobの所有状態は変更しない。
+        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+        after = client.get(f"/api/projects/{project_id}").json()
+        panel_after = after["manga_json"]["pages"][0]["panels"][0]
+        assert after["revision"] == before["revision"]
+        assert panel_after["generation"]["status"] == "queued"
+        assert panel_after["generation"]["active_job_id"] == new_job.id
+
+
 def test_cancelled_job_stays_cancelled_when_backend_raises_late(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1460,6 +1487,51 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         new_job = app.state.job_manager.get(retried.json()["id"])
         assert new_job is not None
         assert new_job.epoch == before_epoch + 1
+
+
+def test_structure_change_cancels_db_only_job_for_deleted_panel(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        epoch = app.state.mutation.current_epoch(project_id)
+        timestamp = db_now_utc()
+        job_id = "db-only-deleted-panel"
+        with app.state.SessionLocal() as session:
+            session.add(
+                GenerationJobRecord(
+                    id=job_id,
+                    project_id=project_id,
+                    panel_id="p01_01",
+                    candidate_count=1,
+                    status="running",
+                    progress=10,
+                    message="メモリ未登録の旧ジョブ",
+                    epoch=epoch,
+                    candidate_ids_json="[]",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+            )
+            session.commit()
+
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"] = [panel for panel in page["panels"] if panel["panel_id"] != "p01_01"]
+        page["reading_order"] = [
+            panel_id for panel_id in page["reading_order"] if panel_id != "p01_01"
+        ]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+
+        with app.state.SessionLocal() as session:
+            persisted = session.get(GenerationJobRecord, job_id)
+            assert persisted is not None
+            assert persisted.status == "cancelled"
+            assert persisted.prompt_id is None
+            assert persisted.message == "作品構成の更新により前の生成を中断しました"
 
 
 def test_legacy_done_page_without_render_asset_migrates_to_pending(tmp_path: Path) -> None:
