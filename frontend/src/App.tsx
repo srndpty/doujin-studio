@@ -1353,9 +1353,7 @@ export function App() {
               busy={busy}
               setMessage={setMessage}
               onAssetVersionBump={() => setAssetVersion((value) => value + 1)}
-              onChange={(manga, revision) =>
-                applyProjectMutation(selected.id, manga, revision)
-              }
+              onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
               onSave={async (manga) => {
                 if (!selected) return;
                 const projectId = selected.id;

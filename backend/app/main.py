@@ -1863,11 +1863,12 @@ def publish_immutable_asset(staged: Path, target: Path) -> bool:
     try:
         os.link(staged, target)
         created = True
-    except FileExistsError:
-        if hashlib.sha256(staged.read_bytes()).digest() != hashlib.sha256(
-            target.read_bytes()
-        ).digest():
-            raise RuntimeError(f"不変アセットの内容が一致しません: {target.name}")
+    except FileExistsError as exc:
+        if (
+            hashlib.sha256(staged.read_bytes()).digest()
+            != hashlib.sha256(target.read_bytes()).digest()
+        ):
+            raise RuntimeError(f"不変アセットの内容が一致しません: {target.name}") from exc
         created = False
     finally:
         staged.unlink(missing_ok=True)

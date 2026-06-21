@@ -89,5 +89,9 @@ Alembic 全面導入の前段として、最低限:
   候補保存前に不一致なら古い候補を破棄する。
 - CBZ確定は開始時revision/epochの厳密CASとし、production statusは不変PNGの実在・名前・
   現在の描画hash一致まで検証する。
+- 複数候補ジョブが入力変更でstaleになった場合は、そのjob自身が保存した候補だけをロール
+  バックする。不変PNG/CBZ公開は上書き禁止と所有権記録を行い、競合cleanupを分離する。
+- フロントの非同期project更新は選択中project IDと一致する場合だけManga JSON・revision・
+  production status・job history・page assetへ反映する。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。また、不変assetは
   current JSON・project revision・候補・CBZ manifestの参照を走査する猶予付きGCが必要。

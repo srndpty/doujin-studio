@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 from zipfile import ZipFile
@@ -389,9 +391,7 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
                         target_panel.prompt = "NEW_PROMPT"
                         target_panel.generation.prompt = "NEW_PROMPT"
 
-                    main_module.update_panel_in_latest(
-                        app, project_id_, "p01_01", change_input
-                    )
+                    main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "old input result")
@@ -1000,6 +1000,35 @@ def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkey
         latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
         assert any(issue["code"] == "invalid_reading_order" for issue in latest_preflight["errors"])
         assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+
+def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        barrier = threading.Barrier(2)
+        original_export = main_module.export_confirmed_cbz
+
+        def synchronized_export(*args, **kwargs):
+            path = original_export(*args, **kwargs)
+            barrier.wait(timeout=10)
+            return path
+
+        monkeypatch.setattr(main_module, "export_confirmed_cbz", synchronized_export)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda _: client.post(f"/api/projects/{project_id}/export/cbz"),
+                    range(2),
+                )
+            )
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        successful = next(response.json() for response in responses if response.status_code == 200)
+        cbz_path = tmp_path / "exports" / successful["cbz_asset"]
+        assert cbz_path.is_file()
+        for page in successful["manga_json"]["pages"]:
+            assert (tmp_path / "exports" / page["render_asset"]).is_file()
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert all(page["rendered"] for page in status["pages"])
 
 
 def test_production_status_detects_missing_render_asset(tmp_path: Path) -> None:
