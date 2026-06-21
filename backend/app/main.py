@@ -292,14 +292,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "全体生成ジョブを登録しました",
                     )[0]
                     manager.start(job, run_generation_job(request.app, job))
-                await await_job(request.app, job)
+                ensure_generation_succeeded(await await_job(request.app, job))
 
         latest = load_project_record(request, project_id)
         snapshot = parse_manga_json(latest.manga_json)
+        published_by_request: dict[Path, bool] = {}
         page_assets, warnings = render_snapshot_pages(
-            project_id, snapshot, settings.export_dir, latest.revision
+            project_id,
+            snapshot,
+            settings.export_dir,
+            latest.revision,
+            ownership=published_by_request,
         )
-        manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+        try:
+            manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+        except Exception:
+            cleanup_published_assets(request.app, project_id, published_by_request)
+            raise
         return RenderResponse(
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
@@ -328,7 +337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app, project_id, [panel_id], candidate_count, "画像生成ジョブを登録しました"
         )[0]
         manager.start(job, run_generation_job(request.app, job))
-        await await_job(request.app, job)
+        ensure_generation_succeeded(await await_job(request.app, job))
         latest = load_project_record(request, project_id)
         return PanelImageGenerationResponse(
             project_id=project_id,
@@ -887,13 +896,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 expected_epoch=record.generation_epoch,
             )
         except Exception:
-            # 入力競合で409になった古いCBZをopen-folderの候補へ残さない。
-            if published_by_request.get(cbz_path, False):
-                cbz_path.unlink(missing_ok=True)
-            referenced = current_render_asset_paths(request.app, project_id)
-            for page_asset in page_assets:
-                if published_by_request.get(page_asset, False) and page_asset not in referenced:
-                    page_asset.unlink(missing_ok=True)
+            cleanup_published_assets(request.app, project_id, published_by_request)
             raise
         return ExportResponse(
             project_id=project_id,
@@ -1262,6 +1265,15 @@ async def await_job(app: FastAPI, job: GenerationJob) -> GenerationJob:
         # run_generation_jobは例外を内部で握って状態に反映するため、ここでは伝播させない。
         await asyncio.gather(task, return_exceptions=True)
     return manager.get(job.id) or job
+
+
+def ensure_generation_succeeded(job: GenerationJob) -> None:
+    """同期完了を要求するendpointでは失敗・キャンセルを成功レスポンスにしない。"""
+    if job.status == "done":
+        return
+    if job.status == "cancelled":
+        raise HTTPException(status_code=409, detail=job.message)
+    raise HTTPException(status_code=502, detail=job.message)
 
 
 async def cancel_project_jobs_before_epoch(app: FastAPI, project_id: str, new_epoch: int) -> None:
@@ -1875,21 +1887,51 @@ def publish_immutable_asset(staged: Path, target: Path) -> bool:
     return created
 
 
-def current_render_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
+def referenced_project_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
     with app.state.SessionLocal() as session:
         record = session.get(ProjectRecord, project_id)
         if record is None:
             return set()
-        manga = parse_manga_json(record.manga_json)
+        raw_documents = [record.manga_json]
+        raw_documents.extend(
+            manga_json
+            for (manga_json,) in session.query(ProjectRevisionRecord.manga_json)
+            .filter(ProjectRevisionRecord.project_id == project_id)
+            .all()
+        )
     paths: set[Path] = set()
-    for page in manga.pages:
-        if not page.render_asset:
-            continue
+    for raw in raw_documents:
         try:
-            paths.add(resolve_asset_path(page.render_asset, app.state.settings.export_dir))
-        except ValueError:
+            document = json.loads(raw)
+        except json.JSONDecodeError:
             continue
+        for value in iter_json_strings(document):
+            try:
+                path = resolve_asset_path(value, app.state.settings.export_dir)
+            except ValueError:
+                continue
+            if path.is_file():
+                paths.add(path)
     return paths
+
+
+def iter_json_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from iter_json_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_json_strings(child)
+
+
+def cleanup_published_assets(app: FastAPI, project_id: str, ownership: dict[Path, bool]) -> None:
+    """この要求が作成し、current/historyのどちらからも未参照な成果物だけ回収する。"""
+    referenced = referenced_project_asset_paths(app, project_id)
+    for path, created_by_request in ownership.items():
+        if created_by_request and path not in referenced:
+            path.unlink(missing_ok=True)
 
 
 def commit_rendered_pages(
@@ -1952,18 +1994,24 @@ def render_and_commit_page(
     snapshot_revision: int,
     page_number: int,
 ) -> tuple[Path, list[str], MangaProject, int]:
+    published_by_request: dict[Path, bool] = {}
     asset, warnings = render_snapshot_page(
         project_id,
         snapshot,
         page_number,
         app.state.settings.export_dir,
         snapshot_revision,
+        ownership=published_by_request,
     )
     # 対象ページだけを確定するため、snapshotを対象ページへ絞ったCAS用projectにする。
     page = next(item for item in snapshot.pages if item.page == page_number)
     commit_snapshot = snapshot.model_copy(deep=True)
     commit_snapshot.pages = [page.model_copy(deep=True)]
-    manga, revision = commit_rendered_pages(app, project_id, commit_snapshot, [asset])
+    try:
+        manga, revision = commit_rendered_pages(app, project_id, commit_snapshot, [asset])
+    except Exception:
+        cleanup_published_assets(app, project_id, published_by_request)
+        raise
     return asset, warnings, manga, revision
 
 

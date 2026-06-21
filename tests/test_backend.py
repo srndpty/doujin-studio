@@ -174,10 +174,27 @@ def test_comfyui_missing_workflow_is_error_not_silent_stub(tmp_path: Path) -> No
     with make_client(tmp_path, image_backend="comfyui") as client:
         project_id = create_generated_project(client)
         response = client.post(f"/api/projects/{project_id}/render")
-        assert response.status_code == 200
-        first_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        assert response.status_code == 502
+        project = client.get(f"/api/projects/{project_id}").json()
+        first_panel = project["manga_json"]["pages"][0]["panels"][0]
         assert first_panel["generation"]["status"] == "error"
         assert first_panel["image_asset"] is None
+        assert all(page["render_status"] == "pending" for page in project["manga_json"]["pages"])
+        assert not list((tmp_path / "exports" / project_id / "pages").glob("*.png"))
+
+
+def test_generate_image_returns_502_when_backend_fails(tmp_path: Path) -> None:
+    with make_client(tmp_path, image_backend="comfyui") as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 502
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        assert panel["generation"]["status"] == "error"
 
 
 def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
@@ -850,6 +867,56 @@ def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, mo
         )
     assert canonical.read_bytes() == b"old-page"
     assert not list((export_dir / "project" / ".render-staging").glob("revision-*"))
+
+
+def test_page_render_conflict_cleans_its_unreferenced_png(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "commit_rendered_pages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                HTTPException(status_code=409, detail="描画競合")
+            ),
+        )
+        response = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert response.status_code == 409
+        assert not list((tmp_path / "exports" / project_id / "pages").glob("page_001.*.png"))
+
+
+def test_render_cleanup_preserves_asset_referenced_by_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        snapshot = MangaProject.model_validate(detail["manga_json"])
+        ownership: dict[Path, bool] = {}
+        asset, _warnings = main_module.render_snapshot_page(
+            project_id,
+            snapshot,
+            1,
+            app.state.settings.export_dir,
+            detail["revision"],
+            ownership=ownership,
+        )
+        snapshot.pages[0].render_status = "done"
+        snapshot.pages[0].render_hash = main_module.page_render_hash(snapshot, snapshot.pages[0])
+        snapshot.pages[0].render_asset = main_module.asset_to_id(
+            asset, app.state.settings.export_dir
+        )
+        with app.state.SessionLocal() as session:
+            session.add(
+                ProjectRevisionRecord(
+                    id="history-render",
+                    project_id=project_id,
+                    label="描画履歴",
+                    manga_json=snapshot.model_dump_json(),
+                    created_at=db_now_utc(),
+                )
+            )
+            session.commit()
+        main_module.cleanup_published_assets(app, project_id, ownership)
+        assert asset.is_file()
 
 
 def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> None:

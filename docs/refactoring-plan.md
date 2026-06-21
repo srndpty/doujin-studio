@@ -93,5 +93,8 @@ Alembic 全面導入の前段として、最低限:
   バックする。不変PNG/CBZ公開は上書き禁止と所有権記録を行い、競合cleanupを分離する。
 - フロントの非同期project更新は選択中project IDと一致する場合だけManga JSON・revision・
   production status・job history・page assetへ反映する。
+- 同期生成endpointはterminal jobが`done`でなければ409/502を返し、ページ描画を確定しない。
+  render競合時の即時cleanupは要求所有権を持ち、current JSONとproject revisionのいずれからも
+  未参照な成果物だけを対象にする。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。また、不変assetは
   current JSON・project revision・候補・CBZ manifestの参照を走査する猶予付きGCが必要。
