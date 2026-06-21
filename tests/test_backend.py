@@ -784,6 +784,79 @@ def test_job_manager_cancels_running_task() -> None:
     asyncio.run(scenario())
 
 
+def test_cancel_before_task_start_releases_panel_and_allows_regeneration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manager = client.app.state.job_manager
+
+        def do_not_start(job, coroutine) -> None:
+            coroutine.close()
+
+        monkeypatch.setattr(manager, "start", do_not_start)
+        created = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert created.status_code == 200
+        cancelled = client.post(f"/api/generation-jobs/{created.json()['id']}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        detail = client.get(f"/api/projects/{project_id}").json()
+        panel = detail["manga_json"]["pages"][0]["panels"][0]
+        assert panel["generation"]["status"] == "skipped"
+        revision_after_cancel = detail["revision"]
+        cancelled_job = manager.get(created.json()["id"])
+        assert cancelled_job is not None
+        main_module.mark_panel_job_stopped(client.app, cancelled_job, "生成をキャンセルしました")
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == revision_after_cancel
+
+        retried = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert retried.status_code == 200
+
+
+def test_cancelled_job_stays_cancelled_when_backend_raises_late(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        started = threading.Event()
+
+        class LateFailingBackend:
+            async def generate_panel(self, *args, **kwargs):
+                started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError as exc:
+                    raise RuntimeError("キャンセル後の遅延例外") from exc
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: LateFailingBackend()
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                client.post,
+                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                json={"candidate_count": 1},
+            )
+            assert started.wait(timeout=10)
+            jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+            cancelled = client.post(f"/api/generation-jobs/{jobs[0]['id']}/cancel")
+            generated = future.result(timeout=10)
+        assert cancelled.json()["status"] == "cancelled"
+        assert generated.status_code == 409
+        persisted = client.get(f"/api/projects/{project_id}/generation-jobs").json()[0]
+        assert persisted["status"] == "cancelled"
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        assert panel["generation"]["status"] == "skipped"
+
+
 def test_shutdown_marks_running_job_error_not_queued(tmp_path: Path) -> None:
     # 正常shutdown時、ComfyUI投入済みかもしれないrunningジョブをqueuedで残すと
     # 次回起動で二重投入される。errorにしてprompt_idもクリアすることを確認する。

@@ -497,6 +497,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompt_id = job.prompt_id
         if not manager.cancel(job):
             return to_job_response(job)
+        # Taskが一度も実行されずCancelledError handlerへ入らない場合も、panelを必ず解放する。
+        mark_panel_job_stopped(request.app, job, "生成をキャンセルしました")
         # 遷移できたときだけリモート停止とパネル状態更新を行う。
         # HTTP停止だけ別スレッドへ逃がし、JobManager操作はイベントループ側で完結させる。
         remote = await asyncio.to_thread(
@@ -1350,6 +1352,7 @@ async def cancel_project_jobs_before_epoch(app: FastAPI, project_id: str, new_ep
         prompt_id = item.prompt_id
         if not manager.cancel(item):
             continue
+        mark_panel_job_stopped(app, item, "生成をキャンセルしました")
         cancelled_jobs.append(item)
         remote_cancels.append(
             asyncio.to_thread(stop_comfyui_generation, app.state.settings, prompt_id)
@@ -1646,6 +1649,9 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
     except Exception as exc:
         # backendがPNGを書いた後に例外化した場合の未参照PNGを回収する。
         cleanup_published_assets(app, job.project_id, candidate_assets)
+        if job.status == "cancelled":
+            mark_panel_job_stopped(app, job, "生成をキャンセルしました")
+            return
         mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
         manager.update(
             job,
@@ -1659,8 +1665,25 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
 def mark_panel_job_stopped(
     app: FastAPI, job: GenerationJob, message: str, error: bool = False
 ) -> None:
+    desired_status = "error" if error else "skipped"
+    # API側とTask側の両方から呼ばれるため、同一状態ならCAS更新自体を省略する。
+    try:
+        with app.state.SessionLocal() as session:
+            record = session.get(ProjectRecord, job.project_id)
+            if record is None or record.generation_epoch != job.epoch:
+                return
+            current = find_panel_optional(parse_manga_json(record.manga_json), job.panel_id)
+            if (
+                current is not None
+                and current.generation.status == desired_status
+                and current.generation.message == message
+            ):
+                return
+    except Exception:
+        return
+
     def mutate(panel, page) -> None:
-        panel.generation.status = "error" if error else "skipped"
+        panel.generation.status = desired_status
         panel.generation.message = message
 
     try:

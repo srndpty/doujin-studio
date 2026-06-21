@@ -96,5 +96,7 @@ Alembic 全面導入の前段として、最低限:
 - 同期生成endpointはterminal jobが`done`でなければ409/502を返し、ページ描画を確定しない。
   render競合時の即時cleanupは要求所有権を持ち、current JSONとproject revisionのいずれからも
   未参照な成果物だけを対象にする。
+- cancel APIはTask開始有無に依存せずpanelを`skipped`へ解放し、terminal jobは後続の遅延例外で
+  別terminal状態へ遷移させない。panel停止更新はAPI/Task双方から呼べる冪等処理とする。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。また、不変assetは
   current JSON・project revision・候補・CBZ manifestの参照を走査する猶予付きGCが必要。

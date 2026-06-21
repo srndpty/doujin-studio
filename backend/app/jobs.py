@@ -224,6 +224,15 @@ class JobManager:
         self.events.pop(job_id, None)
 
     def update(self, job: GenerationJob, **changes) -> None:
+        next_status = changes.get("status")
+        # terminal状態は単調に保つ。遅延したbackend応答・例外でcancelledをerrorへ、
+        # doneをcancelledへ上書きさせない。同じterminal状態のmessage更新は許可する。
+        if (
+            job.status in TERMINAL_JOB_STATUSES
+            and next_status is not None
+            and next_status != job.status
+        ):
+            return
         for key, value in changes.items():
             setattr(job, key, value)
         job.updated_at = utc_now()
