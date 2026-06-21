@@ -114,6 +114,7 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
         cbz_path = tmp_path / "exports" / cbz_asset
         assert cbz_path.exists()
         assert cbz_path.name.startswith("テスト本-")
+        assert "-r" in cbz_path.name
         assert cbz_path.name.endswith(".cbz")
         assert Path(response.json()["absolute_path"]) == cbz_path.resolve()
         with ZipFile(cbz_path) as archive:
@@ -123,6 +124,9 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
                 "page_003.png",
                 "page_004.png",
             ]
+        second = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert second.status_code == 200
+        assert second.json()["cbz_asset"] != cbz_asset
         assert response.json()["warnings"] == []
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["status"] == "complete"
@@ -851,6 +855,55 @@ def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
         assert manga_b.pages[0].render_asset.endswith(asset_b.name)
 
 
+def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        manga["pages"][0]["overlay_elements"] = [
+            {"id": "same", "source_panel_id": "p01_01", "box": [0.1, 0.1, 0.3, 0.3]}
+        ]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+
+        def upload(color: str):
+            buffer = io.BytesIO()
+            Image.new("RGBA", (16, 16), color).save(buffer, format="PNG")
+            return client.post(
+                f"/api/projects/{project_id}/pages/1/overlays/same/asset",
+                content=buffer.getvalue(),
+                headers={"Content-Type": "image/png"},
+            )
+
+        red = upload("red").json()
+        old_snapshot = MangaProject.model_validate(red["manga_json"])
+        old_asset, _ = main_module.render_snapshot_page(
+            project_id, old_snapshot, 1, app.state.settings.export_dir, red["revision"]
+        )
+        green = upload("green").json()
+        assert red["asset"] != green["asset"]
+
+        with pytest.raises(HTTPException) as conflict:
+            main_module.commit_rendered_pages(
+                app,
+                project_id,
+                old_snapshot.model_copy(update={"pages": [old_snapshot.pages[0]]}),
+                [old_asset],
+            )
+        assert conflict.value.status_code == 409
+        current = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert current["render_status"] == "pending"
+
+        rendered = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert rendered.status_code == 200
+        rendered_page = rendered.json()["manga_json"]["pages"][0]
+        assert rendered_page["render_status"] == "done"
+        assert green["asset"] in json.dumps(rendered_page, ensure_ascii=False)
+
+
 def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
@@ -863,6 +916,21 @@ def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
             client.post(f"/api/projects/{project_id}/export/cbz")
         pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
         assert all(page["render_status"] == "pending" for page in pages)
+
+
+def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "commit_rendered_pages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                HTTPException(status_code=409, detail="描画入力競合")
+            ),
+        )
+        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert response.status_code == 409
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
 
 
 def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
@@ -1019,6 +1087,57 @@ def test_stale_structural_replace_does_not_cancel_active_job(tmp_path: Path) -> 
         )
         assert response.status_code == 409
         assert app.state.job_manager.get(job.id).status == "queued"
+
+
+def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧構成ジョブ")[0]
+        app.state.job_manager.register_in_memory(job)
+        app.state.job_manager.update(job, status="running", prompt_id="old-prompt")
+        stopped: list[str | None] = []
+        monkeypatch.setattr(
+            main_module,
+            "stop_comfyui_generation",
+            lambda settings, prompt_id: stopped.append(prompt_id) or "interrupted",
+        )
+        detail = client.get(f"/api/projects/{project_id}").json()
+        before_epoch = app.state.mutation.current_epoch(project_id)
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"][0], page["panels"][1] = page["panels"][1], page["panels"][0]
+        page["reading_order"] = [panel["panel_id"] for panel in page["panels"]]
+        for panel in page["panels"]:
+            panel["generation"]["status"] = "pending"
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+        assert app.state.mutation.current_epoch(project_id) == before_epoch + 1
+        assert app.state.job_manager.get(job.id).status == "cancelled"
+        assert stopped == ["old-prompt"]
+
+
+def test_legacy_done_page_without_render_asset_migrates_to_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        with app.state.SessionLocal() as session:
+            record = session.get(ProjectRecord, project_id)
+            manga = json.loads(record.manga_json)
+            manga["pages"][0]["render_status"] = "done"
+            manga["pages"][0]["rendered_at"] = db_now_utc().isoformat()
+            manga["pages"][0].pop("render_asset", None)
+            manga["pages"][0].pop("render_hash", None)
+            record.manga_json = json.dumps(manga, ensure_ascii=False)
+            session.commit()
+        page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page["render_status"] == "pending"
+        assert page["render_asset"] is None
+        assert page["render_hash"] is None
 
 
 def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeypatch) -> None:

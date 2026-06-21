@@ -82,4 +82,7 @@ Alembic 全面導入の前段として、最低限:
   CAS条件へ固定し、active panelのSQLite部分一意インデックスでも二重登録を防ぐ。
 - PNGは描画入力hash付きの不変assetへ出力し、描画成功後に最新入力hashが一致した場合だけ
   `done`をCAS確定する。CBZも全ページ描画・アーカイブ成功後まで状態を進めない。
+- overlay画像/maskも正規化PNGの内容hash付き不変assetへ保存する。全文JSON保存でページ・
+  コマ順・読み順が変わった場合は`generation_epoch`を進め、旧ComfyUI promptも停止する。
+- 旧形式の`done`ページ（`render_asset`/`render_hash`なし）は初回ロード時に`pending`へ移行する。
 - 残課題: フロントの三者マージUI（現状は409時に最新採用reload）。

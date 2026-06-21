@@ -56,7 +56,12 @@ from .mutation import (
     mark_page_dirty,
 )
 from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
-from .renderer import export_cbz, render_project_page, render_project_pages
+from .renderer import (
+    export_cbz,
+    render_project_page,
+    render_project_pages,
+    sanitize_export_filename,
+)
 from .schemas import (
     BatchGenerationJobCreate,
     BatchGenerationJobResponse,
@@ -232,7 +237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return to_detail(load_project_record(request, project_id))
 
     @app.put("/api/projects/{project_id}/manga-json", response_model=ProjectDetail)
-    def update_manga_json(
+    async def update_manga_json(
         project_id: str,
         payload: MangaProject,
         request: Request,
@@ -242,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # サーバの最新内容（生成候補・他編集）を巻き戻せてしまうため許可しない。
         record = load_project_record(request, project_id)
         previous = parse_manga_json(record.manga_json)
+        structure_changed = structure_signature(payload) != structure_signature(previous)
         # 描画入力が変わったページだけ未レンダリングに戻す（メタ変更では戻さない）。
         invalidate_changed_pages(payload, previous)
         replace_project(
@@ -249,7 +255,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             project_id,
             payload,
             expected_revision=revision,
+            increment_epoch=structure_changed,
         )
+        if structure_changed:
+            new_epoch = request.app.state.mutation.current_epoch(project_id)
+            await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
         return to_detail(
             load_project_record(request, project_id), request.app.state.settings.export_dir
         )
@@ -670,14 +680,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="ページが見つかりません")
         if not any(item.id == overlay_id for item in page0.overlay_elements):
             raise HTTPException(status_code=404, detail="overlayが見つかりません")
-        suffix = "mask" if asset_kind == "mask" else "image"
-        target = (
+        asset_dir = (
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "overlays"
-            / stable_asset_name(overlay_id, "overlay", suffix)
+            / stable_asset_name(overlay_id, "overlay").removesuffix(".png")
         )
-        await save_request_image(request, target, preserve_alpha=asset_kind == "asset")
+        target = await save_content_addressed_request_image(
+            request,
+            asset_dir,
+            asset_kind,
+            preserve_alpha=asset_kind == "asset",
+        )
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
 
         def mutate(manga: MangaProject) -> None:
@@ -852,7 +866,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cbz_path = export_confirmed_cbz(
             project_id, snapshot.title, page_assets, settings.export_dir, record.revision
         )
-        manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+        try:
+            manga, revision = commit_rendered_pages(request.app, project_id, snapshot, page_assets)
+        except Exception:
+            # 入力競合で409になった古いCBZをopen-folderの候補へ残さない。
+            cbz_path.unlink(missing_ok=True)
+            raise
         return ExportResponse(
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
@@ -1219,19 +1238,36 @@ async def await_job(app: FastAPI, job: GenerationJob) -> GenerationJob:
 
 
 async def cancel_project_jobs_before_epoch(app: FastAPI, project_id: str, new_epoch: int) -> None:
-    """構造置換成功後、旧epochのTaskだけをイベントループ上で停止する。"""
+    """構造置換成功後、旧epochのローカルTaskとComfyUI promptだけを停止する。"""
     manager: JobManager = app.state.job_manager
     cancelled_tasks: list[asyncio.Task] = []
+    remote_cancels = []
+    cancelled_jobs: list[GenerationJob] = []
     for item in list(manager.jobs.values()):
-        if (
+        if not (
             item.project_id == project_id
             and item.epoch < new_epoch
             and item.status not in TERMINAL_JOB_STATUSES
-            and manager.cancel(item)
         ):
-            task = manager.tasks.get(item.id)
-            if task is not None:
-                cancelled_tasks.append(task)
+            continue
+        prompt_id = item.prompt_id
+        if not manager.cancel(item):
+            continue
+        cancelled_jobs.append(item)
+        remote_cancels.append(
+            asyncio.to_thread(stop_comfyui_generation, app.state.settings, prompt_id)
+        )
+        task = manager.tasks.get(item.id)
+        if task is not None:
+            cancelled_tasks.append(task)
+    if remote_cancels:
+        results = await asyncio.gather(*remote_cancels, return_exceptions=True)
+        for job, result in zip(cancelled_jobs, results, strict=True):
+            if result == "failed" or isinstance(result, Exception):
+                manager.update(
+                    job,
+                    message="作品構成変更により停止しましたが、ComfyUI側の停止に失敗しました",
+                )
     if cancelled_tasks:
         await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
@@ -1520,7 +1556,9 @@ def build_production_status(project_id: str, manga: MangaProject) -> ProjectProd
                 candidate.id == panel.selected_candidate_id for candidate in panel.image_candidates
             )
         )
-        rendered = page.render_status == "done"
+        rendered = (
+            page.render_status == "done" and bool(page.render_asset) and bool(page.render_hash)
+        )
         blockers: list[str] = []
         for panel in page.panels:
             if not panel.selected_candidate_id:
@@ -1571,11 +1609,34 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         if record is None:
             raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         session.expunge(record)
+    manga = parse_manga_json(record.manga_json)
+    if migrate_legacy_render_state(manga):
+        # 旧形式のdoneを安全側へ戻す。CAS競合時は最新へ同じ移行を再適用する。
+        run_mutation(
+            request.app.state.mutation,
+            project_id,
+            migrate_legacy_render_state,
+        )
+        with request.app.state.SessionLocal() as session:
+            record = session.get(ProjectRecord, project_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+            session.expunge(record)
         manga = parse_manga_json(record.manga_json)
-        record.manga_json = normalize_manga_assets(
-            manga, request.app.state.settings.export_dir
-        ).model_dump_json()
-        return record
+    record.manga_json = normalize_manga_assets(
+        manga, request.app.state.settings.export_dir
+    ).model_dump_json()
+    return record
+
+
+def migrate_legacy_render_state(manga: MangaProject) -> bool:
+    """hash付きrender assetを持たない旧doneページをpendingへ移行する。"""
+    changed = False
+    for page in manga.pages:
+        if page.render_status == "done" and (not page.render_asset or not page.render_hash):
+            mark_page_dirty(page)
+            changed = True
+    return changed
 
 
 class RenderInputChangedError(Exception):
@@ -1647,7 +1708,14 @@ def export_confirmed_cbz(
     staging = export_dir / project_id / ".cbz-staging" / f"revision-{revision}-{uuid.uuid4().hex}"
     try:
         staged = export_cbz(project_id, title, page_assets, export_dir, output_dir=staging)
-        target = export_dir / project_id / staged.name
+        manifest_hash = hashlib.sha256(
+            "\n".join(asset.name for asset in sorted(page_assets)).encode("utf-8")
+        ).hexdigest()[:16]
+        target = (
+            export_dir
+            / project_id
+            / f"{sanitize_export_filename(title)}-r{revision}-{manifest_hash}.cbz"
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         staged.replace(target)
         return target
@@ -1761,6 +1829,26 @@ async def save_request_image(request: Request, target: Path, preserve_alpha: boo
     temporary.replace(target)
 
 
+async def save_content_addressed_request_image(
+    request: Request,
+    asset_dir: Path,
+    asset_kind: str,
+    *,
+    preserve_alpha: bool = False,
+) -> Path:
+    """正規化済みPNGの内容hashを持つ不変assetとして保存する。"""
+    temporary = asset_dir / f".{asset_kind}-{uuid.uuid4().hex}.png"
+    await save_request_image(request, temporary, preserve_alpha=preserve_alpha)
+    digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+    target = asset_dir / f"{asset_kind}-{digest}.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        temporary.unlink(missing_ok=True)
+    else:
+        temporary.replace(target)
+    return target
+
+
 def parse_manga_json(raw: str) -> MangaProject:
     try:
         return MangaProject.model_validate(json.loads(raw))
@@ -1820,6 +1908,18 @@ def page_render_signature(manga: MangaProject, page) -> str:
         ],
     }
     return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def structure_signature(manga: MangaProject) -> tuple:
+    """生成ジョブの意味論を変えるページ・コマ構造だけを比較する。"""
+    return tuple(
+        (
+            page.page,
+            tuple(panel.panel_id for panel in page.panels),
+            tuple(page.reading_order),
+        )
+        for page in manga.pages
+    )
 
 
 def page_render_hash(manga: MangaProject, page) -> str:
