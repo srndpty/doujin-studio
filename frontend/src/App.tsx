@@ -169,6 +169,11 @@ type Project = {
   manga_json: MangaProject;
 };
 
+// ProjectRecordを変更するAPIの共通応答。manga_jsonとrevisionを必ず含み、
+// applyMutatedManga()で一律反映する（DRY化・revision同期漏れ防止）。
+type MangaMutationResult = { manga_json: MangaProject; revision: number };
+type PageMutationResult = MangaMutationResult & { page_asset: string };
+
 type TaskProgress = {
   label: string;
   current: number;
@@ -393,6 +398,13 @@ export function App() {
     }
   }
 
+  // 入力中の内容を消さず、サーバの最新revisionだけ取り込む（生成/キャンセル/失敗後など、
+  // manga_jsonを伴わない経路でselected.revisionが古いまま残るのを防ぐ）。
+  async function syncSelectedRevision(projectId: string) {
+    const latest = await api.get<Project>(`/api/projects/${projectId}`);
+    setSelected((prev) => (prev && prev.id === projectId ? { ...prev, revision: latest.revision } : prev));
+  }
+
   // 更新APIの応答(manga_json + revision)をselectedへ反映する。
   // revisionを必ず同期し、サーバ側でrevisionが進んだ後の保存が誤って409にならないようにする。
   function applyMutatedManga(mangaJson: MangaProject, revision?: number) {
@@ -455,11 +467,9 @@ export function App() {
       const job = await createAndWaitForGenerationJob(projectId, currentPanel.panel_id);
       if (job.status !== "done") throw new Error(job.message);
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
-      const pageResponse = await api.post<{
-        page_asset: string;
-        manga_json: MangaProject;
-        revision: number;
-      }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const pageResponse = await api.post<PageMutationResult>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       applyMutatedManga(pageResponse.manga_json, pageResponse.revision);
       setPageAssets((assets) => {
         const next = [...assets];
@@ -582,11 +592,9 @@ export function App() {
         current: index,
         total: project.manga_json.pages.length
       });
-      const response = await api.post<{
-        page_asset: string;
-        manga_json: MangaProject;
-        revision: number;
-      }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
+      const response = await api.post<PageMutationResult>(
+        `/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`
+      );
       latestManga = response.manga_json;
       latestRevision = response.revision;
       nextAssets[page.page - 1] = response.page_asset;
@@ -619,6 +627,9 @@ export function App() {
     } finally {
       setActiveJobIds([]);
       await refreshJobHistory(projectId);
+      // ジョブ登録・生成・失敗・キャンセルでサーバ側revisionが進むため、最新へ同期する
+      // （この後の通常保存が古いrevisionで誤って409にならないように）。
+      await syncSelectedRevision(projectId);
     }
   }
 
@@ -747,11 +758,9 @@ export function App() {
   async function selectCandidate(candidateId: string) {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
-      const response = await api.post<{
-        page_asset: string;
-        manga_json: MangaProject;
-        revision: number;
-      }>(`/api/projects/${selected.id}/panels/${currentPanel.panel_id}/candidates/${candidateId}/select`);
+      const response = await api.post<PageMutationResult>(
+        `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/candidates/${candidateId}/select`
+      );
       applyMutatedManga(response.manga_json, response.revision);
       setPageAssets((assets) => {
         const next = [...assets];
@@ -769,14 +778,14 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      await api.post<{ manga_json: MangaProject; revision: number }>(
+      // use-stubの応答を先に反映する。renderが失敗してもrevisionが古いまま残らない。
+      const stubResponse = await api.post<MangaMutationResult>(
         `/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`
       );
-      const pageResponse = await api.post<{
-        page_asset: string;
-        manga_json: MangaProject;
-        revision: number;
-      }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      applyMutatedManga(stubResponse.manga_json, stubResponse.revision);
+      const pageResponse = await api.post<PageMutationResult>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       applyMutatedManga(pageResponse.manga_json, pageResponse.revision);
       setPageAssets((assets) => {
         const next = [...assets];
@@ -794,11 +803,9 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("写植更新前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      const response = await api.post<{
-        page_asset: string;
-        manga_json: MangaProject;
-        revision: number;
-      }>(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`);
+      const response = await api.post<PageMutationResult>(
+        `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
+      );
       applyMutatedManga(response.manga_json, response.revision);
       setPageAssets((assets) => {
         const next = [...assets];
@@ -814,8 +821,15 @@ export function App() {
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ cbz_asset: string; absolute_path: string; warnings: string[] }>(
-        `/api/projects/${selected.id}/export/cbz`
+      const response = await api.post<{
+        cbz_asset: string;
+        absolute_path: string;
+        revision: number;
+        warnings: string[];
+      }>(`/api/projects/${selected.id}/export/cbz`);
+      // CBZ出力もページ再レンダリングでrevisionを進めるため同期する。
+      setSelected((prev) =>
+        prev && prev.id === selected.id ? { ...prev, revision: response.revision } : prev
       );
       const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
       setMessage(`CBZを書き出しました: ${response.absolute_path}${warning}`);
@@ -1044,7 +1058,7 @@ export function App() {
         body: file
       });
       if (!response.ok) throw new Error(await response.text());
-      const payload = (await response.json()) as { manga_json: MangaProject; revision: number };
+      const payload = (await response.json()) as MangaMutationResult;
       applyMutatedManga(payload.manga_json, payload.revision);
       setAssetVersion((value) => value + 1);
       setMessage("参照画像を登録しました");
@@ -1084,7 +1098,7 @@ export function App() {
         body: file
       });
       if (!response.ok) throw new Error(await response.text());
-      const payload = (await response.json()) as { manga_json: MangaProject; revision: number };
+      const payload = (await response.json()) as MangaMutationResult;
       applyMutatedManga(payload.manga_json, payload.revision);
       setAssetVersion((value) => value + 1);
       setMessage(successMessage);

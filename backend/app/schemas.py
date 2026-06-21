@@ -602,6 +602,8 @@ class ExportResponse(BaseModel):
     project_id: str
     cbz_asset: str
     absolute_path: str
+    # CBZ出力時にページ再レンダリングでrevisionが進むため返す（クライアント同期用）。
+    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 

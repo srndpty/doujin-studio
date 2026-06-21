@@ -992,6 +992,11 @@ export interface components {
             cbz_asset: string;
             /** Absolute Path */
             absolute_path: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
         };

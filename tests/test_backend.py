@@ -681,6 +681,102 @@ def test_job_manager_cancels_running_task() -> None:
     asyncio.run(scenario())
 
 
+def test_shutdown_marks_running_job_error_not_queued(tmp_path: Path) -> None:
+    # 正常shutdown時、ComfyUI投入済みかもしれないrunningジョブをqueuedで残すと
+    # 次回起動で二重投入される。errorにしてprompt_idもクリアすることを確認する。
+    async def scenario() -> None:
+        session_factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+        with session_factory() as session:
+            session.add(
+                ProjectRecord(
+                    id="project",
+                    title="t",
+                    work_name="",
+                    manga_json="{}",
+                    created_at=db_now_utc(),
+                    updated_at=db_now_utc(),
+                )
+            )
+            session.commit()
+        manager = JobManager(session_factory)
+        job = manager.create("project", "panel", 1)
+
+        async def wait_forever() -> None:
+            await asyncio.sleep(60)
+
+        manager.start(job, wait_forever())
+        manager.update(job, status="running", prompt_id="remote-prompt")
+        await manager.shutdown()
+        recovered = manager.get(job.id)
+        assert recovered is not None
+        assert recovered.status == "error"
+        assert recovered.prompt_id is None
+
+    asyncio.run(scenario())
+
+
+def test_use_stub_marks_page_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        assert (
+            client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "render_status"
+            ]
+            == "done"
+        )
+        # use-stubで採用画像が変わったら、対象ページは再レンダリング対象(pending)へ戻る。
+        assert client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub").status_code == 200
+        assert (
+            client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "render_status"
+            ]
+            == "pending"
+        )
+
+
+def test_cbz_returns_revision_and_client_can_sync(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        before = client.get(f"/api/projects/{project_id}").json()["revision"]
+        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert export.status_code == 200
+        # CBZ出力もrevisionを進め、応答で返すのでクライアントが同期できる。
+        exported_revision = export.json()["revision"]
+        assert exported_revision > before
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == exported_revision
+
+
+def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectConflictError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'mut.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=MangaProject(title="t").model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    # 期待revision不一致は409相当(ProjectConflictError)。
+    with pytest.raises(ProjectConflictError):
+        service.mutate("p", lambda manga: None, expected_revision=99)
+
+    # 正しい期待revisionなら適用し、revisionを進める。
+    _result, _manga, revision = service.mutate(
+        "p", lambda manga: setattr(manga, "premise", "x"), expected_revision=0
+    )
+    assert revision == 1
+
+
 def test_character_profiles_are_composed_without_duplicates() -> None:
     manga = MangaProject.model_validate(
         {
@@ -1115,11 +1211,12 @@ def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
     queued_job = manager.create("project", "panel-b", 1)
 
     restored_manager = JobManager(session_factory)
-    restored = restored_manager.restore_pending()
+    to_start, interrupted = restored_manager.restore_pending()
     # 未開始のqueuedジョブだけ再開対象になる。
-    assert [job.id for job in restored] == [queued_job.id]
-    assert restored[0].status == "queued"
+    assert [job.id for job in to_start] == [queued_job.id]
+    assert to_start[0].status == "queued"
     # runningだったジョブは二重投入を避けるためerror(要再実行)へ。再開はしない。
+    assert [job.id for job in interrupted] == [running_job.id]
     recovered_running = restored_manager.get(running_job.id)
     assert recovered_running.status == "error"
     assert "再起動により中断" in recovered_running.message

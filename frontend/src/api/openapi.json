@@ -2568,6 +2568,11 @@
             "type": "string",
             "title": "Absolute Path"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
           "warnings": {
             "items": {
               "type": "string"

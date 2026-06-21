@@ -76,9 +76,15 @@ class JobManager:
         self.persist(job)
         return job
 
-    def restore_pending(self) -> list[GenerationJob]:
+    def restore_pending(self) -> tuple[list[GenerationJob], list[GenerationJob]]:
+        """(再開するqueuedジョブ, 中断扱いにしたrunningジョブ) を返す。
+
+        正常shutdownでrunningは既にerror化されるが、クラッシュ時はrunningのまま
+        残るため、ここでも保険としてrunning→errorにする。中断ジョブは対応panelの
+        generation.statusもerrorへ同期する必要があるため、呼び出し側へ返す。
+        """
         if self.session_factory is None:
-            return []
+            return [], []
         with self.session_factory() as session:
             records = (
                 session.query(GenerationJobRecord)
@@ -86,7 +92,8 @@ class JobManager:
                 .order_by(GenerationJobRecord.created_at)
                 .all()
             )
-            jobs: list[GenerationJob] = []
+            to_start: list[GenerationJob] = []
+            interrupted: list[GenerationJob] = []
             for record in records:
                 job = self.from_record(record)
                 if record.status == "running":
@@ -103,6 +110,7 @@ class JobManager:
                     )
                     job.updated_at = utc_now()
                     self.persist(job)
+                    interrupted.append(job)
                     continue
                 # まだ開始していないqueuedジョブだけ安全に再開できる。
                 job.status = "queued"
@@ -115,8 +123,8 @@ class JobManager:
                 self.jobs[job.id] = job
                 self.events[job.id] = asyncio.Event()
                 self.persist(job)
-                jobs.append(job)
-            return jobs
+                to_start.append(job)
+            return to_start, interrupted
 
     def get(self, job_id: str) -> GenerationJob | None:
         job = self.jobs.get(job_id)
@@ -265,10 +273,22 @@ class JobManager:
         self.shutting_down = True
         tasks = [task for task in self.tasks.values() if not task.done()]
         for job_id, task in self.tasks.items():
-            if not task.done():
-                job = self.jobs[job_id]
+            if task.done():
+                continue
+            job = self.jobs.get(job_id)
+            if job is None:
+                continue
+            if job.status == "running":
+                # 既にComfyUIへ投入済みかもしれない。queuedで残すと次回起動で再投入され
+                # 二重生成になるため、errorにしてprompt_idもクリアする。
+                # queuedのままのジョブは状態を変えず、restore_pendingが安全に再開する。
                 self.update(
-                    job, status="queued", progress=0, message="バックエンド停止後に再開します"
+                    job,
+                    status="error",
+                    progress=0,
+                    node=None,
+                    prompt_id=None,
+                    message="バックエンド停止により中断されました。必要なら再実行してください",
                 )
         for task in tasks:
             task.cancel()

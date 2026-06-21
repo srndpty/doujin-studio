@@ -45,6 +45,13 @@ from .generator import generate_four_page_name
 from .image_backends import StubImageBackend, build_image_backend, get_comfyui_status
 from .jobs import TERMINAL_JOB_STATUSES, GenerationJob, JobManager
 from .llm import build_llm_client, get_llm_status
+from .mutation import (
+    InvalidProjectJsonError,
+    ProjectConflictError,
+    ProjectMutationService,
+    ProjectNotFoundError,
+    mark_page_dirty,
+)
 from .prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from .renderer import export_cbz, render_project_page, render_project_pages
 from .schemas import (
@@ -109,8 +116,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path("data").mkdir(parents=True, exist_ok=True)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
+        app.state.mutation = ProjectMutationService(app.state.SessionLocal, app_settings.export_dir)
         app.state.job_manager = JobManager(app.state.SessionLocal)
-        for job in app.state.job_manager.restore_pending():
+        to_start, interrupted = app.state.job_manager.restore_pending()
+        # クラッシュ復旧で中断扱いにしたジョブは、対応panelのgeneration.statusもerrorへ同期する
+        # （ジョブ履歴だけerrorでManga JSON側がrunning表示のまま残らないように）。
+        for job in interrupted:
+            mark_panel_job_stopped(
+                app,
+                job,
+                "バックエンド再起動により中断されました。必要なら再実行してください",
+                error=True,
+            )
+        for job in to_start:
             app.state.job_manager.start(job, run_generation_job(app, job))
         try:
             yield
@@ -276,14 +294,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     manager.start(job, run_generation_job(request.app, job))
                 await await_job(request.app, job)
 
-        # 生成ジョブが最新manga_jsonへマージした結果を読み直してからレンダリングする。
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        page_assets, warnings = render_project_pages(project_id, manga, settings.export_dir)
-        for page in manga.pages:
-            page.render_status = "done"
-            page.rendered_at = now_utc()
-        revision = save_manga_json(request, project_id, manga)
+        # 生成ジョブが最新manga_jsonへマージした結果に対し、CASでレンダリング結果を確定する。
+        def finalize(manga: MangaProject):
+            assets, warns = render_project_pages(project_id, manga, settings.export_dir)
+            for page in manga.pages:
+                page.render_status = "done"
+                page.rendered_at = now_utc()
+            return assets, warns
+
+        (page_assets, warnings), manga, revision = run_mutation(
+            request.app.state.mutation, project_id, finalize
+        )
         return RenderResponse(
             project_id=project_id,
             page_assets=[asset_to_id(path, settings.export_dir) for path in page_assets],
@@ -302,18 +323,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         payload: GenerationJobCreate | None = Body(default=None),
     ) -> PanelImageGenerationResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel(manga, panel_id)
         manager: JobManager = request.app.state.job_manager
         if find_active_panel_job(manager, project_id, panel_id):
             raise HTTPException(status_code=409, detail="このコマは画像生成中です")
+
+        def set_queued(manga: MangaProject) -> None:
+            panel = find_panel(manga, panel_id)
+            panel.generation.status = "queued"
+            panel.generation.message = "画像生成ジョブを登録しました"
+
+        # パネル存在チェックとqueued状態保存をCASで行う。
+        run_mutation(request.app.state.mutation, project_id, set_queued)
         # 同期レスポンスが欲しい直接生成APIも、ジョブを作って完了待ちする薄いラッパーにする。
         candidate_count = payload.candidate_count if payload else 1
         job = manager.create(project_id, panel_id, candidate_count)
-        panel.generation.status = "queued"
-        panel.generation.message = "画像生成ジョブを登録しました"
-        save_manga_json(request, project_id, manga)
         manager.start(job, run_generation_job(request.app, job))
         await await_job(request.app, job)
         latest = load_project_record(request, project_id)
@@ -352,27 +375,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         payload: GenerationJobCreate | None = Body(default=None),
     ) -> GenerationJobResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel(manga, panel_id)
         manager: JobManager = request.app.state.job_manager
-        active = next(
-            (
-                item
-                for item in manager.jobs.values()
-                if item.project_id == project_id
-                and item.panel_id == panel_id
-                and item.status not in TERMINAL_JOB_STATUSES
-            ),
-            None,
-        )
-        if active:
+        if find_active_panel_job(manager, project_id, panel_id):
             raise HTTPException(status_code=409, detail="このコマは画像生成中です")
+
+        def set_queued(manga: MangaProject) -> None:
+            panel = find_panel(manga, panel_id)
+            panel.generation.status = "queued"
+            panel.generation.message = "画像生成ジョブを登録しました"
+
+        run_mutation(request.app.state.mutation, project_id, set_queued)
         candidate_count = payload.candidate_count if payload else 1
         job = manager.create(project_id, panel_id, candidate_count)
-        panel.generation.status = "queued"
-        panel.generation.message = "画像生成ジョブを登録しました"
-        save_manga_json(request, project_id, manga)
         manager.start(job, run_generation_job(request.app, job))
         return to_job_response(job)
 
@@ -401,17 +415,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for item in manager.jobs.values()
             if item.status not in TERMINAL_JOB_STATUSES
         }
-        jobs: list[GenerationJob] = []
-        for panel in panels:
-            if (project_id, panel.panel_id) in active_keys:
-                continue
-            job = manager.create(project_id, panel.panel_id, options.candidate_count)
-            panel.generation.status = "queued"
-            panel.generation.message = "一括生成キューへ登録しました"
-            jobs.append(job)
-        if not jobs:
+        target_ids = [
+            panel.panel_id for panel in panels if (project_id, panel.panel_id) not in active_keys
+        ]
+        if not target_ids:
             raise HTTPException(status_code=409, detail="対象コマはすべて生成中です")
-        save_manga_json(request, project_id, manga)
+        jobs = [
+            manager.create(project_id, panel_id, options.candidate_count) for panel_id in target_ids
+        ]
+
+        def set_queued(manga: MangaProject) -> None:
+            for panel_id in target_ids:
+                panel = find_panel_optional(manga, panel_id)
+                if panel is not None:
+                    panel.generation.status = "queued"
+                    panel.generation.message = "一括生成キューへ登録しました"
+
+        run_mutation(request.app.state.mutation, project_id, set_queued)
         for job in jobs:
             manager.start(job, run_generation_job(request.app, job))
         return BatchGenerationJobResponse(jobs=[to_job_response(job) for job in jobs])
@@ -450,7 +470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status="cancelled",
                 message="ローカルではキャンセルしましたが、ComfyUI側の停止に失敗しました",
             )
-        mark_panel_job_stopped(request.app, job, "生成をキャンセルしました")
+        # panel状態の更新は生成Task側(run_generation_job)へ一本化する（ここでは行わない）。
         return to_job_response(job)
 
     @app.websocket("/api/generation-jobs/{job_id}/ws")
@@ -481,22 +501,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         candidate_id: str,
         request: Request,
     ) -> PanelPageRenderResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel(manga, panel_id)
-        candidate = next((item for item in panel.image_candidates if item.id == candidate_id), None)
-        if candidate is None:
-            raise HTTPException(status_code=404, detail="画像候補が見つかりません")
-        apply_candidate_selection(panel, candidate)
         settings = request.app.state.settings
-        page_number = find_panel_page_number(manga, panel_id)
-        page_asset, warnings = render_project_page(
-            project_id, manga, page_number, settings.export_dir
+
+        def select(manga: MangaProject):
+            panel = find_panel(manga, panel_id)
+            candidate = next(
+                (item for item in panel.image_candidates if item.id == candidate_id), None
+            )
+            if candidate is None:
+                raise HTTPException(status_code=404, detail="画像候補が見つかりません")
+            apply_candidate_selection(panel, candidate)
+            page_number = find_panel_page_number(manga, panel_id)
+            asset, warns = render_project_page(project_id, manga, page_number, settings.export_dir)
+            page = next(item for item in manga.pages if item.page == page_number)
+            page.render_status = "done"
+            page.rendered_at = now_utc()
+            return asset, warns
+
+        (page_asset, warnings), manga, revision = run_mutation(
+            request.app.state.mutation, project_id, select
         )
-        page = next(item for item in manga.pages if item.page == page_number)
-        page.render_status = "done"
-        page.rendered_at = now_utc()
-        revision = save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
             panel_id=panel_id,
@@ -516,8 +540,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
     ) -> PanelImageGenerationResponse:
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel(manga, panel_id)
+        panel = find_panel(parse_manga_json(record.manga_json), panel_id)
         settings = request.app.state.settings
         # 候補ごとに一意の保存先を使う。共有パスだと選び直しても画像が上書き済みになる。
         candidate_id = str(uuid.uuid4())
@@ -525,8 +548,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await StubImageBackend().generate_panel(
             project_id, panel, settings.export_dir, target_path=target
         )
-        register_generation_candidate(panel, panel, result, candidate_id=candidate_id)
-        revision = save_manga_json(request, project_id, manga)
+
+        def add(manga: MangaProject) -> None:
+            target_panel, page = find_panel_and_page(manga, panel_id)
+            if target_panel is None:
+                raise HTTPException(status_code=404, detail="コマが見つかりません")
+            register_generation_candidate(target_panel, target_panel, result, candidate_id)
+            # 採用画像が変わるため、対象ページを再レンダリング対象へ戻す。
+            if page is not None:
+                mark_page_dirty(page)
+
+        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, add)
         return PanelImageGenerationResponse(
             project_id=project_id, panel_id=panel_id, manga_json=manga, revision=revision
         )
@@ -541,9 +573,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
     ) -> CharacterReferenceResponse:
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        character = next((item for item in manga.characters if item.id == character_id), None)
-        if character is None:
+        manga0 = parse_manga_json(record.manga_json)
+        if not any(item.id == character_id for item in manga0.characters):
             raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
         target = (
             request.app.state.settings.export_dir
@@ -553,8 +584,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
-        character.reference_image_asset = asset_id
-        revision = save_manga_json(request, project_id, manga)
+
+        def mutate(manga: MangaProject) -> None:
+            character = next((item for item in manga.characters if item.id == character_id), None)
+            if character is None:
+                raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
+            character.reference_image_asset = asset_id
+
+        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
         return CharacterReferenceResponse(
             character_id=character_id,
             asset=asset_id,
@@ -572,9 +609,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
     ) -> ReferenceAssetResponse:
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        location = next((item for item in manga.locations if item.id == location_id), None)
-        if location is None:
+        manga0 = parse_manga_json(record.manga_json)
+        if not any(item.id == location_id for item in manga0.locations):
             raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
         target = (
             request.app.state.settings.export_dir
@@ -584,8 +620,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
-        location.reference_image_asset = asset_id
-        revision = save_manga_json(request, project_id, manga)
+
+        def mutate(manga: MangaProject) -> None:
+            location = next((item for item in manga.locations if item.id == location_id), None)
+            if location is None:
+                raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
+            location.reference_image_asset = asset_id
+
+        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
         return ReferenceAssetResponse(
             target_id=location_id, asset=asset_id, manga_json=manga, revision=revision
         )
@@ -604,8 +646,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if kind not in {"pose", "depth", "lineart", "background"}:
             raise HTTPException(status_code=422, detail="Control参照種別が不正です")
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        panel = find_panel(manga, panel_id)
+        find_panel(parse_manga_json(record.manga_json), panel_id)  # 事前に存在確認(404)
         target = (
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
@@ -615,18 +656,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await save_request_image(request, target)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
-        existing = next((item for item in panel.control_references if item.kind == kind), None)
-        if existing:
-            existing.asset = asset_id
-            existing.load_node_id = load_node_id
-            target_id = existing.id
-        else:
+        new_control_id = str(uuid.uuid4())
+
+        def mutate(manga: MangaProject) -> str:
+            panel = find_panel(manga, panel_id)
+            existing = next((item for item in panel.control_references if item.kind == kind), None)
+            if existing:
+                existing.asset = asset_id
+                existing.load_node_id = load_node_id
+                return existing.id
             control = PanelControlReference(
-                id=str(uuid.uuid4()), kind=kind, asset=asset_id, load_node_id=load_node_id
+                id=new_control_id, kind=kind, asset=asset_id, load_node_id=load_node_id
             )
             panel.control_references.append(control)
-            target_id = control.id
-        revision = save_manga_json(request, project_id, manga)
+            return control.id
+
+        target_id, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
         return ReferenceAssetResponse(
             target_id=target_id, asset=asset_id, manga_json=manga, revision=revision
         )
@@ -645,12 +690,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if asset_kind not in {"asset", "mask"}:
             raise HTTPException(status_code=422, detail="overlayアセット種別が不正です")
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        page = next((item for item in manga.pages if item.page == page_number), None)
-        if page is None:
+        manga0 = parse_manga_json(record.manga_json)
+        page0 = next((item for item in manga0.pages if item.page == page_number), None)
+        if page0 is None:
             raise HTTPException(status_code=404, detail="ページが見つかりません")
-        overlay = next((item for item in page.overlay_elements if item.id == overlay_id), None)
-        if overlay is None:
+        if not any(item.id == overlay_id for item in page0.overlay_elements):
             raise HTTPException(status_code=404, detail="overlayが見つかりません")
         suffix = "mask" if asset_kind == "mask" else "image"
         target = (
@@ -661,11 +705,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await save_request_image(request, target, preserve_alpha=asset_kind == "asset")
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
-        if asset_kind == "mask":
-            overlay.mask_asset = asset_id
-        else:
-            overlay.asset = asset_id
-        revision = save_manga_json(request, project_id, manga)
+
+        def mutate(manga: MangaProject) -> None:
+            page = next((item for item in manga.pages if item.page == page_number), None)
+            if page is None:
+                raise HTTPException(status_code=404, detail="ページが見つかりません")
+            overlay = next((item for item in page.overlay_elements if item.id == overlay_id), None)
+            if overlay is None:
+                raise HTTPException(status_code=404, detail="overlayが見つかりません")
+            if asset_kind == "mask":
+                overlay.mask_asset = asset_id
+            else:
+                overlay.asset = asset_id
+            # overlay画像/maskの差し替えは描画に影響するため、ページを再レンダリング対象へ。
+            mark_page_dirty(page)
+
+        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
         return ReferenceAssetResponse(
             target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision
         )
@@ -680,27 +735,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         payload: LayoutSuggestRequest | None = Body(default=None),
     ) -> LayoutSuggestResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        page = next((item for item in manga.pages if item.page == page_number), None)
-        if page is None:
-            raise HTTPException(status_code=404, detail="ページが見つかりません")
-        page_index = manga.pages.index(page)
-        previous_family = manga.pages[page_index - 1].layout_family if page_index > 0 else None
-        layout_engine.relayout_page(
-            page,
-            manga.page_layout,
-            rtl=manga.reading_direction == "rtl",
-            family=payload.family if payload else None,
-            previous_family=previous_family,
-            page_index=page_index,
-            total_pages=len(manga.pages),
+        def relayout(manga: MangaProject):
+            page = next((item for item in manga.pages if item.page == page_number), None)
+            if page is None:
+                raise HTTPException(status_code=404, detail="ページが見つかりません")
+            page_index = manga.pages.index(page)
+            previous_family = manga.pages[page_index - 1].layout_family if page_index > 0 else None
+            layout_engine.relayout_page(
+                page,
+                manga.page_layout,
+                rtl=manga.reading_direction == "rtl",
+                family=payload.family if payload else None,
+                previous_family=previous_family,
+                page_index=page_index,
+                total_pages=len(manga.pages),
+            )
+            # コマ枠(bbox)が変わるため、対象ページを再レンダリング対象へ戻す。
+            mark_page_dirty(page)
+            return page.layout_family
+
+        layout_family, manga, revision = run_mutation(
+            request.app.state.mutation, project_id, relayout
         )
-        revision = save_manga_json(request, project_id, manga)
         return LayoutSuggestResponse(
             project_id=project_id,
             page=page_number,
-            layout_family=page.layout_family,
+            layout_family=layout_family,
             manga_json=manga,
             revision=revision,
         )
@@ -743,19 +803,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def render_page_endpoint(
         project_id: str, page_number: int, request: Request
     ) -> PageRenderResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        page = next((item for item in manga.pages if item.page == page_number), None)
-        if page is None:
-            raise HTTPException(status_code=404, detail="ページが見つかりません")
         settings = request.app.state.settings
-        page_asset, warnings = render_project_page(
-            project_id, manga, page_number, settings.export_dir
+
+        def render(manga: MangaProject):
+            page = next((item for item in manga.pages if item.page == page_number), None)
+            if page is None:
+                raise HTTPException(status_code=404, detail="ページが見つかりません")
+            asset, warns = render_project_page(project_id, manga, page_number, settings.export_dir)
+            page.render_status = "done"
+            page.rendered_at = now_utc()
+            issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
+            return asset, warns, issues
+
+        (page_asset, warnings, issues), manga, revision = run_mutation(
+            request.app.state.mutation, project_id, render
         )
-        page.render_status = "done"
-        page.rendered_at = now_utc()
-        revision = save_manga_json(request, project_id, manga)
-        issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
         return PageRenderResponse(
             project_id=project_id,
             page=page_number,
@@ -773,17 +835,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def render_panel_page(
         project_id: str, panel_id: str, request: Request
     ) -> PanelPageRenderResponse:
-        record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
-        page_number = find_panel_page_number(manga, panel_id)
         settings = request.app.state.settings
-        page_asset, warnings = render_project_page(
-            project_id, manga, page_number, settings.export_dir
+
+        def render(manga: MangaProject):
+            page_number = find_panel_page_number(manga, panel_id)
+            asset, warns = render_project_page(project_id, manga, page_number, settings.export_dir)
+            page = next(item for item in manga.pages if item.page == page_number)
+            page.render_status = "done"
+            page.rendered_at = now_utc()
+            return asset, warns
+
+        (page_asset, warnings), manga, revision = run_mutation(
+            request.app.state.mutation, project_id, render
         )
-        page = next(item for item in manga.pages if item.page == page_number)
-        page.render_status = "done"
-        page.rendered_at = now_utc()
-        revision = save_manga_json(request, project_id, manga)
         return PanelPageRenderResponse(
             project_id=project_id,
             panel_id=panel_id,
@@ -796,13 +860,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/projects/{project_id}/export/cbz", response_model=ExportResponse)
     def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
         record = load_project_record(request, project_id)
-        manga = parse_manga_json(record.manga_json)
+        manga0 = parse_manga_json(record.manga_json)
         settings = request.app.state.settings
-        status = build_production_status(project_id, manga)
+        status = build_production_status(project_id, manga0)
         # 重大エラー（台詞のはみ出し等）があればCBZ出力を停止する。
         preflight_errors = [
             issue
-            for issue in preflight_module.preflight_project(manga, settings.export_dir)
+            for issue in preflight_module.preflight_project(manga0, settings.export_dir)
             if issue.level == "error"
         ]
         if preflight_errors:
@@ -813,16 +877,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
                 ),
             )
-        page_assets, render_warnings = render_project_pages(project_id, manga, settings.export_dir)
-        for page in manga.pages:
-            page.render_status = "done"
-            page.rendered_at = now_utc()
-        save_manga_json(request, project_id, manga)
+
+        def finalize(manga: MangaProject):
+            assets, warns = render_project_pages(project_id, manga, settings.export_dir)
+            for page in manga.pages:
+                page.render_status = "done"
+                page.rendered_at = now_utc()
+            return assets, warns
+
+        (page_assets, render_warnings), manga, revision = run_mutation(
+            request.app.state.mutation, project_id, finalize
+        )
         cbz_path = export_cbz(project_id, manga.title, page_assets, settings.export_dir)
         return ExportResponse(
             project_id=project_id,
             cbz_asset=asset_to_id(cbz_path, settings.export_dir),
             absolute_path=str(cbz_path.resolve()),
+            revision=revision,
             warnings=[blocker for blocker in status.blockers if "採用画像" in blocker]
             + render_warnings,
         )
@@ -1216,14 +1287,17 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
         async with manager.generation_lock:
             await execute_generation_job(app, job)
     except CancelledError:
+        # キャンセル/停止時のpanel状態更新はここ（Task終了処理）に一本化する。
+        # job状態はHTTPキャンセルのmanager.cancel()またはshutdown()が既に確定している。
         if manager.shutting_down:
-            manager.update(
-                job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します"
+            mark_panel_job_stopped(
+                app,
+                job,
+                "バックエンド停止により中断されました。必要なら再実行してください",
+                error=True,
             )
-            raise
-        mark_panel_job_stopped(app, job, "生成をキャンセルしました")
-        if job.status != "cancelled":
-            manager.update(job, status="cancelled", message="生成をキャンセルしました")
+        else:
+            mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         raise
 
 
@@ -1324,8 +1398,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                     selection_state["auto"] = new_candidate.id
                     # 採用画像が変わったので、対象ページを再レンダリング対象へ戻す。
                     if target_page is not None:
-                        target_page.render_status = "pending"
-                        target_page.rendered_at = None
+                        mark_page_dirty(target_page)
                 else:
                     selection_state["allow"] = False
 
@@ -1349,14 +1422,7 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
             message="画像候補の生成が完了しました",
         )
     except CancelledError:
-        if manager.shutting_down:
-            manager.update(
-                job, status="queued", progress=0, message="バックエンド再起動後に生成を再開します"
-            )
-            raise
-        mark_panel_job_stopped(app, job, "生成をキャンセルしました")
-        if job.status != "cancelled":
-            manager.update(job, status="cancelled", message="生成をキャンセルしました")
+        # panel/job状態の更新はrun_generation_job（Task終了処理）へ一本化する。
         raise
     except Exception as exc:
         mark_panel_job_stopped(app, job, f"画像候補の生成に失敗しました: {exc}", error=True)
@@ -1608,44 +1674,41 @@ def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> N
             page.rendered_at = None
 
 
-def update_panel_in_latest(
-    app: FastAPI, project_id: str, panel_id: str, mutate, attempts: int = 5
-) -> MangaProject:
-    """最新のmanga_jsonを読み直し、対象パネルだけにmutateを適用して保存する。
+def run_mutation(service: ProjectMutationService, project_id: str, mutate, expected_revision=None):
+    """ProjectMutationServiceを呼び、サービス例外をHTTPExceptionへ変換する。"""
+    try:
+        return service.mutate(project_id, mutate, expected_revision=expected_revision)
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
+    except ProjectConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "他の操作（生成完了や別タブの保存）で更新されています。"
+                "最新を読み込み直してください。"
+            ),
+        ) from exc
+    except InvalidProjectJsonError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+
+
+def update_panel_in_latest(app: FastAPI, project_id: str, panel_id: str, mutate) -> MangaProject:
+    """最新のmanga_jsonを読み直し、対象パネルだけにmutateを適用してCAS保存する。
 
     生成完了時に開始時点の古いスナップショットを丸ごと保存すると、その間の
-    ユーザー編集（他パネルの台詞・別ページの候補選択）を踏みつぶす。読み直して
-    対象パネルだけマージすることで、生成とユーザー編集の競合面を最小化する。
-    保存は読み取り時revisionを条件にしたCASで行い、競合時は読み直してリトライする。
+    ユーザー編集（他パネルの台詞・別ページの候補選択）を踏みつぶす。対象パネルだけ
+    最新へマージし、競合時は読み直して再適用する（ProjectMutationService経由）。
+    mutateは対象パネルと所属ページを受け取る（ページのdirty化に使う）。
     """
-    for _ in range(attempts):
-        with app.state.SessionLocal() as session:
-            record = session.get(ProjectRecord, project_id)
-            if record is None:
-                raise RuntimeError("プロジェクトが見つかりません")
-            expected = record.revision
-            manga = parse_manga_json(record.manga_json)
-            panel, page = find_panel_and_page(manga, panel_id)
-            if panel is None:
-                raise RuntimeError("コマが見つかりません")
-            # mutateは対象パネルと所属ページを受け取る（ページのdirty化に使う）。
-            mutate(panel, page)
-            normalize_manga_assets(manga, app.state.settings.export_dir)
-            result = session.execute(
-                sqlalchemy_update(ProjectRecord)
-                .where(ProjectRecord.id == project_id, ProjectRecord.revision == expected)
-                .values(
-                    manga_json=manga.model_dump_json(),
-                    revision=ProjectRecord.revision + 1,
-                    updated_at=now_utc(),
-                )
-            )
-            if result.rowcount == 1:
-                session.commit()
-                return manga
-            # 並行更新が先にcommitした。読み直して再適用する。
-            session.rollback()
-    raise RuntimeError("manga_jsonの競合が続いたため更新できませんでした")
+
+    def manga_mutate(manga: MangaProject) -> None:
+        panel, page = find_panel_and_page(manga, panel_id)
+        if panel is None:
+            raise RuntimeError("コマが見つかりません")
+        mutate(panel, page)
+
+    _result, manga, _revision = app.state.mutation.mutate(project_id, manga_mutate)
+    return manga
 
 
 def find_panel_page_number(manga: MangaProject, panel_id: str) -> int:
@@ -1686,24 +1749,6 @@ def register_generation_candidate(panel, generated_panel, result, candidate_id=N
     )
     panel.image_candidates.append(candidate)
     apply_candidate_selection(panel, candidate)
-
-
-def save_manga_json(request: Request, project_id: str, manga: MangaProject) -> int:
-    """manga_jsonを保存し、更新後のrevisionを返す。
-
-    各更新APIは戻り値のrevisionを応答へ含め、クライアントがselected.revisionを
-    最新化できるようにする（応答にrevisionが無いと次の保存で誤って409になる）。
-    """
-    normalize_manga_assets(manga, request.app.state.settings.export_dir)
-    with request.app.state.SessionLocal() as session:
-        writable = session.get(ProjectRecord, project_id)
-        if writable is None:
-            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
-        writable.manga_json = manga.model_dump_json()
-        writable.revision += 1
-        writable.updated_at = now_utc()
-        session.commit()
-        return writable.revision
 
 
 def to_knowledge_source(record: KnowledgeSourceRecord) -> KnowledgeSourceResponse:
