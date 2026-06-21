@@ -92,6 +92,14 @@ export function PageEditor({
 
   const runPreflight = async () => {
     try {
+      // 未保存の編集を先に保存する。検査はサーバー保存済みのManga JSONを対象に動くため、
+      // 保存しないと直前の編集で生じた重なり・はみ出しを見逃す。
+      const saved = await fetch(`/api/projects/${projectId}/manga-json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(manga)
+      });
+      if (!saved.ok) throw new Error(await saved.text());
       const response = await fetch(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, {
         method: "POST"
       });

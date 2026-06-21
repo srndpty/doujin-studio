@@ -306,8 +306,9 @@ def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:
         if overlay.layer != "front":
             continue
         source_rank = rank.get(overlay.source_panel_id, len(order))
+        # 実際の描画範囲はbox * scale（renderer.draw_overlayと一致させる）。
         ox0, oy0, ow, oh = overlay.box
-        obox = (ox0, oy0, ox0 + ow, oy0 + oh)
+        obox = (ox0, oy0, ox0 + ow * overlay.scale, oy0 + oh * overlay.scale)
         for panel_id, bbox in panel_boxes.items():
             if panel_id == overlay.source_panel_id or panel_id in overlay.occluded_by_panel_ids:
                 continue

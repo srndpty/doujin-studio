@@ -165,6 +165,36 @@ def test_preflight_reading_order_reversal_and_overlay_occlusion() -> None:
     assert any(issue.code == "overlay_hides_earlier_panel" for issue in issues2)
 
 
+def test_preflight_overlay_scale_extends_occlusion() -> None:
+    # 右(p01_01)が先、左(p01_02)が後の読み順。overlayはp01_02発で、box単体では
+    # 右コマに重ならないが、scaleで右へはみ出して先に読むp01_01を隠す。
+    overlay = OverlayElement(
+        id="ov", source_panel_id="p01_02", box=(0.45, 0.4, 0.05, 0.1), scale=3.0, layer="front"
+    )
+    manga = MangaProject(
+        title="ov",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="grid",
+                reading_order=["p01_01", "p01_02"],
+                overlay_elements=[overlay],
+                panels=[
+                    Panel(panel_id="p01_01", bbox=(0.5, 0.05, 0.45, 0.9), shot="t"),
+                    Panel(panel_id="p01_02", bbox=(0.05, 0.05, 0.45, 0.9), shot="t"),
+                ],
+            )
+        ],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    assert any(issue.code == "overlay_hides_earlier_panel" for issue in issues)
+    # 倍率1ならはみ出さず検出されない。
+    manga.pages[0].overlay_elements[0].scale = 1.0
+    issues2 = preflight.preflight_page(manga, manga.pages[0])
+    assert not any(issue.code == "overlay_hides_earlier_panel" for issue in issues2)
+
+
 def test_preflight_layout_repetition() -> None:
     pages = []
     for page_number in range(1, 4):
