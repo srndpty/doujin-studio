@@ -1526,6 +1526,71 @@ def test_long_prompt_does_not_break_stale_candidate_cleanup(tmp_path: Path, monk
         assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
 
 
+def test_relative_export_dir_cleanup_keeps_referenced_asset(tmp_path: Path, monkeypatch) -> None:
+    # 相対EXPORT_DIRでも、参照中assetを誤って削除しないこと（パス基準の統一）。
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        export_dir=Path("exports"),
+        image_backend="stub",
+    )
+    with TestClient(create_app(settings)) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        keep_rel = f"{project_id}/references/keep.png"
+        keep_path = tmp_path / "exports" / keep_rel
+        keep_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(keep_path)
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        manga["characters"][0]["reference_image_asset"] = keep_rel
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        # ownershipへ相対パスで参照中assetを入れてcleanupしても、参照中なので削除されない。
+        main_module.cleanup_published_assets(app, project_id, {Path("exports") / keep_rel: True})
+        assert keep_path.is_file()
+
+
+def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class CancelledThenReturnBackend:
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # ComfyUI等が結果を返す直前にjobがキャンセル済みになった状況を再現する。
+                for job in list(app.state.job_manager.jobs.values()):
+                    if (
+                        job.project_id == project_id_
+                        and job.panel_id == "p01_01"
+                        and job.status == "running"
+                    ):
+                        job.status = "cancelled"
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (7, 8, 9)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: CancelledThenReturnBackend()
+        )
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        # キャンセル済みjobの同期生成は409。返ってきたPNGは孤児化させず回収する。
+        assert response.status_code == 409
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+
+
 def test_character_profiles_are_composed_without_duplicates() -> None:
     manga = MangaProject.model_validate(
         {

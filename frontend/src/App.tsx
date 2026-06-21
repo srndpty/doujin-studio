@@ -1360,7 +1360,10 @@ export function App() {
                 const pageNumber = selectedPage;
                 setBusy(true);
                 try {
-                  await putMangaJson(projectId, selected.revision, manga);
+                  // 保存成功時点のrevisionを先に反映する。直後のrenderが失敗しても、
+                  // サーバが進めたrevisionとselectedが乖離して次の保存が誤409にならないように。
+                  const saved = await putMangaJson(projectId, selected.revision, manga);
+                  applyProjectMutation(projectId, saved.manga_json, saved.revision);
                   const rendered = await api.post<{
                     manga_json: MangaProject;
                     page_asset: string;

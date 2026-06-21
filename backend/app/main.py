@@ -1481,6 +1481,9 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 / job.panel_id
                 / f"{candidate_id}.png"
             )
+            # 生成前に所有権を記録する。CancelledError/キャンセル/不一致のいずれでも、
+            # 採用されなかったPNGを未参照判定で確実に回収できるようにする。
+            candidate_assets[target.resolve()] = True
 
             async def report_progress(
                 current: int,
@@ -1511,13 +1514,16 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
                 progress_callback=report_progress,
                 on_prompt_id=store_prompt_id,
             )
+            # backendが別パスへ書いた場合も所有権へ含める（通常はtargetと同一）。
+            if result.asset_path is not None:
+                candidate_assets[Path(result.asset_path).resolve()] = True
             # キャンセル要求後に生成物が返っても、対象ジョブがキャンセル済みなら保存しない。
+            # 今回受領したPNGはcurrent/history未参照なので回収する。
             if job.status == "cancelled":
+                cleanup_published_assets(app, job.project_id, candidate_assets)
                 return
             if result.asset_path is None:
                 raise RuntimeError("生成画像の保存先が返りませんでした")
-            # 生成したPNGを追跡する。破棄時にcurrent/history未参照なら回収する。
-            candidate_assets[Path(result.asset_path)] = True
             candidate = ImageCandidate(
                 id=candidate_id,
                 asset=str(result.asset_path),
@@ -1608,6 +1614,8 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
         )
     except CancelledError:
         # panel/job状態の更新はrun_generation_job（Task終了処理）へ一本化する。
+        # 採用されなかった生成PNGはここで回収する（current/history参照分は残る）。
+        cleanup_published_assets(app, job.project_id, candidate_assets)
         raise
     except EpochMismatchError:
         # ネーム再生成・ストーリー適用・復元で作品構成が置き換わった。古いプロンプトの
@@ -2062,11 +2070,17 @@ def referenced_project_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
 
 
 def cleanup_published_assets(app: FastAPI, project_id: str, ownership: dict[Path, bool]) -> None:
-    """この要求が作成し、current/historyのどちらからも未参照な成果物だけ回収する。"""
+    """この要求が作成し、current/historyのどちらからも未参照な成果物だけ回収する。
+
+    referenced側は常にcanonical absolute path。ownership側は相対EXPORT_DIR下だと相対の
+    ことがあるため、必ずresolve()して同じ基準で比較する（相対パスのまま比較すると
+    参照中assetを誤って削除する）。
+    """
     referenced = referenced_project_asset_paths(app, project_id)
     for path, created_by_request in ownership.items():
-        if created_by_request and path not in referenced:
-            path.unlink(missing_ok=True)
+        target = path.resolve()
+        if created_by_request and target not in referenced:
+            target.unlink(missing_ok=True)
 
 
 def commit_rendered_pages(
