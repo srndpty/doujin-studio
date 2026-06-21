@@ -50,13 +50,85 @@ function useAssetImage(asset: string | null, version: number): HTMLImageElement 
       return;
     }
     const image = new window.Image();
-    const normalized = asset.replaceAll("\\", "/").replace(/^exports\//, "");
-    image.src = `/api/assets/${normalized.split("/").map(encodeURIComponent).join("/")}?v=${version}`;
+    image.src = assetUrl(asset, version);
     image.onload = () => setImg(image);
     return () => {
       image.onload = null;
     };
   }, [asset, version]);
+  return img;
+}
+
+function assetUrl(asset: string, version: number): string {
+  const normalized = asset.replaceAll("\\", "/").replace(/^exports\//, "");
+  return `/api/assets/${normalized.split("/").map(encodeURIComponent).join("/")}?v=${version}`;
+}
+
+// mask_assetがあれば輝度をアルファとして切り抜き、renderer.draw_overlayと同じ見た目をプレビューする。
+function useMaskedImage(
+  asset: string | null,
+  mask: string | null | undefined,
+  version: number
+): HTMLImageElement | null {
+  const [img, setImg] = useState<HTMLImageElement | null>(null);
+  useEffect(() => {
+    if (!asset) {
+      setImg(null);
+      return;
+    }
+    let cancelled = false;
+    const base = new window.Image();
+    base.onload = () => {
+      if (cancelled) return;
+      if (!mask) {
+        setImg(base);
+        return;
+      }
+      const maskImage = new window.Image();
+      maskImage.onload = () => {
+        if (cancelled) return;
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = base.naturalWidth;
+          canvas.height = base.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            setImg(base);
+            return;
+          }
+          ctx.drawImage(base, 0, 0);
+          const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const maskCanvas = document.createElement("canvas");
+          maskCanvas.width = canvas.width;
+          maskCanvas.height = canvas.height;
+          const maskCtx = maskCanvas.getContext("2d");
+          if (!maskCtx) {
+            setImg(base);
+            return;
+          }
+          maskCtx.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+          const maskPixels = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < pixels.data.length; i += 4) {
+            pixels.data[i + 3] =
+              0.299 * maskPixels.data[i] + 0.587 * maskPixels.data[i + 1] + 0.114 * maskPixels.data[i + 2];
+          }
+          ctx.putImageData(pixels, 0, 0);
+          const composed = new window.Image();
+          composed.onload = () => {
+            if (!cancelled) setImg(composed);
+          };
+          composed.src = canvas.toDataURL();
+        } catch {
+          setImg(base); // canvasが使えない環境ではマスクなしで表示する。
+        }
+      };
+      maskImage.src = assetUrl(mask, version);
+    };
+    base.src = assetUrl(asset, version);
+    return () => {
+      cancelled = true;
+    };
+  }, [asset, mask, version]);
   return img;
 }
 
@@ -759,7 +831,7 @@ function OverlayNode({
   onSelect: () => void;
   onMove: (box: Box) => void;
 }) {
-  const image = useAssetImage(overlay.asset, version);
+  const image = useMaskedImage(overlay.asset, overlay.mask_asset, version);
   const width = overlay.box[2] * PAGE_W * overlay.scale;
   const height = overlay.box[3] * PAGE_H * overlay.scale;
   return (

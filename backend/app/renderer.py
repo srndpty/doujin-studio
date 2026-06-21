@@ -48,17 +48,18 @@ def render_project_page(
 def _render_single_page(
     manga: MangaProject, page: Page, pages_dir: Path, export_dir: Path
 ) -> tuple[Path, list[str]]:
-    # レンダリング順: 背景 → 通常コマ → 背面overlay → 前面overlay → 吹き出し・SFX。
+    # レンダリング順: 背景 → 背面overlay → 通常コマ → 前面overlay → 吹き出し・SFX。
+    # （PageEditorのプレビュー順と一致させる。backはコマより背面、frontはコマより前面。）
     image = Image.new("RGBA", PAGE_SIZE, (248, 248, 244, 255))
     draw = ImageDraw.Draw(image)
     warnings: list[str] = []
     panel_boxes = {panel.panel_id: _panel_box_px(panel) for panel in page.panels}
 
-    for panel in page.panels:
-        draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id], export_dir)
     for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "back":
             draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
+    for panel in page.panels:
+        draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id], export_dir)
     for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "front":
             draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
