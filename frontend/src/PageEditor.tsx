@@ -38,6 +38,8 @@ type Props = {
   onSave: (manga: MangaProject) => Promise<void> | void;
   onSuggest: (family: string | null) => Promise<void> | void;
   setMessage: (text: string) => void;
+  // アセットのキャッシュバスターを進める（同一URLの画像差し替えを反映する）。
+  onAssetVersionBump?: () => void;
 };
 
 function useAssetImage(asset: string | null, version: number): HTMLImageElement | null {
@@ -70,7 +72,8 @@ export function PageEditor({
   onChange,
   onSave,
   onSuggest,
-  setMessage
+  setMessage,
+  onAssetVersionBump
 }: Props) {
   // 親のonChangeが反映される前でも編集を即時表示できるよう、作業コピーを持つ。
   const [manga, setManga] = useState<MangaProject>(mangaProp);
@@ -244,6 +247,8 @@ export function PageEditor({
     const result = (await response.json()) as { manga_json: MangaProject };
     setManga(result.manga_json);
     onChange(result.manga_json);
+    // 同名アセットへ上書き保存されるためURLが変わらない。キャッシュバスターを進めて差し替えを反映する。
+    onAssetVersionBump?.();
     setMessage(kind === "asset" ? "overlay画像を登録しました" : "overlayマスクを登録しました");
   };
 

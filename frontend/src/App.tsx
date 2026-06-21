@@ -1296,6 +1296,7 @@ export function App() {
               assetVersion={assetVersion}
               busy={busy}
               setMessage={setMessage}
+              onAssetVersionBump={() => setAssetVersion((value) => value + 1)}
               onChange={(manga) => {
                 setSelected({ ...selected, manga_json: manga });
                 setJsonText(JSON.stringify(manga, null, 2));
@@ -1305,12 +1306,18 @@ export function App() {
                 setBusy(true);
                 try {
                   const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, manga);
-                  const rendered = await api.post<{ manga_json: MangaProject }>(
+                  const rendered = await api.post<{ manga_json: MangaProject; page_asset: string }>(
                     `/api/projects/${selected.id}/pages/${selectedPage}/render`
                   );
                   const updated = { ...project, manga_json: rendered.manga_json };
                   setSelected(updated);
                   setJsonText(JSON.stringify(updated.manga_json, null, 2));
+                  // 生成されたページPNGを制作タブのプレビューへ反映する。
+                  setPageAssets((prev) => {
+                    const next = [...prev];
+                    next[selectedPage - 1] = rendered.page_asset;
+                    return next;
+                  });
                   setAssetVersion((value) => value + 1);
                   setMessage("レイアウトを保存し、ページ画像を更新しました");
                 } catch (error) {
