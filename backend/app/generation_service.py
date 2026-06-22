@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from .assets import normalize_manga_assets, resolve_asset_path
 from .config import Settings
-from .database import GenerationJobRecord, ProjectRecord, now_utc
+from .database import GenerationJobRecord, now_utc
 from .image_backends import build_image_backend
 from .jobs import TERMINAL_JOB_STATUSES, GenerationJob, JobManager
 from .mutation import (
@@ -361,7 +361,7 @@ def mark_panel_job_stopped(
     # API側とTask側の両方から呼ばれるため、同一状態ならCAS更新自体を省略する。
     try:
         with app.state.SessionLocal() as session:
-            record = session.get(ProjectRecord, job.project_id)
+            record = app.state.repository.get(session, job.project_id)
             if record is None or record.generation_epoch != job.epoch:
                 return
             current, _page = find_panel_and_page(parse_manga(record.manga_json), job.panel_id)

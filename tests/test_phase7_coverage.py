@@ -7,7 +7,9 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image
 
-import backend.app.main as main_module
+import backend.app.asset_storage as asset_storage_module
+import backend.app.generation_service as generation_module
+import backend.app.routers.common as router_common
 from backend.app.config import Settings
 from backend.app.database import ProjectRecord, ProjectRevisionRecord, now_utc
 from backend.app.jobs import JobManager
@@ -123,7 +125,7 @@ def test_iter_manga_asset_strings_collects_every_asset_field() -> None:
             ],
         }
     )
-    collected = set(main_module.iter_manga_asset_strings(manga))
+    collected = set(asset_storage_module.iter_manga_asset_strings(manga))
     assert collected == {
         "exports/p/char.png",
         "exports/p/loc.png",
@@ -175,11 +177,11 @@ def test_generation_input_hash_digests_present_and_missing_assets(tmp_path: Path
         }
     )
     panel = manga.pages[0].panels[0]
-    digest = main_module.generation_input_hash(manga, panel, export_dir)
+    digest = generation_module.generation_input_hash(manga, panel, export_dir)
     assert isinstance(digest, str) and len(digest) == 64
     # 存在assetの内容が変わるとhashも変わる。
     Image.new("RGB", (4, 4), "blue").save(export_dir / "proj" / "present.png")
-    assert main_module.generation_input_hash(manga, panel, export_dir) != digest
+    assert generation_module.generation_input_hash(manga, panel, export_dir) != digest
 
 
 def test_referenced_paths_skip_malformed_revision_json(tmp_path: Path) -> None:
@@ -198,7 +200,7 @@ def test_referenced_paths_skip_malformed_revision_json(tmp_path: Path) -> None:
                 )
             )
             session.commit()
-        paths = main_module.referenced_project_asset_paths(app, project_id)
+        paths = router_common.referenced_project_asset_paths(app, project_id)
         assert isinstance(paths, set)
 
 
@@ -292,21 +294,21 @@ def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
             return None
 
         with pytest.raises(HTTPException) as missing:
-            main_module.run_mutation(service, "missing", noop)
+            router_common.run_mutation(service, "missing", noop)
         assert missing.value.status_code == 404
 
         with pytest.raises(HTTPException) as conflict:
-            main_module.run_mutation(service, project_id, noop, expected_revision=99999)
+            router_common.run_mutation(service, project_id, noop, expected_revision=99999)
         assert conflict.value.status_code == 409
 
         with pytest.raises(HTTPException):
-            main_module.replace_project(service, "missing", manga, expected_revision=0)
+            router_common.replace_project(service, "missing", manga, expected_revision=0)
         with pytest.raises(HTTPException) as replace_conflict:
-            main_module.replace_project(service, project_id, manga, expected_revision=99999)
+            router_common.replace_project(service, project_id, manga, expected_revision=99999)
         assert replace_conflict.value.status_code == 409
 
         with pytest.raises(HTTPException):
-            main_module.replace_project_with_history(
+            router_common.replace_project_with_history(
                 service,
                 "missing",
                 lambda _session, latest: latest,
@@ -314,7 +316,7 @@ def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
                 history_label="x",
             )
         with pytest.raises(HTTPException) as history_conflict:
-            main_module.replace_project_with_history(
+            router_common.replace_project_with_history(
                 service,
                 project_id,
                 lambda _session, latest: latest,
@@ -329,7 +331,7 @@ def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
             record.manga_json = "{壊れたJSON"
             session.commit()
         with pytest.raises(HTTPException) as invalid:
-            main_module.run_mutation(service, project_id, noop)
+            router_common.run_mutation(service, project_id, noop)
         assert invalid.value.status_code == 422
 
         from backend.app.mutation import ProjectNotFoundError
@@ -347,28 +349,28 @@ def test_enqueue_panel_jobs_error_paths(tmp_path: Path) -> None:
         project_id = create_project(client)
 
         with pytest.raises(HTTPException) as missing_project:
-            main_module.enqueue_panel_jobs(app, "missing", ["p01_01"], 1, "m")
+            router_common.enqueue_panel_jobs(app, "missing", ["p01_01"], 1, "m")
         assert missing_project.value.status_code == 404
 
         with pytest.raises(HTTPException) as missing_panel:
-            main_module.enqueue_panel_jobs(app, project_id, ["nope"], 1, "m")
+            router_common.enqueue_panel_jobs(app, project_id, ["nope"], 1, "m")
         assert missing_panel.value.status_code == 404
 
         with pytest.raises(HTTPException) as bad_epoch:
-            main_module.enqueue_panel_jobs(
+            router_common.enqueue_panel_jobs(
                 app, project_id, ["p01_01"], 1, "m", expected_epoch=99999
             )
         assert bad_epoch.value.status_code == 409
 
         # 既にqueuedのコマへ再登録するとActiveJobConflict→409。
-        main_module.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
+        router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
         with pytest.raises(HTTPException) as active:
-            main_module.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
+            router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
         assert active.value.status_code == 409
 
         # skip_active=Trueで全コマがactive除外され空になる場合もActiveJobConflict→409。
         with pytest.raises(HTTPException) as skipped_empty:
-            main_module.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m", skip_active=True)
+            router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m", skip_active=True)
         assert skipped_empty.value.status_code == 409
 
 
