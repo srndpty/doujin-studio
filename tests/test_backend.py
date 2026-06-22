@@ -1534,6 +1534,40 @@ def test_structure_change_cancels_db_only_job_for_deleted_panel(tmp_path: Path) 
             assert persisted.message == "作品構成の更新により前の生成を中断しました"
 
 
+def test_structure_change_clears_stale_active_job_id_on_done_panel(tmp_path: Path) -> None:
+    """生成中に候補採用でdoneへ移ったpanelの古いactive_job_idが構造置換で外れることを確認する。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+
+        def set_done_with_stale_owner(panel, page) -> None:
+            panel.generation.status = "done"
+            panel.generation.active_job_id = "ghost-job"
+            panel.generation.prompt_id = "ghost-prompt"
+
+        main_module.update_panel_in_latest(app, project_id, "p01_01", set_done_with_stale_owner)
+
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"][0], page["panels"][1] = page["panels"][1], page["panels"][0]
+        page["reading_order"] = [panel["panel_id"] for panel in page["panels"]]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+        panel = next(
+            panel
+            for page in response.json()["manga_json"]["pages"]
+            for panel in page["panels"]
+            if panel["panel_id"] == "p01_01"
+        )
+        # statusに関係なく所有権を外す。doneは中断扱いにはしない。
+        assert panel["generation"]["active_job_id"] is None
+        assert panel["generation"]["prompt_id"] is None
+        assert panel["generation"]["status"] == "done"
+
+
 def test_legacy_done_page_without_render_asset_migrates_to_pending(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
@@ -2171,6 +2205,61 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         asset = response.json()["asset"]
         assert (tmp_path / "exports" / asset).exists()
         assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
+
+
+def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) -> None:
+    """同じ参照先への並行アップロードで一時ファイルが衝突せず、両方成功することを確認する。"""
+    import threading
+
+    from backend.app import main as main_module
+
+    target = tmp_path / "refs" / "char_a.png"
+
+    def make_png(color: str) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    class FakeRequest:
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def body(self) -> bytes:
+            return self._content
+
+    # 両スレッドが一時ファイル書き込みを終えてreplaceへ到達した時点で揃える。
+    # replace自体は直列化し、固定一時ファイルなら片方が消えてFileNotFoundErrorになる状況を再現する。
+    barrier = threading.Barrier(2)
+    replace_lock = threading.Lock()
+    original_replace = Path.replace
+
+    def synced_replace(self: Path, dst):
+        barrier.wait(timeout=5)
+        with replace_lock:
+            return original_replace(self, dst)
+
+    monkeypatch.setattr(Path, "replace", synced_replace)
+
+    errors: list[Exception] = []
+
+    def worker(content: bytes) -> None:
+        try:
+            asyncio.run(main_module.save_request_image(FakeRequest(content), target))
+        except Exception as exc:  # noqa: BLE001 - テストで全例外を収集する
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(make_png(color),)) for color in ("red", "blue")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == [], f"並行アップロードが失敗しました: {errors}"
+    assert target.exists()
+    with Image.open(target) as saved:
+        assert saved.size == (8, 8)
+    # 一時ファイルが残らないこと。
+    assert list(target.parent.glob("*.tmp")) == []
 
 
 @pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])

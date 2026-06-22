@@ -56,11 +56,14 @@ def reset_inflight_generation_state(manga: MangaProject) -> None:
     """epoch更新後へ旧jobのactive表示を持ち越さない。"""
     for page in manga.pages:
         for panel in page.panels:
-            if panel.generation.status in {"queued", "running"}:
-                panel.generation.status = "pending"
-                panel.generation.prompt_id = None
-                panel.generation.active_job_id = None
-                panel.generation.message = "作品構成の更新により前の生成を中断しました"
+            generation = panel.generation
+            # statusに関係なく旧epochの所有権を外す。
+            # 生成中に候補採用でdoneへ移ったpanelに古いactive_job_idが残るのを防ぐ。
+            generation.active_job_id = None
+            generation.prompt_id = None
+            if generation.status in {"queued", "running"}:
+                generation.status = "pending"
+                generation.message = "作品構成の更新により前の生成を中断しました"
 
 
 def parse_manga(raw: str) -> MangaProject:

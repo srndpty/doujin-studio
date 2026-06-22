@@ -2296,9 +2296,13 @@ async def save_request_image(request: Request, target: Path, preserve_alpha: boo
         raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
     target.parent.mkdir(parents=True, exist_ok=True)
     # 検証済み画像を一時ファイルへ書き出し、成功後にreplaceで原子的に差し替える。
-    temporary = target.with_suffix(target.suffix + ".tmp")
-    image.save(temporary, format="PNG")
-    temporary.replace(target)
+    # 同じ参照先への並行アップロードで一時ファイルが衝突しないよう、リクエストごとに一意化する。
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        image.save(temporary, format="PNG")
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 async def save_content_addressed_request_image(
