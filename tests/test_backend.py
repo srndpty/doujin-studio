@@ -3,29 +3,46 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 from zipfile import ZipFile
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
 import backend.app.main as main_module
 from backend.app.config import Settings
-from backend.app.database import create_session_factory
+from backend.app.database import (
+    GenerationJobRecord,
+    ProjectRecord,
+    ProjectRevisionRecord,
+    create_session_factory,
+)
+from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
     ComfyUIWorkflowConfig,
+    ImageResult,
     apply_panel_to_workflow,
     apply_reference_images_to_workflow,
 )
-from backend.app.jobs import JobManager
+from backend.app.jobs import GenerationJob, JobManager
 from backend.app.main import create_app
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
-from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
+from backend.app.schemas import (
+    Dialogue,
+    GenerationInfo,
+    ImageCandidate,
+    MangaProject,
+    Page,
+    Panel,
+)
 
 
 def make_client(
@@ -41,6 +58,16 @@ def make_client(
     return TestClient(create_app(settings))
 
 
+def put_manga(client: TestClient, project_id: str, manga: dict):
+    # manga-jsonは楽観ロックでrevision必須。最新revisionを取得して保存する。
+    revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+    return client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+
+
+def current_revision(client: TestClient, project_id: str) -> int:
+    return client.get(f"/api/projects/{project_id}").json()["revision"]
+
+
 def create_generated_project(client: TestClient) -> str:
     response = client.post("/api/projects", json={"title": "テスト本", "work_name": "テスト作品"})
     assert response.status_code == 200
@@ -48,6 +75,7 @@ def create_generated_project(client: TestClient) -> str:
     response = client.post(
         f"/api/projects/{project_id}/generate-name",
         json={
+            "revision": 0,
             "work_name": "テスト作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -99,6 +127,7 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
         cbz_path = tmp_path / "exports" / cbz_asset
         assert cbz_path.exists()
         assert cbz_path.name.startswith("テスト本-")
+        assert "-r" in cbz_path.name
         assert cbz_path.name.endswith(".cbz")
         assert Path(response.json()["absolute_path"]) == cbz_path.resolve()
         with ZipFile(cbz_path) as archive:
@@ -108,6 +137,9 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
                 "page_003.png",
                 "page_004.png",
             ]
+        second = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert second.status_code == 200
+        assert second.json()["cbz_asset"] != cbz_asset
         assert response.json()["warnings"] == []
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["status"] == "complete"
@@ -134,7 +166,10 @@ def test_export_filename_is_safe_for_windows() -> None:
 
 
 def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
-    with make_client(tmp_path, image_backend="comfyui") as client:
+    # ワークフローは正しいが接続不可（一時障害）のときはstubへ退避する。
+    workflow_path = tmp_path / "workflow_api.json"
+    workflow_path.write_text(json.dumps(sample_workflow()), encoding="utf-8")
+    with make_client(tmp_path, image_backend="comfyui", workflow_path=workflow_path) as client:
         project_id = create_generated_project(client)
         response = client.post(f"/api/projects/{project_id}/render")
         assert response.status_code == 200
@@ -145,12 +180,40 @@ def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
         assert first_panel["image_asset"]
 
 
+def test_comfyui_missing_workflow_is_error_not_silent_stub(tmp_path: Path) -> None:
+    # 設定不備（ワークフロー欠如）は黙ってstubへ退避せず、エラーとして表面化させる。
+    with make_client(tmp_path, image_backend="comfyui") as client:
+        project_id = create_generated_project(client)
+        response = client.post(f"/api/projects/{project_id}/render")
+        assert response.status_code == 502
+        project = client.get(f"/api/projects/{project_id}").json()
+        first_panel = project["manga_json"]["pages"][0]["panels"][0]
+        assert first_panel["generation"]["status"] == "error"
+        assert first_panel["image_asset"] is None
+        assert all(page["render_status"] == "pending" for page in project["manga_json"]["pages"])
+        assert not list((tmp_path / "exports" / project_id / "pages").glob("*.png"))
+
+
+def test_generate_image_returns_502_when_backend_fails(tmp_path: Path) -> None:
+    with make_client(tmp_path, image_backend="comfyui") as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 502
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        assert panel["generation"]["status"] == "error"
+
+
 def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/projects", json={"title": "不正テスト", "work_name": ""})
         project_id = response.json()["id"]
         response = client.put(
-            f"/api/projects/{project_id}/manga-json",
+            f"/api/projects/{project_id}/manga-json?revision=0",
             json={
                 "title": "不正",
                 "target_pages": 4,
@@ -158,6 +221,505 @@ def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
             },
         )
         assert response.status_code == 422
+
+
+def test_manga_json_optimistic_lock_rejects_stale_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        detail = client.get(f"/api/projects/{project_id}").json()
+        revision = detail["revision"]
+        manga = detail["manga_json"]
+
+        first = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+        assert first.status_code == 200
+        assert first.json()["revision"] == revision + 1
+
+        # 古いrevisionでの保存は409で弾く（生成完了・別タブ保存との競合）。
+        stale = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+        assert stale.status_code == 409
+
+        # revisionは必須。未指定の無条件保存は許可しない（古いJSONでの巻き戻し防止）。
+        missing = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
+        assert missing.status_code == 422
+
+
+def test_generate_name_rejects_stale_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        stale = client.post(
+            f"/api/projects/{project_id}/generate-name",
+            json={
+                "revision": 0,
+                "work_name": "別作品",
+                "character_a": "A",
+                "character_b": "B",
+                "situation": "別の場面",
+                "ending_direction": "別の結末",
+            },
+        )
+        assert stale.status_code == 409
+        assert client.get(f"/api/projects/{project_id}").json()["work_name"] == "テスト作品"
+
+
+def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+
+        # ユーザーがp01_02のプロンプトを編集して保存する。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        for panel in manga["pages"][0]["panels"]:
+            if panel["panel_id"] == "p01_02":
+                panel["prompt"] = "ユーザー編集後のプロンプト"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        # 生成完了が開始時点の古いスナップショットではなく最新へp01_01だけマージする。
+        main_module.update_panel_in_latest(
+            app,
+            project_id,
+            "p01_01",
+            lambda panel, page: setattr(panel.generation, "message", "マージ済み"),
+        )
+
+        updated = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = {panel["panel_id"]: panel for panel in updated["pages"][0]["panels"]}
+        # p01_01のマージが反映され、かつp01_02のユーザー編集が消えていない。
+        assert panels["p01_01"]["generation"]["message"] == "マージ済み"
+        assert panels["p01_02"]["prompt"] == "ユーザー編集後のプロンプト"
+
+
+def test_duplicate_panel_id_is_rejected(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = manga["pages"][0]["panels"]
+        panels[1]["panel_id"] = panels[0]["panel_id"]
+        response = put_manga(client, project_id, manga)
+        assert response.status_code == 422
+
+
+def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert all(page["render_status"] == "done" for page in manga["pages"])
+
+        # メタ変更（タイトル）だけでは全ページをpendingに戻さない。
+        manga["title"] = "新しいタイトル"
+        meta_only = put_manga(client, project_id, manga)
+        assert meta_only.status_code == 200
+        assert all(
+            page["render_status"] == "done" for page in meta_only.json()["manga_json"]["pages"]
+        )
+
+        # 描画に影響する変更（1ページ目の台詞追加）は当該ページだけpendingにする。
+        manga2 = meta_only.json()["manga_json"]
+        manga2["pages"][0]["panels"][0]["dialogue"].append(
+            {"speaker": "char_a", "text": "追加の台詞"}
+        )
+        render_change = put_manga(client, project_id, manga2)
+        assert render_change.status_code == 200
+        pages = render_change.json()["manga_json"]["pages"]
+        assert pages[0]["render_status"] == "pending"
+        assert all(page["render_status"] == "done" for page in pages[1:])
+
+
+def test_duplicate_workflow_preset_id_is_rejected(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        preset = manga["workflow_presets"][0]
+        manga["workflow_presets"] = [preset, {**preset, "name": "重複ID"}]
+        response = put_manga(client, project_id, manga)
+        assert response.status_code == 422
+
+
+def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        # 既存候補を2つ作る（2回目が選択状態になる）。
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel = next(p for p in manga["pages"][0]["panels"] if p["panel_id"] == "p01_01")
+        assert len(panel["image_candidates"]) == 2
+        user_pick = panel["image_candidates"][0]["id"]
+
+        class SelectingBackend:
+            def __init__(self) -> None:
+                self.done = False
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # 生成中にユーザーが別の既存候補を選び直した状況を再現する。
+                if not self.done:
+                    self.done = True
+                    main_module.update_panel_in_latest(
+                        app,
+                        project_id_,
+                        "p01_01",
+                        lambda target_panel, target_page: setattr(
+                            target_panel, "selected_candidate_id", user_pick
+                        ),
+                    )
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (9, 9, 9)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        panel2 = next(
+            p
+            for p in response.json()["manga_json"]["pages"][0]["panels"]
+            if p["panel_id"] == "p01_01"
+        )
+        # 新候補は追加されるが、生成中のユーザー選択は自動採用で上書きされない。
+        assert len(panel2["image_candidates"]) == 3
+        assert panel2["selected_candidate_id"] == user_pick
+
+
+def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EditingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                if self.count == 2:
+
+                    def change_input(target_panel, target_page) -> None:
+                        target_panel.prompt = "NEW_PROMPT"
+                        target_panel.generation.prompt = "NEW_PROMPT"
+
+                    main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
+                return ImageResult("stub", "done", target_path, "old input result")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        # 生成入力が変わってジョブがcancelledになると、同期生成APIは409を返す。
+        assert response.status_code == 409
+        detail = client.get(f"/api/projects/{project_id}").json()
+        panel = detail["manga_json"]["pages"][0]["panels"][0]
+        assert panel["prompt"] == "NEW_PROMPT"
+        assert panel["image_candidates"] == []
+        assert panel["selected_candidate_id"] is None
+        assert panel["generation"]["status"] == "pending"
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert jobs[0]["status"] == "cancelled"
+        assert jobs[0]["generation_input_hash"]
+
+
+def test_candidate_selection_does_not_change_generation_input_hash(tmp_path: Path) -> None:
+    """候補採用はgeneration_input_hashを変えないが、ユーザーのseed編集は検出すること。
+
+    候補採用はseedを書き換えない（candidate.seedで表示）ためhash不変。一方seedは実際の
+    生成入力なのでhashに含め、別タブ等でのseed編集は古い候補の混入として検出する。
+    """
+    export_dir = tmp_path / "exports"
+    candidate = ImageCandidate(
+        id="cand-a",
+        asset="exports/project/panels/p01_01/cand-a.png",
+        backend="comfyui",
+        status="done",
+        seed=999,
+        created_at=db_now_utc(),
+    )
+    manga = MangaProject(
+        title="hash",
+        target_pages=4,
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="one",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="顔",
+                        prompt="base",
+                        image_candidates=[candidate],
+                        generation=GenerationInfo(backend="stub", prompt="base", seed=1),
+                    )
+                ],
+            )
+        ],
+    )
+    panel = manga.pages[0].panels[0]
+    before = main_module.generation_input_hash(manga, panel, export_dir)
+    # 既存候補を採用してもseedは基準seedのまま（candidate.seedで表示する）。
+    main_module.apply_candidate_selection(panel, candidate)
+    assert panel.generation.seed == 1, "候補採用は基準seedを書き換えない"
+    assert panel.selected_candidate_id == "cand-a"
+    assert panel.generation.backend == "comfyui"  # backendは表示用に同期するがhash対象外
+    after = main_module.generation_input_hash(manga, panel, export_dir)
+    assert before == after, "候補採用は生成入力の変更として扱わない"
+
+    # ユーザーがseedを編集すると入力変更として検出される（古い候補の混入を防ぐ）。
+    panel.generation.seed = 4242
+    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+
+    # 実プロンプトの変更もhashへ反映される。
+    panel.generation.prompt = "changed"
+    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+
+
+def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch) -> None:
+    """shutdown時、未開始queuedジョブのpanelをerrorにせずqueued+所有権のまま残すこと。
+
+    複数ジョブのうち1件がgeneration_lockを取って生成中、残りがlock待ちqueuedの状態で
+    正常終了すると、queuedジョブのpanelがerror化してDB(queued/再開対象)と食い違っていた。
+    """
+    import time
+
+    class BlockingBackend:
+        async def generate_panel(self, *args, **kwargs):
+            await asyncio.Event().wait()  # cancelされるまで永久にブロックする
+
+    monkeypatch.setattr(main_module, "build_image_backend", lambda settings: BlockingBackend())
+
+    db_path = tmp_path / "test.db"
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/generation-jobs", json={"page": 1, "candidate_count": 1}
+        )
+        assert response.status_code == 200
+        jobs = response.json()["jobs"]
+        assert len(jobs) >= 2
+        # 先頭ジョブがlock取得→set_running→generate_panelで停止し、残りはlock待ちqueuedになる。
+        time.sleep(0.5)
+        # ここでwithを抜けるとlifespan shutdown→JobManager.shutdown()が走る。
+
+    factory = create_session_factory(f"sqlite:///{db_path}")
+    with factory() as session:
+        record = session.get(ProjectRecord, project_id)
+        manga = MangaProject.model_validate(json.loads(record.manga_json))
+        panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
+        statuses = []
+        for job in jobs:
+            db_job = session.get(GenerationJobRecord, job["id"])
+            panel = panels[job["panel_id"]]
+            statuses.append(db_job.status)
+            if db_job.status == "queued":
+                # 再開対象はqueuedのまま。所有権も維持し、Manga JSONをerrorにしない。
+                assert panel.generation.status == "queued"
+                assert panel.generation.active_job_id == job["id"]
+            else:
+                # 生成中だったジョブはshutdownがerror確定。panelもerrorで揃える。
+                assert db_job.status == "error"
+                assert panel.generation.status == "error"
+        # 少なくとも1件はqueuedで再開待ちとして残ること（本テストの主眼）。
+        assert "queued" in statuses
+
+
+def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeypatch) -> None:
+    """生成中に基準seedと異なる既存候補を採用しても、進行中ジョブが破棄されないこと。"""
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        first = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        assert first.status_code == 200
+        candidates = first.json()["manga_json"]["pages"][0]["panels"][0]["image_candidates"]
+        assert len(candidates) == 2
+        # 最小seedの既存候補を生成中に採用する。修正前は旧ジョブ選択でgeneration.seedが
+        # 末尾候補のseedへ進むため、これを採用するとseed不一致でジョブが破棄されていた。
+        other = min(candidates, key=lambda candidate: candidate["seed"])
+
+        class SelectingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                if self.count == 1:
+
+                    def reselect(target_panel, target_page) -> None:
+                        candidate = next(
+                            item for item in target_panel.image_candidates if item.id == other["id"]
+                        )
+                        main_module.apply_candidate_selection(target_panel, candidate)
+
+                    main_module.update_panel_in_latest(app, project_id_, "p01_01", reselect)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        second = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        # 候補採用ではseedが変わらないため、ジョブはcancelされず新候補が保存される。
+        assert second.status_code == 200, second.text
+        panel = second.json()["manga_json"]["pages"][0]["panels"][0]
+        assert len(panel["image_candidates"]) == 4
+
+
+def _queue_client(running: list[str], pending: list[str], posted: list[tuple[str, dict | None]]):
+    class FakeComfyQueueClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url):
+            return httpx.Response(
+                200,
+                json={
+                    "queue_running": [[0, pid] for pid in running],
+                    "queue_pending": [[0, pid] for pid in pending],
+                },
+                request=httpx.Request("GET", url),
+            )
+
+        def post(self, url, json=None):
+            posted.append((url, json))
+            return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    return FakeComfyQueueClient()
+
+
+def test_stop_comfyui_removes_queued_without_global_interrupt(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
+    )
+    assert main_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
+    assert any(url.endswith("/queue") and json == {"delete": ["pid"]} for url, json in posted)
+    assert not any(url.endswith("/interrupt") for url, _ in posted)
+
+
+def test_stop_comfyui_interrupts_only_when_running(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
+    )
+    assert main_module.stop_comfyui_generation(settings, "pid") == "interrupted"
+    assert any(url.endswith("/interrupt") for url, _ in posted)
+
+
+def test_stop_comfyui_skips_unrelated_generation(monkeypatch) -> None:
+    settings = Settings(image_backend="comfyui")
+    posted: list[tuple[str, dict | None]] = []
+    monkeypatch.setattr(
+        main_module.httpx, "Client", lambda *a, **k: _queue_client(["other"], ["another"], posted)
+    )
+    # 対象prompt_idがキューに無ければグローバルinterruptもqueue削除もしない。
+    assert main_module.stop_comfyui_generation(settings, "pid") == "not_requested"
+    assert posted == []
+
+
+def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # generate-imageはジョブ完了まで待つため、終了後にキャンセルする。
+        generated = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert generated.status_code == 200
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        job = jobs[0]
+        assert job["status"] == "done"
+
+        cancelled = client.post(f"/api/generation-jobs/{job['id']}/cancel")
+        assert cancelled.status_code == 200
+        # 完了済みジョブのキャンセルは何もしない（doneのまま）。
+        assert cancelled.json()["status"] == "done"
+        # 成功したコマがskippedへ巻き戻らない。
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] != "skipped"
+        assert panel["selected_candidate_id"]
+
+
+def test_use_stub_creates_unique_candidate_files(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assets = [candidate["asset"] for candidate in panel["image_candidates"]]
+        assert len(assets) == 2
+        # 候補ごとに別ファイルになっており、選び直しても画像が上書きされない。
+        assert assets[0] != assets[1]
+        assert all((tmp_path / "exports" / asset).exists() for asset in assets)
+
+
+def test_auto_adopt_marks_page_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # ページ1をレンダリング済み(done)にする。
+        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        page1 = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page1["render_status"] == "done"
+
+        # ページ1のコマで候補を生成→自動採用されると、当該ページはpendingへ戻る。
+        client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        page1_after = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page1_after["render_status"] == "pending"
 
 
 def test_workflow_json_is_patched_for_panel(tmp_path: Path) -> None:
@@ -330,7 +892,8 @@ def test_single_panel_render_page_endpoint_updates_page_png(tmp_path: Path) -> N
         response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
         assert response.status_code == 200
         page_asset = response.json()["page_asset"]
-        assert page_asset == f"{project_id}/pages/page_001.png"
+        assert page_asset.startswith(f"{project_id}/pages/page_001.")
+        assert page_asset.endswith(".png")
         assert (tmp_path / "exports" / page_asset).exists()
 
 
@@ -369,7 +932,7 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
         assert response.status_code == 200
         selected_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
         assert selected_panel["selected_candidate_id"] == first_candidate_id
-        assert response.json()["page_asset"] == f"{project_id}/pages/page_001.png"
+        assert response.json()["page_asset"].startswith(f"{project_id}/pages/page_001.")
 
 
 def test_job_manager_cancels_running_task() -> None:
@@ -388,6 +951,1179 @@ def test_job_manager_cancels_running_task() -> None:
         assert manager.tasks[job.id].cancelled()
 
     asyncio.run(scenario())
+
+
+def test_cancel_before_task_start_releases_panel_and_allows_regeneration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manager = client.app.state.job_manager
+
+        def do_not_start(job, coroutine) -> None:
+            coroutine.close()
+
+        monkeypatch.setattr(manager, "start", do_not_start)
+        created = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert created.status_code == 200
+        cancelled = client.post(f"/api/generation-jobs/{created.json()['id']}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        detail = client.get(f"/api/projects/{project_id}").json()
+        panel = detail["manga_json"]["pages"][0]["panels"][0]
+        assert panel["generation"]["status"] == "skipped"
+        revision_after_cancel = detail["revision"]
+        cancelled_job = manager.get(created.json()["id"])
+        assert cancelled_job is not None
+        main_module.mark_panel_job_stopped(client.app, cancelled_job, "生成をキャンセルしました")
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == revision_after_cancel
+
+        retried = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert retried.status_code == 200
+
+
+def test_delayed_old_job_stop_does_not_overwrite_new_job_panel(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        manager = app.state.job_manager
+
+        old_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧ジョブ")[0]
+        manager.register_in_memory(old_job)
+        assert manager.cancel(old_job)
+        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+
+        new_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "新ジョブ")[0]
+        manager.register_in_memory(new_job)
+        before = client.get(f"/api/projects/{project_id}").json()
+        panel_before = before["manga_json"]["pages"][0]["panels"][0]
+        assert panel_before["generation"]["status"] == "queued"
+        assert panel_before["generation"]["active_job_id"] == new_job.id
+
+        # 旧TaskのCancelledError処理が後着しても、新jobの所有状態は変更しない。
+        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+        after = client.get(f"/api/projects/{project_id}").json()
+        panel_after = after["manga_json"]["pages"][0]["panels"][0]
+        assert after["revision"] == before["revision"]
+        assert panel_after["generation"]["status"] == "queued"
+        assert panel_after["generation"]["active_job_id"] == new_job.id
+
+
+def test_cancelled_job_stays_cancelled_when_backend_raises_late(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        started = threading.Event()
+
+        class LateFailingBackend:
+            async def generate_panel(self, *args, **kwargs):
+                started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError as exc:
+                    raise RuntimeError("キャンセル後の遅延例外") from exc
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: LateFailingBackend()
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                client.post,
+                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                json={"candidate_count": 1},
+            )
+            assert started.wait(timeout=10)
+            jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+            cancelled = client.post(f"/api/generation-jobs/{jobs[0]['id']}/cancel")
+            generated = future.result(timeout=10)
+        assert cancelled.json()["status"] == "cancelled"
+        assert generated.status_code == 409
+        persisted = client.get(f"/api/projects/{project_id}/generation-jobs").json()[0]
+        assert persisted["status"] == "cancelled"
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        assert panel["generation"]["status"] == "skipped"
+
+
+def test_shutdown_marks_running_job_error_not_queued(tmp_path: Path) -> None:
+    # 正常shutdown時、ComfyUI投入済みかもしれないrunningジョブをqueuedで残すと
+    # 次回起動で二重投入される。errorにしてprompt_idもクリアすることを確認する。
+    async def scenario() -> None:
+        session_factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+        with session_factory() as session:
+            session.add(
+                ProjectRecord(
+                    id="project",
+                    title="t",
+                    work_name="",
+                    manga_json="{}",
+                    created_at=db_now_utc(),
+                    updated_at=db_now_utc(),
+                )
+            )
+            session.commit()
+        manager = JobManager(session_factory)
+        job = manager.create("project", "panel", 1)
+
+        async def wait_forever() -> None:
+            await asyncio.sleep(60)
+
+        manager.start(job, wait_forever())
+        manager.update(job, status="running", prompt_id="remote-prompt")
+        await manager.shutdown()
+        recovered = manager.get(job.id)
+        assert recovered is not None
+        assert recovered.status == "error"
+        assert recovered.prompt_id is None
+
+    asyncio.run(scenario())
+
+
+def test_use_stub_marks_page_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        assert (
+            client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "render_status"
+            ]
+            == "done"
+        )
+        # use-stubで採用画像が変わったら、対象ページは再レンダリング対象(pending)へ戻る。
+        assert client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub").status_code == 200
+        assert (
+            client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "render_status"
+            ]
+            == "pending"
+        )
+
+
+def test_cbz_returns_revision_and_client_can_sync(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        before = client.get(f"/api/projects/{project_id}").json()["revision"]
+        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert export.status_code == 200
+        # CBZ出力もrevisionを進め、応答で返すのでクライアントが同期できる。
+        exported_revision = export.json()["revision"]
+        assert exported_revision > before
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == exported_revision
+
+
+def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, monkeypatch) -> None:
+    export_dir = tmp_path / "exports"
+    canonical = export_dir / "project" / "pages" / "page_001.png"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"old-page")
+
+    def fail_after_staging(project_id, manga, page_number, root, *, output_dir=None):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "page_001.png").write_bytes(b"incomplete-page")
+        raise RuntimeError("描画失敗")
+
+    monkeypatch.setattr(main_module, "render_project_page", fail_after_staging)
+    with pytest.raises(RuntimeError, match="描画失敗"):
+        main_module.render_snapshot_page(
+            "project", MangaProject(title="test"), 1, export_dir, revision=3
+        )
+    assert canonical.read_bytes() == b"old-page"
+    assert not list((export_dir / "project" / ".render-staging").glob("revision-*"))
+
+
+def test_page_render_conflict_cleans_its_unreferenced_png(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "commit_rendered_pages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                HTTPException(status_code=409, detail="描画競合")
+            ),
+        )
+        response = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert response.status_code == 409
+        assert not list((tmp_path / "exports" / project_id / "pages").glob("page_001.*.png"))
+
+
+def test_render_cleanup_preserves_asset_referenced_by_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        snapshot = MangaProject.model_validate(detail["manga_json"])
+        ownership: dict[Path, bool] = {}
+        asset, _warnings = main_module.render_snapshot_page(
+            project_id,
+            snapshot,
+            1,
+            app.state.settings.export_dir,
+            detail["revision"],
+            ownership=ownership,
+        )
+        snapshot.pages[0].render_status = "done"
+        snapshot.pages[0].render_hash = main_module.page_render_hash(snapshot, snapshot.pages[0])
+        snapshot.pages[0].render_asset = main_module.asset_to_id(
+            asset, app.state.settings.export_dir
+        )
+        with app.state.SessionLocal() as session:
+            session.add(
+                ProjectRevisionRecord(
+                    id="history-render",
+                    project_id=project_id,
+                    label="描画履歴",
+                    manga_json=snapshot.model_dump_json(),
+                    created_at=db_now_utc(),
+                )
+            )
+            session.commit()
+        main_module.cleanup_published_assets(app, project_id, ownership)
+        assert asset.is_file()
+
+
+def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "render_project_page",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("描画失敗")),
+        )
+        with pytest.raises(RuntimeError, match="描画失敗"):
+            client.post(f"/api/projects/{project_id}/pages/1/render")
+        page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page["render_status"] == "pending"
+        assert page["render_asset"] is None
+
+
+def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail_a = client.get(f"/api/projects/{project_id}").json()
+        snapshot_a = MangaProject.model_validate(detail_a["manga_json"])
+        asset_a, _ = main_module.render_snapshot_page(
+            project_id, snapshot_a, 1, app.state.settings.export_dir, detail_a["revision"]
+        )
+
+        changed = detail_a["manga_json"]
+        changed["pages"][0]["panels"][0]["bbox"][0] += 0.001
+        saved = put_manga(client, project_id, changed).json()
+        snapshot_b = MangaProject.model_validate(saved["manga_json"])
+        asset_b, _ = main_module.render_snapshot_page(
+            project_id, snapshot_b, 1, app.state.settings.export_dir, saved["revision"]
+        )
+        manga_b, _revision = main_module.commit_rendered_pages(
+            app,
+            project_id,
+            snapshot_b.model_copy(update={"pages": [snapshot_b.pages[0]]}),
+            [asset_b],
+        )
+        with pytest.raises(HTTPException) as conflict:
+            main_module.commit_rendered_pages(
+                app,
+                project_id,
+                snapshot_a.model_copy(update={"pages": [snapshot_a.pages[0]]}),
+                [asset_a],
+            )
+        assert conflict.value.status_code == 409
+        assert asset_a != asset_b
+        assert asset_a.exists() and asset_b.exists()
+        assert manga_b.pages[0].render_asset.endswith(asset_b.name)
+
+
+def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        manga["pages"][0]["overlay_elements"] = [
+            {"id": "same", "source_panel_id": "p01_01", "box": [0.1, 0.1, 0.3, 0.3]}
+        ]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+
+        def upload(color: str):
+            buffer = io.BytesIO()
+            Image.new("RGBA", (16, 16), color).save(buffer, format="PNG")
+            return client.post(
+                f"/api/projects/{project_id}/pages/1/overlays/same/asset"
+                f"?revision={current_revision(client, project_id)}",
+                content=buffer.getvalue(),
+                headers={"Content-Type": "image/png"},
+            )
+
+        red = upload("red").json()
+        old_snapshot = MangaProject.model_validate(red["manga_json"])
+        old_asset, _ = main_module.render_snapshot_page(
+            project_id, old_snapshot, 1, app.state.settings.export_dir, red["revision"]
+        )
+        green = upload("green").json()
+        assert red["asset"] != green["asset"]
+
+        with pytest.raises(HTTPException) as conflict:
+            main_module.commit_rendered_pages(
+                app,
+                project_id,
+                old_snapshot.model_copy(update={"pages": [old_snapshot.pages[0]]}),
+                [old_asset],
+            )
+        assert conflict.value.status_code == 409
+        current = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert current["render_status"] == "pending"
+
+        rendered = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert rendered.status_code == 200
+        rendered_page = rendered.json()["manga_json"]["pages"][0]
+        assert rendered_page["render_status"] == "done"
+        assert green["asset"] in json.dumps(rendered_page, ensure_ascii=False)
+
+
+def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        project_dir = tmp_path / "exports" / project_id
+        pngs_before = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
+        monkeypatch.setattr(
+            main_module,
+            "export_confirmed_cbz",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CBZ失敗")),
+        )
+        with pytest.raises(RuntimeError, match="CBZ失敗"):
+            client.post(f"/api/projects/{project_id}/export/cbz")
+        pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
+        assert all(page["render_status"] == "pending" for page in pages)
+        # CBZ生成が例外でも、先に公開したPNGは回収され残らない。
+        pngs_after = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
+        assert pngs_after == pngs_before
+
+
+def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        monkeypatch.setattr(
+            main_module,
+            "commit_rendered_pages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                HTTPException(status_code=409, detail="描画入力競合")
+            ),
+        )
+        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert response.status_code == 409
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+
+def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        original_export = main_module.export_confirmed_cbz
+
+        def update_then_export(*args, **kwargs):
+            def break_reading_order(manga: MangaProject) -> None:
+                manga.pages[0].reading_order = ["missing-panel"]
+
+            app.state.mutation.mutate(project_id, break_reading_order)
+            return original_export(*args, **kwargs)
+
+        monkeypatch.setattr(main_module, "export_confirmed_cbz", update_then_export)
+        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert response.status_code == 409
+        latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
+        assert any(issue["code"] == "invalid_reading_order" for issue in latest_preflight["errors"])
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+
+def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        barrier = threading.Barrier(2)
+        original_export = main_module.export_confirmed_cbz
+
+        def synchronized_export(*args, **kwargs):
+            path = original_export(*args, **kwargs)
+            barrier.wait(timeout=10)
+            return path
+
+        monkeypatch.setattr(main_module, "export_confirmed_cbz", synchronized_export)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(
+                executor.map(
+                    lambda _: client.post(f"/api/projects/{project_id}/export/cbz"),
+                    range(2),
+                )
+            )
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        successful = next(response.json() for response in responses if response.status_code == 200)
+        cbz_path = tmp_path / "exports" / successful["cbz_asset"]
+        assert cbz_path.is_file()
+        for page in successful["manga_json"]["pages"]:
+            assert (tmp_path / "exports" / page["render_asset"]).is_file()
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert all(page["rendered"] for page in status["pages"])
+
+
+def test_production_status_detects_missing_render_asset(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        rendered = client.post(f"/api/projects/{project_id}/pages/1/render").json()
+        asset = tmp_path / "exports" / rendered["page_asset"]
+        asset.unlink()
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        page = next(item for item in status["pages"] if item["page"] == 1)
+        assert page["rendered"] is False
+        saved_page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert saved_page["render_status"] == "pending"
+
+
+def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectConflictError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'mut.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=MangaProject(title="t").model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    # 期待revision不一致は409相当(ProjectConflictError)。
+    with pytest.raises(ProjectConflictError):
+        service.mutate("p", lambda manga: None, expected_revision=99)
+
+    # 正しい期待revisionなら適用し、revisionを進める。
+    _result, _manga, revision = service.mutate(
+        "p", lambda manga: setattr(manga, "premise", "x"), expected_revision=0
+    )
+    assert revision == 1
+
+
+def test_mutation_service_epoch_mismatch(tmp_path: Path) -> None:
+    from backend.app.mutation import EpochMismatchError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'epoch.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=MangaProject(title="t").model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+    # 世代不一致(構成全置換後の古いジョブ相当)はEpochMismatchError。
+    with pytest.raises(EpochMismatchError):
+        service.mutate("p", lambda manga: None, expected_epoch=5)
+
+
+def test_structural_replace_saves_history_and_epoch_atomically(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectConflictError, ProjectMutationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'structural.db'}")
+    original = MangaProject(title="変更前", premise="旧構成")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=original.title,
+                work_name="",
+                manga_json=original.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    with pytest.raises(ProjectConflictError):
+        service.replace_with_history(
+            "p",
+            lambda _session, manga: manga,
+            expected_revision=9,
+            history_label="保存されない履歴",
+        )
+    with session_factory() as session:
+        assert session.query(ProjectRevisionRecord).count() == 0
+
+    replacement, revision = service.replace_with_history(
+        "p",
+        lambda _session, manga: manga.model_copy(update={"title": "変更後", "premise": "新構成"}),
+        expected_revision=0,
+        history_label="変更前",
+    )
+    assert replacement.title == "変更後"
+    assert revision == 1
+    with session_factory() as session:
+        project = session.get(ProjectRecord, "p")
+        history = session.query(ProjectRevisionRecord).one()
+        assert project.revision == 1
+        assert project.generation_epoch == 1
+        assert MangaProject.model_validate_json(history.manga_json).premise == "旧構成"
+
+
+def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    from backend.app.generation_service import ActiveJobConflictError, GenerationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'enqueue.db'}")
+    manga = MangaProject(
+        title="t",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="single",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="",
+                        generation=GenerationInfo(status="running"),
+                    )
+                ],
+            )
+        ],
+    )
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = GenerationService(session_factory, tmp_path / "exports")
+    service.enqueue("p", ["p01_01"], 1, "queued")
+    with pytest.raises(ActiveJobConflictError):
+        service.enqueue("p", ["p01_01"], 1, "duplicate")
+    with session_factory() as session:
+        assert session.query(GenerationJobRecord).count() == 1
+        indexes = session.execute(text("PRAGMA index_list(generation_jobs)")).all()
+        assert any(row[1] == "ux_generation_jobs_active_panel" and row[2] == 1 for row in indexes)
+
+
+def test_generation_service_ignores_and_terminates_old_epoch_active_job(tmp_path: Path) -> None:
+    from backend.app.generation_service import GenerationService
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'old-epoch.db'}")
+    manga = MangaProject(
+        title="t",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="single",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="",
+                        generation=GenerationInfo(status="running"),
+                    )
+                ],
+            )
+        ],
+    )
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                generation_epoch=1,
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+        session.add(
+            GenerationJobRecord(
+                id="old",
+                project_id="p",
+                panel_id="p01_01",
+                candidate_count=1,
+                status="running",
+                epoch=0,
+                candidate_ids_json="[]",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    jobs = GenerationService(session_factory, tmp_path / "exports").enqueue(
+        "p", ["p01_01"], 1, "new", expected_epoch=1
+    )
+    assert jobs[0].epoch == 1
+    with session_factory() as session:
+        assert session.get(GenerationJobRecord, "old").status == "cancelled"
+
+
+def test_stale_structural_replace_does_not_cancel_active_job(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "停止されないジョブ")[0]
+        app.state.job_manager.register_in_memory(job)
+        response = client.post(
+            f"/api/projects/{project_id}/generate-name",
+            json={
+                "revision": 0,
+                "work_name": "stale",
+                "character_a": "A",
+                "character_b": "B",
+                "situation": "stale",
+                "ending_direction": "stale",
+            },
+        )
+        assert response.status_code == 409
+        assert app.state.job_manager.get(job.id).status == "queued"
+
+
+def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧構成ジョブ")[0]
+        app.state.job_manager.register_in_memory(job)
+        app.state.job_manager.update(job, status="running", prompt_id="old-prompt")
+        main_module.update_panel_in_latest(
+            app,
+            project_id,
+            "p01_01",
+            lambda panel, page: setattr(panel.generation, "status", "running"),
+        )
+        stopped: list[str | None] = []
+        monkeypatch.setattr(
+            main_module,
+            "stop_comfyui_generation",
+            lambda settings, prompt_id: stopped.append(prompt_id) or "interrupted",
+        )
+        detail = client.get(f"/api/projects/{project_id}").json()
+        before_epoch = app.state.mutation.current_epoch(project_id)
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"][0], page["panels"][1] = page["panels"][1], page["panels"][0]
+        page["reading_order"] = [panel["panel_id"] for panel in page["panels"]]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+        assert app.state.mutation.current_epoch(project_id) == before_epoch + 1
+        assert app.state.job_manager.get(job.id).status == "cancelled"
+        assert stopped == ["old-prompt"]
+        updated_panel = next(
+            panel
+            for page in response.json()["manga_json"]["pages"]
+            for panel in page["panels"]
+            if panel["panel_id"] == "p01_01"
+        )
+        assert updated_panel["generation"]["status"] == "pending"
+        retried = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            json={"candidate_count": 1},
+        )
+        assert retried.status_code == 200
+        new_job = app.state.job_manager.get(retried.json()["id"])
+        assert new_job is not None
+        assert new_job.epoch == before_epoch + 1
+
+
+def test_structure_change_cancels_db_only_job_for_deleted_panel(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        detail = client.get(f"/api/projects/{project_id}").json()
+        epoch = app.state.mutation.current_epoch(project_id)
+        timestamp = db_now_utc()
+        job_id = "db-only-deleted-panel"
+        with app.state.SessionLocal() as session:
+            session.add(
+                GenerationJobRecord(
+                    id=job_id,
+                    project_id=project_id,
+                    panel_id="p01_01",
+                    candidate_count=1,
+                    status="running",
+                    progress=10,
+                    message="メモリ未登録の旧ジョブ",
+                    epoch=epoch,
+                    candidate_ids_json="[]",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+            )
+            session.commit()
+
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"] = [panel for panel in page["panels"] if panel["panel_id"] != "p01_01"]
+        page["reading_order"] = [
+            panel_id for panel_id in page["reading_order"] if panel_id != "p01_01"
+        ]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+
+        with app.state.SessionLocal() as session:
+            persisted = session.get(GenerationJobRecord, job_id)
+            assert persisted is not None
+            assert persisted.status == "cancelled"
+            assert persisted.prompt_id is None
+            assert persisted.message == "作品構成の更新により前の生成を中断しました"
+
+
+def test_structure_change_clears_stale_active_job_id_on_done_panel(tmp_path: Path) -> None:
+    """生成中に候補採用でdoneへ移ったpanelの古いactive_job_idが構造置換で外れることを確認する。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+
+        def set_done_with_stale_owner(panel, page) -> None:
+            panel.generation.status = "done"
+            panel.generation.active_job_id = "ghost-job"
+            panel.generation.prompt_id = "ghost-prompt"
+
+        main_module.update_panel_in_latest(app, project_id, "p01_01", set_done_with_stale_owner)
+
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        page = manga["pages"][0]
+        page["panels"][0], page["panels"][1] = page["panels"][1], page["panels"][0]
+        page["reading_order"] = [panel["panel_id"] for panel in page["panels"]]
+        response = client.put(
+            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
+        )
+        assert response.status_code == 200
+        panel = next(
+            panel
+            for page in response.json()["manga_json"]["pages"]
+            for panel in page["panels"]
+            if panel["panel_id"] == "p01_01"
+        )
+        # statusに関係なく所有権を外す。doneは中断扱いにはしない。
+        assert panel["generation"]["active_job_id"] is None
+        assert panel["generation"]["prompt_id"] is None
+        assert panel["generation"]["status"] == "done"
+
+
+def test_legacy_done_page_without_render_asset_migrates_to_pending(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        with app.state.SessionLocal() as session:
+            record = session.get(ProjectRecord, project_id)
+            manga = json.loads(record.manga_json)
+            manga["pages"][0]["render_status"] = "done"
+            manga["pages"][0]["rendered_at"] = db_now_utc().isoformat()
+            manga["pages"][0].pop("render_asset", None)
+            manga["pages"][0].pop("render_hash", None)
+            record.manga_json = json.dumps(manga, ensure_ascii=False)
+            session.commit()
+        page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page["render_status"] == "pending"
+        assert page["render_asset"] is None
+        assert page["render_hash"] is None
+
+
+def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EpochBumpingBackend:
+            def __init__(self) -> None:
+                self.done = False
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # 生成中にネーム再生成・ストーリー適用相当で世代が進んだ状況を再現する。
+                if not self.done:
+                    self.done = True
+                    with app.state.SessionLocal() as session:
+                        record = session.get(ProjectRecord, project_id_)
+                        record.generation_epoch += 1
+                        session.commit()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+        )
+
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        # 世代が変わってジョブがcancelledになると、同期生成APIは409を返す。
+        assert response.status_code == 409
+        detail = client.get(f"/api/projects/{project_id}").json()
+        panel = next(
+            p for p in detail["manga_json"]["pages"][0]["panels"] if p["panel_id"] == "p01_01"
+        )
+        # 世代が変わったため、古いプロンプトの候補は新作品へ混入しない。
+        assert panel["image_candidates"] == []
+        assert panel["selected_candidate_id"] is None
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert jobs[0]["status"] == "cancelled"
+        # 破棄した候補PNG本体も残らない（current/history未参照のため回収）。
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+
+
+def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class EpochBumpingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                # 1件目の生成中に構成全置換(ネーム再生成・並べ替え)で世代を進める。
+                if self.count == 1:
+                    with app.state.SessionLocal() as session:
+                        record = session.get(ProjectRecord, project_id_)
+                        record.generation_epoch += 1
+                        session.commit()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+        )
+
+        # 開始時epochで固定された/renderは、途中で世代が変わると409で止まる。
+        response = client.post(f"/api/projects/{project_id}/render", json={"force": True})
+        assert response.status_code == 409
+        # 新しい作品構成へ後続ジョブを積まない（最初の1件だけで中止する）。
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "cancelled"
+        # 構成置換後のページをdoneへ確定しない。
+        pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
+        assert all(page["render_status"] == "pending" for page in pages)
+
+
+def test_completed_job_not_reverted_by_stale_job_stop(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        # 新jobを正常完了させる（完了時にactive_job_id=Noneへ戻る）。
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                json={"candidate_count": 1},
+            ).status_code
+            == 200
+        )
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "done"
+        selected_before = panel["selected_candidate_id"]
+        candidates_before = len(panel["image_candidates"])
+
+        # 遅れて到着した旧jobの停止処理は、完了済みpanelを上書きしない。
+        epoch = app.state.mutation.current_epoch(project_id)
+        stale_job = GenerationJob(
+            project_id=project_id, panel_id="p01_01", candidate_count=1, epoch=epoch
+        )
+        main_module.mark_panel_job_stopped(app, stale_job, "生成をキャンセルしました")
+
+        after = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert after["generation"]["status"] == "done"
+        assert after["selected_candidate_id"] == selected_before
+        assert len(after["image_candidates"]) == candidates_before
+
+
+def test_missing_selected_asset_blocks_render_and_cbz(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # 全ページ生成・レンダリングして完成状態にする。
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.get(f"/api/projects/{project_id}/production-status").json()["status"] == (
+            "complete"
+        )
+        # 採用candidateは残したまま、採用画像ファイルだけを消す非構造的な欠損を作る。
+        detail = client.get(f"/api/projects/{project_id}").json()
+        asset = detail["manga_json"]["pages"][0]["panels"][0]["image_asset"]
+        assert asset
+        (tmp_path / "exports" / asset).unlink()
+
+        # production statusはcompleteにならず、欠損をblocker化する。
+        status = client.get(f"/api/projects/{project_id}/production-status").json()
+        assert status["status"] != "complete"
+        assert any("欠損" in blocker for blocker in status["blockers"])
+
+        # 採用画像が欠損したコマがあると、CBZ出力は422で拒否する。
+        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        assert export.status_code == 422
+        assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
+
+        # /renderもプレースホルダを完成PNGとして確定せず409で中止する。
+        render = client.post(f"/api/projects/{project_id}/render")
+        assert render.status_code == 409
+
+
+def test_missing_selected_asset_blocks_single_page_render(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        detail = client.get(f"/api/projects/{project_id}").json()
+        page = detail["manga_json"]["pages"][0]
+        asset = page["panels"][0]["image_asset"]
+        assert asset
+        (tmp_path / "exports" / asset).unlink()
+        before_render_asset = page["render_asset"]
+
+        # 直接ページrender・コマ単位render-pageも採用asset欠損なら409で確定しない。
+        page_render = client.post(f"/api/projects/{project_id}/pages/1/render")
+        assert page_render.status_code == 409
+        panel_render = client.post(
+            f"/api/projects/{project_id}/panels/{page['panels'][0]['panel_id']}/render-page"
+        )
+        assert panel_render.status_code == 409
+        # render_asset/render_statusが新規確定されていない（古い参照のまま）。
+        page_after = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
+        assert page_after["render_asset"] == before_render_asset
+
+
+def test_long_prompt_does_not_break_stale_candidate_cleanup(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        # 500文字超のpromptを仕込む（cleanupが任意文字列をパス扱いするとOSErrorになる）。
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        long_prompt = "a" * 600
+        manga["pages"][0]["panels"][0]["prompt"] = long_prompt
+        manga["pages"][0]["panels"][0]["generation"]["prompt"] = long_prompt
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        class EditingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                if self.count == 2:
+
+                    def change_input(target_panel, target_page) -> None:
+                        target_panel.prompt = "DIFFERENT"
+                        target_panel.generation.prompt = "DIFFERENT"
+
+                    main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        # 長promptでも、入力不一致の破棄が502ではなく本来の409で完結する。
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        assert response.status_code == 409
+        jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
+        assert jobs[0]["status"] == "cancelled"
+        # 破棄候補のPNGは残らない。
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+
+
+def test_relative_export_dir_cleanup_keeps_referenced_asset(tmp_path: Path, monkeypatch) -> None:
+    # 相対EXPORT_DIRでも、参照中assetを誤って削除しないこと（パス基準の統一）。
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        export_dir=Path("exports"),
+        image_backend="stub",
+    )
+    with TestClient(create_app(settings)) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        keep_rel = f"{project_id}/references/keep.png"
+        keep_path = tmp_path / "exports" / keep_rel
+        keep_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(keep_path)
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        manga["characters"][0]["reference_image_asset"] = keep_rel
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        # ownershipへ相対パスで参照中assetを入れてcleanupしても、参照中なので削除されない。
+        main_module.cleanup_published_assets(app, project_id, {Path("exports") / keep_rel: True})
+        assert keep_path.is_file()
+
+
+def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+
+        class CancelledThenReturnBackend:
+            def __init__(self) -> None:
+                self.cancelled_once = False
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # 1回目だけ、結果返却直前にjobがキャンセル済みになった状況を再現する
+                # （backendがCancelledErrorを内部で吸収して遅延PNGを返すケース）。
+                if not self.cancelled_once:
+                    self.cancelled_once = True
+                    manager = app.state.job_manager
+                    for job in list(manager.jobs.values()):
+                        if (
+                            job.project_id == project_id_
+                            and job.panel_id == "p01_01"
+                            and job.status == "running"
+                        ):
+                            # 実際のキャンセル同様、DBへもcancelledを永続化する。
+                            manager.update(job, status="cancelled")
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (7, 8, 9)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        shared_backend = CancelledThenReturnBackend()
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: shared_backend)
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        # キャンセル済みjobの同期生成は409。返ってきたPNGは孤児化させず回収する。
+        assert response.status_code == 409
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+        # panelはrunningのまま固定されず、skippedへ確定する。
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "skipped"
+        # 直後の再生成が受理される（runningのままだと409で再生成不能になる）。
+        retry = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert retry.status_code == 200
+
+
+def test_backend_exception_after_png_write_cleans_up_orphan(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+
+        class WriteThenFailBackend:
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                # PNGを書いた後に例外化する（502になるが孤児PNGを残さないこと）。
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (3, 3, 3)).save(target_path)
+                raise RuntimeError("backend爆発")
+
+        monkeypatch.setattr(
+            main_module, "build_image_backend", lambda settings: WriteThenFailBackend()
+        )
+        response = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 502
+        panels_dir = tmp_path / "exports" / project_id / "panels"
+        assert not list(panels_dir.rglob("*.png")) if panels_dir.exists() else True
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "error"
 
 
 def test_character_profiles_are_composed_without_duplicates() -> None:
@@ -631,7 +2367,8 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/characters/char_a/reference-image",
+            f"/api/projects/{project_id}/characters/char_a/reference-image"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
@@ -639,6 +2376,207 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         asset = response.json()["asset"]
         assert (tmp_path / "exports" / asset).exists()
         assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
+
+
+def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) -> None:
+    """同じ参照先への並行アップロードで一時ファイルが衝突せず、両方成功することを確認する。"""
+    import threading
+
+    from backend.app import main as main_module
+
+    target = tmp_path / "refs" / "char_a.png"
+
+    def make_png(color: str) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    class FakeRequest:
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def body(self) -> bytes:
+            return self._content
+
+    # 両スレッドが一時ファイル書き込みを終えてreplaceへ到達した時点で揃える。
+    # replace自体は直列化し、固定一時ファイルなら片方が消えてFileNotFoundErrorになる状況を再現する。
+    barrier = threading.Barrier(2)
+    replace_lock = threading.Lock()
+    original_replace = Path.replace
+
+    def synced_replace(self: Path, dst):
+        barrier.wait(timeout=5)
+        with replace_lock:
+            return original_replace(self, dst)
+
+    monkeypatch.setattr(Path, "replace", synced_replace)
+
+    errors: list[Exception] = []
+
+    def worker(content: bytes) -> None:
+        try:
+            asyncio.run(main_module.save_request_image(FakeRequest(content), target))
+        except Exception as exc:  # noqa: BLE001 - テストで全例外を収集する
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(make_png(color),)) for color in ("red", "blue")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == [], f"並行アップロードが失敗しました: {errors}"
+    assert target.exists()
+    with Image.open(target) as saved:
+        assert saved.size == (8, 8)
+    # 一時ファイルが残らないこと。
+    assert list(target.parent.glob("*.tmp")) == []
+
+
+def test_reference_upload_conflict_keeps_content_addressed_asset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PNG保存後・JSON反映前に競合(409)しても、内容hash不変assetは削除しない。
+
+    削除すると、同一内容を並行uploadしたcreated=Falseの後続リクエストがcommit直前に
+    targetを失い、成功応答なのにJSONが欠損assetを参照する不整合になる。失敗側は
+    targetを残し（無害な内容キャッシュ）、JSONは未参照のままにする。
+    """
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        stale_revision = current_revision(client, project_id)
+
+        captured: dict[str, Path] = {}
+        original = main_module.save_content_addressed_request_image
+
+        async def inject_conflict(request, asset_dir, asset_kind, *, preserve_alpha=False):
+            target, created = await original(
+                request, asset_dir, asset_kind, preserve_alpha=preserve_alpha
+            )
+            captured["target"] = target
+
+            # 保存直後に別経路でmanga_jsonを変更しrevisionを進め、楽観ロック競合(409)を起こす。
+            def bump(manga: MangaProject) -> None:
+                manga.premise = (manga.premise or "") + "x"
+
+            app.state.mutation.mutate(project_id, bump)
+            return target, created
+
+        monkeypatch.setattr(main_module, "save_content_addressed_request_image", inject_conflict)
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (12, 12), "red").save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={stale_revision}",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        # revision不一致で409になること。
+        assert response.status_code == 409
+        # 失敗してもtargetは削除されない（並行する後続リクエストの参照を壊さないため）。
+        assert "target" in captured
+        assert captured["target"].exists()
+        # 失敗リクエスト自身のJSONはassetを参照しないこと。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        asset_id = main_module.path_to_asset_id(captured["target"], app.state.settings.export_dir)
+        assert manga["characters"][0]["reference_image_asset"] != asset_id
+        # 一時ファイルも残らないこと。
+        assert list((tmp_path / "exports").rglob("*.tmp")) == []
+
+
+def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, monkeypatch) -> None:
+    """同一内容を同じ参照先へ並行公開しても、created=Trueは原子的に1回だけになる。
+
+    両スレッドが一時ファイル書き込み後・publish前で揃うため、exists()事前確認方式なら
+    両者がcreated=Trueになって失敗側cleanupが成功側assetを消しうる状況を再現する。
+    """
+    import threading
+
+    asset_dir = tmp_path / "refs"
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10), "red").save(buffer, format="PNG")
+    png = buffer.getvalue()
+
+    class FakeRequest:
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def body(self) -> bytes:
+            return self._content
+
+    original_save = main_module.save_request_image
+    barrier = threading.Barrier(2)
+
+    async def synced_save(request, target, preserve_alpha=False):
+        await original_save(request, target, preserve_alpha=preserve_alpha)
+        # 両スレッドがtemp書き込みを終え、publish直前で揃える。
+        barrier.wait(timeout=5)
+
+    monkeypatch.setattr(main_module, "save_request_image", synced_save)
+
+    results: list[tuple[Path, bool]] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        target, created = asyncio.run(
+            main_module.save_content_addressed_request_image(
+                FakeRequest(png), asset_dir, "character"
+            )
+        )
+        with lock:
+            results.append((target, created))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    targets = {target for target, _ in results}
+    assert len(targets) == 1, "同一内容は同一targetへ公開される"
+    # 原子的判定なら初公開だけTrue。exists()方式だと両方Trueになりこのassertで落ちる。
+    assert sorted(created for _, created in results) == [False, True]
+    assert next(iter(targets)).exists()
+    assert [item for item in asset_dir.iterdir() if item.name.startswith(".")] == []
+
+
+def test_same_content_parallel_upload_keeps_winner_asset(tmp_path: Path) -> None:
+    """同一内容を同じ参照先へ並行upload相当で送り、片方409でも成功側assetを消さない。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        buffer = io.BytesIO()
+        Image.new("RGB", (14, 14), "blue").save(buffer, format="PNG")
+        png = buffer.getvalue()
+
+        winner_revision = current_revision(client, project_id)
+        # 先行リクエスト: 成功してassetをJSONへ紐付ける。
+        first = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={winner_revision}",
+            content=png,
+            headers={"Content-Type": "image/png"},
+        )
+        assert first.status_code == 200
+        asset = first.json()["asset"]
+        assert (tmp_path / "exports" / asset).is_file()
+
+        # 後発リクエスト: 同一内容・同一参照先だがrevisionが古く409。
+        # 後発のpublishはcreated=Falseとなり、cleanupは成功側assetを消さない。
+        second = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={winner_revision}",
+            content=png,
+            headers={"Content-Type": "image/png"},
+        )
+        assert second.status_code == 409
+
+        # 成功側のJSONがassetを参照し続け、ファイルも残る。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert manga["characters"][0]["reference_image_asset"] == asset
+        assert (tmp_path / "exports" / asset).is_file()
+        # 孤児.tmpが残らないこと。
+        assert list((tmp_path / "exports").rglob("*.tmp")) == []
 
 
 @pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
@@ -650,7 +2588,7 @@ def test_reference_upload_keeps_colliding_ids_separate(
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         manga["characters"][0]["id"] = left
         manga["characters"][1]["id"] = right
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for character_id, color in ((left, "red"), (right, "blue")):
@@ -658,7 +2596,8 @@ def test_reference_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image",
+                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -685,7 +2624,7 @@ def test_location_upload_keeps_colliding_ids_separate(
             {**template, "id": left, "display_name": left},
             {**template, "id": right, "display_name": right},
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for location_id, color in ((left, "red"), (right, "blue")):
@@ -693,7 +2632,8 @@ def test_location_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image",
+                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -722,13 +2662,14 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
                 "box": [0.2, 0.2, 0.4, 0.5],
             }
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         image = Image.new("RGBA", (32, 32), (255, 0, 0, 128))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/pages/1/overlays/hero%20unsafe/asset",
+            f"/api/projects/{project_id}/pages/1/overlays/hero%20unsafe/asset"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
@@ -739,7 +2680,7 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
 
         manga = response.json()["manga_json"]
         manga["pages"][0]["reading_order"] = ["unknown-panel"]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
         preflight_response = client.post(f"/api/projects/{project_id}/preflight")
         assert preflight_response.status_code == 200
         assert any(
@@ -758,7 +2699,7 @@ def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, 
             {"id": overlay_id, "source_panel_id": panel_id, "box": [0.2, 0.2, 0.4, 0.5]}
             for overlay_id in (left, right)
         ]
-        assert client.put(f"/api/projects/{project_id}/manga-json", json=manga).status_code == 200
+        assert put_manga(client, project_id, manga).status_code == 200
 
         assets: list[str] = []
         for overlay_id, color in ((left, "red"), (right, "blue")):
@@ -766,7 +2707,8 @@ def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, 
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/pages/1/overlays/{quote(overlay_id, safe='')}/asset",
+                f"/api/projects/{project_id}/pages/1/overlays/{quote(overlay_id, safe='')}/asset"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -804,16 +2746,36 @@ def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:
 
 def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
     session_factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    # generation_jobs.project_idはprojectsへの外部キーなので親レコードを先に作る。
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="project",
+                title="t",
+                work_name="",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
     manager = JobManager(session_factory)
-    job = manager.create("project", "panel", 2)
-    manager.update(job, status="running", progress=45, message="生成中")
+    # running(ComfyUI投入済みかもしれない) と queued(未開始) を1つずつ用意する。
+    running_job = manager.create("project", "panel-a", 2)
+    manager.update(running_job, status="running", progress=45, message="生成中", prompt_id="pid")
+    queued_job = manager.create("project", "panel-b", 1)
 
     restored_manager = JobManager(session_factory)
-    restored = restored_manager.restore_pending()
-    assert len(restored) == 1
-    assert restored[0].id == job.id
-    assert restored[0].status == "queued"
-    assert restored_manager.get(job.id).message == "バックエンド再起動後に生成を再開します"
+    to_start, interrupted = restored_manager.restore_pending()
+    # 未開始のqueuedジョブだけ再開対象になる。
+    assert [job.id for job in to_start] == [queued_job.id]
+    assert to_start[0].status == "queued"
+    # runningだったジョブは二重投入を避けるためerror(要再実行)へ。再開はしない。
+    assert [job.id for job in interrupted] == [running_job.id]
+    recovered_running = restored_manager.get(running_job.id)
+    assert recovered_running.status == "error"
+    assert "再起動により中断" in recovered_running.message
+    assert recovered_running.prompt_id is None
 
 
 def test_generate_sixteen_page_name(tmp_path: Path) -> None:
@@ -826,6 +2788,7 @@ def test_generate_sixteen_page_name(tmp_path: Path) -> None:
         response = client.post(
             f"/api/projects/{project_id}/generate-name",
             json={
+                "revision": 0,
                 "work_name": "作品",
                 "character_a": "A",
                 "character_b": "B",
@@ -849,13 +2812,15 @@ def test_location_and_control_image_upload_apis(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/locations/default_room/reference-image",
+            f"/api/projects/{project_id}/locations/default_room/reference-image"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image?load_node_id=51",
+            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image"
+            f"?load_node_id=51&revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
@@ -905,7 +2870,7 @@ def test_long_dialogue_renders_with_auto_font_shrink(tmp_path: Path) -> None:
                 )
             ],
         )
-        response = client.put(f"/api/projects/{project_id}/manga-json", json=manga.model_dump())
+        response = put_manga(client, project_id, manga.model_dump())
         assert response.status_code == 200
         response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
         assert response.status_code == 200

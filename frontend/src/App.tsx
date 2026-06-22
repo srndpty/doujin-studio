@@ -9,8 +9,14 @@ import {
   useState
 } from "react";
 import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
+import type { components } from "./api/schema";
 import { KnowledgePanel } from "./KnowledgePanel";
+import { composePromptPreview } from "./prompt-preview";
 import { StoryPanel } from "./StoryPanel";
+
+// OpenAPIスキーマを唯一の正とする。座標タプル(bbox/box)を含む型はOpenAPIが
+// 固定長タプルを表現できないため、エディタ/ジオメトリ側の都合で手書きを維持する。
+type Schemas = components["schemas"];
 
 const PageEditor = lazy(() => import("./PageEditor").then((module) => ({ default: module.PageEditor })));
 
@@ -87,84 +93,17 @@ export type Panel = {
   };
 };
 
-type LoRABinding = { node_id: string; lora_name: string; strength_model: number; strength_clip: number };
-type ReferenceImageBinding = { node_id: string; asset: string; character_id: string; kind: string };
-type PanelControlReference = {
-  id: string;
-  kind: "pose" | "depth" | "lineart" | "background";
-  asset: string;
-  load_node_id: string;
-};
-type WorkflowPreset = {
-  id: string;
-  name: string;
-  checkpoint_node_id: string;
-  checkpoint_name: string;
-  vae_node_id: string;
-  vae_name: string;
-  sampler_node_id: string;
-  sampler_name: string;
-  scheduler: string;
-  steps: number | null;
-  cfg: number | null;
-  denoise: number | null;
-};
-type LocationProfile = {
-  id: string;
-  display_name: string;
-  prompt: string;
-  negative_prompt: string;
-  reference_image_asset: string | null;
-  reference_load_node_id: string;
-};
+type LoRABinding = Schemas["LoRABinding"];
+type ReferenceImageBinding = Schemas["ReferenceImageBinding"];
+type PanelControlReference = Schemas["PanelControlReference"];
+type WorkflowPreset = Schemas["WorkflowPreset"];
+type LocationProfile = Schemas["LocationProfile"];
 
-type ImageCandidate = {
-  id: string;
-  asset: string;
-  backend: "stub" | "comfyui";
-  status: "done" | "fallback" | "error";
-  prompt: string;
-  negative_prompt: string;
-  characters: string[];
-  loras: LoRABinding[];
-  reference_images: ReferenceImageBinding[];
-  workflow_preset: WorkflowPreset | null;
-  seed: number;
-  prompt_id: string | null;
-  message: string;
-  created_at: string;
-};
+type ImageCandidate = Schemas["ImageCandidate"];
 
-type Character = {
-  id: string;
-  display_name: string;
-  role: string;
-  speech_style: string;
-  visual_notes: string;
-  trigger_prompt: string;
-  appearance_prompt: string;
-  outfit_prompt: string;
-  negative_prompt: string;
-  lora_node_id: string;
-  lora_name: string;
-  lora_strength_model: number;
-  lora_strength_clip: number;
-  reference_image_asset: string | null;
-  reference_load_node_id: string;
-};
+type Character = Schemas["Character"];
 
-type GenerationJob = {
-  id: string;
-  project_id: string;
-  panel_id: string;
-  status: "queued" | "running" | "done" | "error" | "cancelled";
-  progress: number;
-  current: number;
-  total: number;
-  node: string | null;
-  message: string;
-  candidate_ids: string[];
-};
+type GenerationJob = Schemas["GenerationJobResponse"];
 
 export type OverlayElement = {
   id: string;
@@ -191,6 +130,8 @@ export type MangaPage = {
   panels: Panel[];
   render_status: "pending" | "done";
   rendered_at: string | null;
+  render_asset?: string | null;
+  render_hash?: string | null;
 };
 
 export type MangaProject = {
@@ -214,48 +155,26 @@ export type MangaProject = {
   pages: MangaPage[];
 };
 
-type ProductionStatus = {
-  project_id: string;
-  status: "incomplete" | "ready" | "complete";
-  adopted_panels: number;
-  total_panels: number;
-  rendered_pages: number;
-  total_pages: number;
-  pages: {
-    page: number;
-    status: "incomplete" | "ready" | "complete";
-    adopted_panels: number;
-    total_panels: number;
-    rendered: boolean;
-    blockers: string[];
-  }[];
-  blockers: string[];
-};
+type ProductionStatus = Schemas["ProjectProductionStatus"];
 
+type ProjectSummary = Schemas["ProjectSummary"];
+
+type ComfyUIStatus = Schemas["ComfyUIStatusResponse"];
+
+// manga_jsonはタプル座標を含む手書きMangaProjectを使うため、ProjectDetailは別管理にする。
 type Project = {
   id: string;
   title: string;
   work_name: string;
+  // 楽観ロック用。保存時に?revision=で送り、サーバ側CASで競合を検出する。
+  revision: number;
   manga_json: MangaProject;
 };
 
-type ProjectSummary = {
-  id: string;
-  title: string;
-  work_name: string;
-  updated_at: string;
-};
-
-type ComfyUIStatus = {
-  backend: string;
-  base_url: string;
-  workflow_path: string;
-  connected: boolean;
-  workflow_exists: boolean;
-  workflow_valid: boolean;
-  missing_nodes: string[];
-  message: string;
-};
+// ProjectRecordを変更するAPIの共通応答。manga_jsonとrevisionを必ず含み、
+// applyProjectMutation()でproject IDを検証して反映する（revision同期・切替競合防止）。
+type MangaMutationResult = { manga_json: MangaProject; revision: number };
+type PageMutationResult = MangaMutationResult & { page_asset: string };
 
 type TaskProgress = {
   label: string;
@@ -268,10 +187,19 @@ const ANIMA3_POSITIVE = "masterpiece, best quality, score_7, safe, anime";
 const ANIMA3_NEGATIVE =
   "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, bad hands, bad anatomy, extra fingers, missing fingers, text, watermark, speech bubble, logo";
 
+class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "ApiError";
+  }
+}
+
 const api = {
   async get<T>(path: string): Promise<T> {
     const response = await fetch(path);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   },
   async post<T>(path: string, body?: unknown): Promise<T> {
@@ -280,7 +208,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   },
   async put<T>(path: string, body: unknown): Promise<T> {
@@ -289,7 +217,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new ApiError(response.status, await response.text());
     return response.json();
   }
 };
@@ -316,12 +244,16 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
+  const selectedProjectIdRef = useRef<string | null>(null);
+  const projectLoadSequenceRef = useRef(0);
   const dragState = useRef<{
     mode: "move" | "resize";
     startX: number;
     startY: number;
     box: [number, number, number, number];
   } | null>(null);
+  // 進行中の生成ウォッチャ（WebSocket/polling）の中断関数。unmount時に必ず止める。
+  const jobWatchersRef = useRef<Set<() => void>>(new Set());
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
@@ -349,10 +281,21 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // unmount時、開いているWebSocketとpollingを必ず停止する。
+    const watchers = jobWatchersRef.current;
+    return () => {
+      for (const abort of Array.from(watchers)) abort();
+      watchers.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     if (selected) {
       void refreshProductionStatus(selected.id);
       void refreshJobHistory(selected.id);
     }
+    // プロジェクトIDが変わったときだけ再取得する（selected全体の変化では再実行しない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
 
   useEffect(() => {
@@ -376,11 +319,35 @@ export function App() {
 
   async function refreshProductionStatus(projectId: string) {
     const status = await api.get<ProductionStatus>(`/api/projects/${projectId}/production-status`);
-    setProductionStatus(status);
+    if (selectedProjectIdRef.current === projectId) setProductionStatus(status);
   }
 
   async function refreshJobHistory(projectId: string) {
-    setJobHistory(await api.get<GenerationJob[]>(`/api/projects/${projectId}/generation-jobs`));
+    const history = await api.get<GenerationJob[]>(`/api/projects/${projectId}/generation-jobs`);
+    if (selectedProjectIdRef.current === projectId) setJobHistory(history);
+  }
+
+  function applyProjectMutation(projectId: string, mangaJson: MangaProject, revision?: number): boolean {
+    if (selectedProjectIdRef.current !== projectId) return false;
+    setSelected((current) =>
+      current && current.id === projectId
+        ? {
+            ...current,
+            // ProjectRecord.title/work_nameもmanga_jsonと同時に更新される。トップレベル値も
+            // 揃えないと、StoryPanel/KnowledgePanelが旧work_nameで知識同期やセッション作成をしてしまう。
+            title: mangaJson.title,
+            work_name: mangaJson.work_name,
+            manga_json: mangaJson,
+            revision: revision ?? current.revision
+          }
+        : current
+    );
+    setJsonText(JSON.stringify(mangaJson, null, 2));
+    return true;
+  }
+
+  function updateProjectPageAssets(projectId: string, update: (assets: string[]) => string[]) {
+    if (selectedProjectIdRef.current === projectId) setPageAssets(update);
   }
 
   async function runTask(task: () => Promise<void>) {
@@ -405,6 +372,7 @@ export function App() {
         work_name: "",
         target_pages: 4
       });
+      selectedProjectIdRef.current = project.id;
       setSelected(project);
       setSelectedPage(1);
       setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
@@ -426,23 +394,71 @@ export function App() {
   }
 
   async function loadProject(id: string) {
+    const sequence = ++projectLoadSequenceRef.current;
+    const previousId = selectedProjectIdRef.current;
+    selectedProjectIdRef.current = id;
     await runTask(async () => {
-      const project = await api.get<Project>(`/api/projects/${id}`);
+      let project: Project;
+      try {
+        project = await api.get<Project>(`/api/projects/${id}`);
+      } catch (error) {
+        if (projectLoadSequenceRef.current === sequence) selectedProjectIdRef.current = previousId;
+        throw error;
+      }
+      if (projectLoadSequenceRef.current !== sequence || selectedProjectIdRef.current !== id) return;
       setSelected(project);
       setSelectedPage(1);
       setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
       setPageAssets([]);
+      setProductionStatus(null);
+      setJobHistory([]);
+      setActiveJobIds([]);
       setMessage("プロジェクトを読み込みました");
     });
   }
 
+  // Manga JSON保存を一本化し、必ず?revision=を添えて楽観ロックを効かせる。
+  // 自分の操作で進んだrevisionは各応答から同期しているため、ここでの409は
+  // 「他の操作・他タブによる実際の競合」を意味する。古い全文での上書きは危険なので、
+  // 安全側に倒して最新を採用(reload)し、未保存の編集は適用しない（暗黙の上書きをしない）。
+  // ※base/local/latestの三者マージUIは将来の改善として残す。
+  async function putMangaJson(projectId: string, revision: number, manga: MangaProject): Promise<Project> {
+    try {
+      return await api.put<Project>(`/api/projects/${projectId}/manga-json?revision=${revision}`, manga);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const latest = await api.get<Project>(`/api/projects/${projectId}`);
+        if (selectedProjectIdRef.current === projectId) {
+          setSelected(latest);
+          setJsonText(JSON.stringify(latest.manga_json, null, 2));
+        }
+        throw new Error(
+          "他の操作（生成完了や別タブの保存）で更新されていたため、最新を読み込み直しました。" +
+            "未保存の編集は適用していません。内容を確認して編集し直してください。"
+        );
+      }
+      throw error;
+    }
+  }
+
+  // ジョブ終端後など、サーバ側でmanga_json/revisionが進んだ経路で最新を丸ごと反映する。
+  // revisionだけ先行させると古いmanga_jsonを最新revisionで保存でき、サーバの候補・生成状態を
+  // 巻き戻せてしまうため、必ずmanga_jsonごと取り込む。
+  async function reloadSelectedProject(projectId: string) {
+    const latest = await api.get<Project>(`/api/projects/${projectId}`);
+    if (selectedProjectIdRef.current !== projectId) return;
+    setSelected((prev) => (prev && prev.id === projectId ? latest : prev));
+    setJsonText(JSON.stringify(latest.manga_json, null, 2));
+  }
+
+  // 更新APIの応答(manga_json + revision)をselectedへ反映する。
+  // revisionを必ず同期し、サーバ側でrevisionが進んだ後の保存が誤って409にならないようにする。
   async function saveJsonDraft(successMessage: string): Promise<Project | null> {
     if (!selected) return null;
     const parsed = JSON.parse(jsonText) as MangaProject;
-    const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, parsed);
-    setSelected(project);
-    setJsonText(JSON.stringify(project.manga_json, null, 2));
+    const project = await putMangaJson(selected.id, selected.revision, parsed);
+    applyProjectMutation(project.id, project.manga_json, project.revision);
     setMessage(successMessage);
     return project;
   }
@@ -455,6 +471,7 @@ export function App() {
       const manga = saved?.manga_json ?? selected.manga_json;
       const nextAssets = [...pageAssets];
       let latestManga = manga;
+      let latestRevision = saved?.revision ?? selected.revision;
       for (const page of manga.pages) {
         const firstPanel = page.panels[0];
         if (!firstPanel) continue;
@@ -463,17 +480,18 @@ export function App() {
           current: page.page,
           total: manga.pages.length
         });
-        const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
-          `/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`
-        );
+        const response = await api.post<{
+          page_asset: string;
+          manga_json: MangaProject;
+          revision: number;
+        }>(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`);
         latestManga = response.manga_json;
+        latestRevision = response.revision;
         nextAssets[page.page - 1] = response.page_asset;
-        setPageAssets([...nextAssets]);
+        updateProjectPageAssets(projectId, () => [...nextAssets]);
         setAssetVersion((value) => value + 1);
       }
-      const project = { ...(saved ?? selected), manga_json: latestManga };
-      setSelected(project);
-      setJsonText(JSON.stringify(latestManga, null, 2));
+      applyProjectMutation(projectId, latestManga, latestRevision);
       setMessage("ページをレンダリングしました");
       await refreshProductionStatus(projectId);
     });
@@ -488,13 +506,11 @@ export function App() {
       const job = await createAndWaitForGenerationJob(projectId, currentPanel.panel_id);
       if (job.status !== "done") throw new Error(job.message);
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
-      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+      const pageResponse = await api.post<PageMutationResult>(
         `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
       );
-      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json };
-      setSelected(project);
-      setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setPageAssets((assets) => {
+      applyProjectMutation(projectId, pageResponse.manga_json, pageResponse.revision);
+      updateProjectPageAssets(projectId, (assets) => {
         const next = [...assets];
         next[selectedPage - 1] = pageResponse.page_asset;
         return next;
@@ -525,8 +541,11 @@ export function App() {
       } finally {
         setActiveJobIds([]);
         await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
       }
-      let latestManga = (await api.get<Project>(`/api/projects/${projectId}`)).manga_json;
+      const fresh = await api.get<Project>(`/api/projects/${projectId}`);
+      let latestManga = fresh.manga_json;
+      let latestRevision = fresh.revision;
       const firstPanelId = panelIds[0];
       if (firstPanelId) {
         setProgress({
@@ -534,18 +553,20 @@ export function App() {
           current: panelIds.length + 1,
           total: panelIds.length + 1
         });
-        const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
-          `/api/projects/${projectId}/panels/${firstPanelId}/render-page`
-        );
+        const pageResponse = await api.post<{
+          page_asset: string;
+          manga_json: MangaProject;
+          revision: number;
+        }>(`/api/projects/${projectId}/panels/${firstPanelId}/render-page`);
         latestManga = pageResponse.manga_json;
-        setPageAssets((assets) => {
+        latestRevision = pageResponse.revision;
+        updateProjectPageAssets(projectId, (assets) => {
           const next = [...assets];
           next[selectedPage - 1] = pageResponse.page_asset;
           return next;
         });
       }
-      setSelected({ ...(saved ?? selected), manga_json: latestManga });
-      setJsonText(JSON.stringify(latestManga, null, 2));
+      applyProjectMutation(projectId, latestManga, latestRevision);
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページの全コマを生成しました`);
       await refreshProductionStatus(projectId);
@@ -567,10 +588,10 @@ export function App() {
       } finally {
         setActiveJobIds([]);
         await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
       }
       const latest = await api.get<Project>(`/api/projects/${projectId}`);
-      setSelected(latest);
-      setJsonText(JSON.stringify(latest.manga_json, null, 2));
+      applyProjectMutation(projectId, latest.manga_json, latest.revision);
       await renderAllPages(projectId, latest);
       // page_*.pngを書き換えた後にキャッシュバスターを進める（同一URLの古い画像が残らないように）。
       setAssetVersion((value) => value + 1);
@@ -601,6 +622,7 @@ export function App() {
   async function renderAllPages(projectId: string, project: Project): Promise<void> {
     const nextAssets = [...pageAssets];
     let latestManga = project.manga_json;
+    let latestRevision = project.revision;
     for (let index = 0; index < project.manga_json.pages.length; index += 1) {
       const page = project.manga_json.pages[index];
       const firstPanel = page.panels[0];
@@ -610,15 +632,15 @@ export function App() {
         current: index,
         total: project.manga_json.pages.length
       });
-      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+      const response = await api.post<PageMutationResult>(
         `/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`
       );
       latestManga = response.manga_json;
+      latestRevision = response.revision;
       nextAssets[page.page - 1] = response.page_asset;
-      setPageAssets([...nextAssets]);
+      updateProjectPageAssets(projectId, () => [...nextAssets]);
     }
-    setSelected({ ...project, manga_json: latestManga });
-    setJsonText(JSON.stringify(latestManga, null, 2));
+    applyProjectMutation(projectId, latestManga, latestRevision);
   }
 
   async function requestNotificationPermission(): Promise<void> {
@@ -644,23 +666,54 @@ export function App() {
     } finally {
       setActiveJobIds([]);
       await refreshJobHistory(projectId);
+      // ジョブ登録・生成・失敗・キャンセルでサーバ側のmanga_json/revisionが進むため、
+      // 最新プロジェクト全体を取り込む（revisionだけ進めて古いJSONを残さない）。
+      await reloadSelectedProject(projectId);
     }
   }
 
   function watchGenerationJob(initialJob: GenerationJob): Promise<GenerationJob> {
-    return new Promise((resolve) => {
+    const TERMINAL = ["done", "error", "cancelled"];
+    const MAX_POLL_ATTEMPTS = 8;
+    return new Promise<GenerationJob>((resolve, reject) => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(
-        `${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`
-      );
       let settled = false;
-      let polling = false;
+      let socket: WebSocket | null = null;
+      let pollTimer: number | null = null;
+      let pollFailures = 0;
+
+      const cleanup = () => {
+        if (socket) {
+          socket.onmessage = socket.onerror = socket.onclose = null;
+          try {
+            socket.close();
+          } catch {
+            /* 既にクローズ済みでも無視する */
+          }
+          socket = null;
+        }
+        if (pollTimer !== null) {
+          window.clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+        jobWatchersRef.current.delete(abort);
+      };
       const finish = (job: GenerationJob) => {
         if (settled) return;
         settled = true;
-        socket.close();
+        cleanup();
         resolve(job);
       };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error("生成ジョブの監視に失敗しました"));
+      };
+      // unmountやキャンセルから安全に止めるための中断関数。
+      const abort = () => fail(new Error("生成ジョブの監視を中断しました"));
+      jobWatchersRef.current.add(abort);
+
       const update = (job: GenerationJob) => {
         setProgress({
           label: job.node
@@ -670,27 +723,67 @@ export function App() {
           total: 100,
           indeterminate: job.status === "queued" && job.progress === 0
         });
-        if (["done", "error", "cancelled"].includes(job.status)) finish(job);
+        if (TERMINAL.includes(job.status)) finish(job);
       };
-      socket.onmessage = (event) => update(JSON.parse(event.data) as GenerationJob);
-      const startPolling = () => {
-        if (settled || polling) return;
-        polling = true;
-        socket.close();
-        void pollGenerationJob(initialJob.id).then(finish);
-      };
-      socket.onerror = startPolling;
-      socket.onclose = startPolling;
-    });
-  }
 
-  async function pollGenerationJob(jobId: string): Promise<GenerationJob> {
-    while (true) {
-      const job = await api.get<GenerationJob>(`/api/generation-jobs/${jobId}`);
-      setProgress({ label: job.message, current: job.progress, total: 100 });
-      if (["done", "error", "cancelled"].includes(job.status)) return job;
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    }
+      const poll = async () => {
+        if (settled) return;
+        try {
+          const job = await api.get<GenerationJob>(`/api/generation-jobs/${initialJob.id}`);
+          pollFailures = 0;
+          update(job);
+          if (settled) return;
+        } catch (error) {
+          pollFailures += 1;
+          if (pollFailures >= MAX_POLL_ATTEMPTS) {
+            fail(error);
+            return;
+          }
+        }
+        if (settled) return;
+        // 指数バックオフ（1s,2s,4s…最大8s）で再接続を試みる。
+        const delay = Math.min(1000 * 2 ** Math.max(0, pollFailures), 8000);
+        setProgress({
+          label: pollFailures > 0 ? `再接続中 (${pollFailures}回目)…` : "生成状況を確認中…",
+          current: 0,
+          total: 100,
+          indeterminate: true
+        });
+        pollTimer = window.setTimeout(() => void poll(), delay);
+      };
+
+      const startPolling = () => {
+        if (settled) return;
+        if (socket) {
+          socket.onmessage = socket.onerror = socket.onclose = null;
+          try {
+            socket.close();
+          } catch {
+            /* 無視 */
+          }
+          socket = null;
+        }
+        if (pollTimer === null) void poll();
+      };
+
+      try {
+        socket = new WebSocket(
+          `${protocol}//${window.location.host}/api/generation-jobs/${initialJob.id}/ws`
+        );
+        socket.onmessage = (event) => {
+          try {
+            update(JSON.parse(event.data) as GenerationJob);
+          } catch (error) {
+            fail(error);
+          }
+        };
+        socket.onerror = startPolling;
+        socket.onclose = startPolling;
+      } catch {
+        // WebSocketを開けない環境ではpollingへ退避する。
+        startPolling();
+      }
+    });
   }
 
   async function cancelActiveJob() {
@@ -698,18 +791,19 @@ export function App() {
     await Promise.all(
       activeJobIds.map((jobId) => api.post<GenerationJob>(`/api/generation-jobs/${jobId}/cancel`))
     );
+    if (selected) await reloadSelectedProject(selected.id);
     setMessage("生成キューをキャンセルしました");
   }
 
   async function selectCandidate(candidateId: string) {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
-      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+      const response = await api.post<PageMutationResult>(
         `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/candidates/${candidateId}/select`
       );
-      setSelected({ ...selected, manga_json: response.manga_json });
-      setJsonText(JSON.stringify(response.manga_json, null, 2));
-      setPageAssets((assets) => {
+      const projectId = selected.id;
+      applyProjectMutation(projectId, response.manga_json, response.revision);
+      updateProjectPageAssets(projectId, (assets) => {
         const next = [...assets];
         next[selectedPage - 1] = response.page_asset;
         return next;
@@ -725,16 +819,16 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      const response = await api.post<{ manga_json: MangaProject }>(
+      // use-stubの応答を先に反映する。renderが失敗してもrevisionが古いまま残らない。
+      const stubResponse = await api.post<MangaMutationResult>(
         `/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`
       );
-      const pageResponse = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+      applyProjectMutation(projectId, stubResponse.manga_json, stubResponse.revision);
+      const pageResponse = await api.post<PageMutationResult>(
         `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
       );
-      const project = { ...(saved ?? selected), manga_json: pageResponse.manga_json ?? response.manga_json };
-      setSelected(project);
-      setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setPageAssets((assets) => {
+      applyProjectMutation(projectId, pageResponse.manga_json, pageResponse.revision);
+      updateProjectPageAssets(projectId, (assets) => {
         const next = [...assets];
         next[selectedPage - 1] = pageResponse.page_asset;
         return next;
@@ -750,13 +844,11 @@ export function App() {
     await runTask(async () => {
       const saved = await saveJsonDraft("写植更新前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
-      const response = await api.post<{ page_asset: string; manga_json: MangaProject }>(
+      const response = await api.post<PageMutationResult>(
         `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`
       );
-      const project = { ...(saved ?? selected), manga_json: response.manga_json };
-      setSelected(project);
-      setJsonText(JSON.stringify(response.manga_json, null, 2));
-      setPageAssets((assets) => {
+      applyProjectMutation(projectId, response.manga_json, response.revision);
+      updateProjectPageAssets(projectId, (assets) => {
         const next = [...assets];
         next[selectedPage - 1] = response.page_asset;
         return next;
@@ -770,12 +862,18 @@ export function App() {
   async function exportCbz() {
     if (!selected) return;
     await runTask(async () => {
-      const response = await api.post<{ cbz_asset: string; absolute_path: string; warnings: string[] }>(
-        `/api/projects/${selected.id}/export/cbz`
-      );
+      const projectId = selected.id;
+      const response = await api.post<{
+        cbz_asset: string;
+        absolute_path: string;
+        revision: number;
+        manga_json: MangaProject;
+        warnings: string[];
+      }>(`/api/projects/${projectId}/export/cbz`);
+      applyProjectMutation(projectId, response.manga_json, response.revision);
       const warning = response.warnings.length ? ` / 警告 ${response.warnings.length}件` : "";
       setMessage(`CBZを書き出しました: ${response.absolute_path}${warning}`);
-      await refreshProductionStatus(selected.id);
+      await refreshProductionStatus(projectId);
     });
   }
 
@@ -993,16 +1091,20 @@ export function App() {
 
   async function uploadReferenceImage(characterId: string, file: File) {
     if (!selected) return;
+    const projectId = selected.id;
+    const revision = selected.revision;
     await runTask(async () => {
-      const response = await fetch(`/api/projects/${selected.id}/characters/${characterId}/reference-image`, {
-        method: "POST",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file
-      });
+      const response = await fetch(
+        `/api/projects/${projectId}/characters/${characterId}/reference-image?revision=${revision}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file
+        }
+      );
       if (!response.ok) throw new Error(await response.text());
-      const payload = (await response.json()) as { manga_json: MangaProject };
-      setSelected({ ...selected, manga_json: payload.manga_json });
-      setJsonText(JSON.stringify(payload.manga_json, null, 2));
+      const payload = (await response.json()) as MangaMutationResult;
+      applyProjectMutation(projectId, payload.manga_json, payload.revision);
       setAssetVersion((value) => value + 1);
       setMessage("参照画像を登録しました");
     });
@@ -1011,7 +1113,8 @@ export function App() {
   async function uploadLocationImage(locationId: string, file: File) {
     if (!selected) return;
     await uploadProjectImage(
-      `/api/projects/${selected.id}/locations/${locationId}/reference-image`,
+      selected.id,
+      `/api/projects/${selected.id}/locations/${locationId}/reference-image?revision=${selected.revision}`,
       file,
       "ロケーション参照画像を登録しました"
     );
@@ -1026,14 +1129,14 @@ export function App() {
       return;
     }
     await uploadProjectImage(
-      `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/controls/${kind}/reference-image?load_node_id=${encodeURIComponent(nodeId)}`,
+      selected.id,
+      `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/controls/${kind}/reference-image?load_node_id=${encodeURIComponent(nodeId)}&revision=${selected.revision}`,
       file,
       `${kind}参照画像を登録しました`
     );
   }
 
-  async function uploadProjectImage(path: string, file: File, successMessage: string) {
-    if (!selected) return;
+  async function uploadProjectImage(projectId: string, path: string, file: File, successMessage: string) {
     await runTask(async () => {
       const response = await fetch(path, {
         method: "POST",
@@ -1041,9 +1144,8 @@ export function App() {
         body: file
       });
       if (!response.ok) throw new Error(await response.text());
-      const payload = (await response.json()) as { manga_json: MangaProject };
-      setSelected({ ...selected, manga_json: payload.manga_json });
-      setJsonText(JSON.stringify(payload.manga_json, null, 2));
+      const payload = (await response.json()) as MangaMutationResult;
+      applyProjectMutation(projectId, payload.manga_json, payload.revision);
       setAssetVersion((value) => value + 1);
       setMessage(successMessage);
     });
@@ -1110,41 +1212,6 @@ export function App() {
     if (!cleanPrompt) return cleanPrefix;
     if (cleanPrompt.toLowerCase().includes(cleanPrefix.toLowerCase())) return cleanPrompt;
     return `${cleanPrefix}, ${cleanPrompt}`;
-  }
-
-  function composePromptPreview(manga: MangaProject, panel: Panel): { positive: string; negative: string } {
-    const characterMap = new Map(manga.characters.map((character) => [character.id, character]));
-    const positive = [manga.common_positive_prompt];
-    const negative = [manga.common_negative_prompt];
-    for (const characterId of panel.characters) {
-      const character = characterMap.get(characterId);
-      if (!character) continue;
-      positive.push(
-        character.trigger_prompt || character.display_name,
-        character.appearance_prompt,
-        character.outfit_prompt
-      );
-      negative.push(character.negative_prompt);
-    }
-    positive.push(panel.generation.prompt || panel.prompt);
-    negative.push(panel.generation.negative_prompt);
-    return { positive: mergePromptParts(positive), negative: mergePromptParts(negative) };
-  }
-
-  function mergePromptParts(parts: string[]): string {
-    const seen = new Set<string>();
-    const tags: string[] = [];
-    for (const part of parts) {
-      for (const rawTag of part.split(",")) {
-        const tag = rawTag.trim();
-        const key = tag.toLocaleLowerCase();
-        if (tag && !seen.has(key)) {
-          tags.push(tag);
-          seen.add(key);
-        }
-      }
-    }
-    return tags.join(", ");
   }
 
   const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
@@ -1291,31 +1358,34 @@ export function App() {
           <Suspense fallback={<p className="hint">ページ編集機能を読み込んでいます...</p>}>
             <PageEditor
               projectId={selected.id}
+              revision={selected.revision}
               manga={selected.manga_json}
               pageNumber={selectedPage}
               assetVersion={assetVersion}
               busy={busy}
               setMessage={setMessage}
               onAssetVersionBump={() => setAssetVersion((value) => value + 1)}
-              onChange={(manga) => {
-                setSelected({ ...selected, manga_json: manga });
-                setJsonText(JSON.stringify(manga, null, 2));
-              }}
+              onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
               onSave={async (manga) => {
                 if (!selected) return;
+                const projectId = selected.id;
+                const pageNumber = selectedPage;
                 setBusy(true);
                 try {
-                  const project = await api.put<Project>(`/api/projects/${selected.id}/manga-json`, manga);
-                  const rendered = await api.post<{ manga_json: MangaProject; page_asset: string }>(
-                    `/api/projects/${selected.id}/pages/${selectedPage}/render`
-                  );
-                  const updated = { ...project, manga_json: rendered.manga_json };
-                  setSelected(updated);
-                  setJsonText(JSON.stringify(updated.manga_json, null, 2));
+                  // 保存成功時点のrevisionを先に反映する。直後のrenderが失敗しても、
+                  // サーバが進めたrevisionとselectedが乖離して次の保存が誤409にならないように。
+                  const saved = await putMangaJson(projectId, selected.revision, manga);
+                  applyProjectMutation(projectId, saved.manga_json, saved.revision);
+                  const rendered = await api.post<{
+                    manga_json: MangaProject;
+                    page_asset: string;
+                    revision: number;
+                  }>(`/api/projects/${projectId}/pages/${pageNumber}/render`);
+                  applyProjectMutation(projectId, rendered.manga_json, rendered.revision);
                   // 生成されたページPNGを制作タブのプレビューへ反映する。
-                  setPageAssets((prev) => {
+                  updateProjectPageAssets(projectId, (prev) => {
                     const next = [...prev];
-                    next[selectedPage - 1] = rendered.page_asset;
+                    next[pageNumber - 1] = rendered.page_asset;
                     return next;
                   });
                   setAssetVersion((value) => value + 1);
@@ -1328,17 +1398,20 @@ export function App() {
               }}
               onSuggest={async (family) => {
                 if (!selected) return;
+                const projectId = selected.id;
+                const pageNumber = selectedPage;
                 setBusy(true);
                 try {
                   // 未保存の編集を先に保存する。再レイアウトAPIは保存済みManga JSONを基準に動くため、
                   // 保存しないと直前のコマ移動・吹き出し・overlay編集が失われる。
-                  await api.put<Project>(`/api/projects/${selected.id}/manga-json`, selected.manga_json);
-                  const response = await api.post<{ manga_json: MangaProject; layout_family: string }>(
-                    `/api/projects/${selected.id}/pages/${selectedPage}/layout/suggest`,
-                    { family }
-                  );
-                  setSelected({ ...selected, manga_json: response.manga_json });
-                  setJsonText(JSON.stringify(response.manga_json, null, 2));
+                  const saved = await putMangaJson(projectId, selected.revision, selected.manga_json);
+                  applyProjectMutation(projectId, saved.manga_json, saved.revision);
+                  const response = await api.post<{
+                    manga_json: MangaProject;
+                    layout_family: string;
+                    revision: number;
+                  }>(`/api/projects/${projectId}/pages/${pageNumber}/layout/suggest`, { family });
+                  applyProjectMutation(projectId, response.manga_json, response.revision);
                   setMessage(`レイアウトを再提案しました（${response.layout_family}）`);
                 } catch (error) {
                   setMessage(`再提案に失敗しました: ${(error as Error).message}`);
@@ -1355,6 +1428,7 @@ export function App() {
         {activeTab === "story" && selected && (
           <StoryPanel
             projectId={selected.id}
+            revision={selected.revision}
             workName={selected.work_name}
             onApplied={() => {
               void loadProject(selected.id);
@@ -1392,11 +1466,11 @@ export function App() {
                 <span>
                   ページ {productionStatus.rendered_pages}/{productionStatus.total_pages}
                 </span>
-                {productionStatus.blockers.length > 0 && (
+                {(productionStatus.blockers ?? []).length > 0 && (
                   <details>
-                    <summary>未完了 {productionStatus.blockers.length}件</summary>
+                    <summary>未完了 {(productionStatus.blockers ?? []).length}件</summary>
                     <ul>
-                      {productionStatus.blockers.map((blocker) => (
+                      {(productionStatus.blockers ?? []).map((blocker) => (
                         <li key={blocker}>{blocker}</li>
                       ))}
                     </ul>
@@ -2315,13 +2389,13 @@ export function App() {
                             </div>
                             <details>
                               <summary>生成条件</summary>
-                              <small>{candidate.characters.join(", ") || "キャラ指定なし"}</small>
-                              {candidate.loras.map((lora) => (
+                              <small>{(candidate.characters ?? []).join(", ") || "キャラ指定なし"}</small>
+                              {(candidate.loras ?? []).map((lora) => (
                                 <small key={`${candidate.id}-${lora.node_id}`}>
                                   LoRA {lora.node_id}: {lora.lora_name}
                                 </small>
                               ))}
-                              {candidate.reference_images.map((reference) => (
+                              {(candidate.reference_images ?? []).map((reference) => (
                                 <small key={`${candidate.id}-${reference.node_id}`}>
                                   参照 {reference.node_id}: {reference.character_id}
                                 </small>

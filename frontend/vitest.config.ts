@@ -11,7 +11,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html", "lcov", "cobertura"],
       reportsDirectory: "../reports/coverage/frontend",
-      include: ["src/editor-geometry.ts", "src/PageEditor.tsx"],
+      include: ["src/editor-geometry.ts", "src/PageEditor.tsx", "src/prompt-preview.ts"],
       exclude: ["src/main.tsx", "src/api/schema.d.ts", "src/test/**"],
       thresholds: { lines: 60, functions: 60, statements: 60, branches: 50 }
     }

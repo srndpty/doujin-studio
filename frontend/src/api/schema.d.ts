@@ -794,6 +794,16 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ApiErrorResponse
+         * @description FastAPI標準のエラー本体({"detail": ...})に対応する型。
+         *
+         *     409(キャンセル)・502(生成バックエンド失敗)などの同期API契約をOpenAPIへ明示するため。
+         */
+        ApiErrorResponse: {
+            /** Detail */
+            detail: string;
+        };
+        /**
          * BalloonTail
          * @description 話者方向を示す吹き出しの先端（しっぽ）。
          */
@@ -918,6 +928,11 @@ export interface components {
             /** Asset */
             asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** ComfyUIStatusResponse */
         ComfyUIStatusResponse: {
@@ -987,6 +1002,12 @@ export interface components {
             cbz_asset: string;
             /** Absolute Path */
             absolute_path: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            manga_json: components["schemas"]["MangaProject"];
             /** Warnings */
             warnings?: string[];
         };
@@ -1017,6 +1038,8 @@ export interface components {
         };
         /** GenerateNameRequest */
         GenerateNameRequest: {
+            /** Revision */
+            revision: number;
             /** Work Name */
             work_name: string;
             /** Character A */
@@ -1061,6 +1084,8 @@ export interface components {
             workflow_id?: string | null;
             /** Prompt Id */
             prompt_id?: string | null;
+            /** Active Job Id */
+            active_job_id?: string | null;
             /** Width */
             width?: number | null;
             /** Height */
@@ -1159,6 +1184,8 @@ export interface components {
             message: string;
             /** Candidate Ids */
             candidate_ids?: string[];
+            /** Generation Input Hash */
+            generation_input_hash?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1398,6 +1425,11 @@ export interface components {
             /** Layout Family */
             layout_family: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** LoRABinding */
         LoRABinding: {
@@ -1610,6 +1642,10 @@ export interface components {
             render_status: "pending" | "done";
             /** Rendered At */
             rendered_at?: string | null;
+            /** Render Asset */
+            render_asset?: string | null;
+            /** Render Hash */
+            render_hash?: string | null;
         };
         /**
          * PageLayoutSettings
@@ -1654,6 +1690,11 @@ export interface components {
             /** Page Asset */
             page_asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
             preflight: components["schemas"]["PreflightResponse"];
@@ -1740,6 +1781,11 @@ export interface components {
             /** Panel Id */
             panel_id: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** PanelPageRenderResponse */
         PanelPageRenderResponse: {
@@ -1750,6 +1796,11 @@ export interface components {
             /** Page Asset */
             page_asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -1807,6 +1858,11 @@ export interface components {
             /** Work Name */
             work_name: string;
             /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
              * Created At
              * Format: date-time
              */
@@ -1863,6 +1919,11 @@ export interface components {
             /** Work Name */
             work_name: string;
             /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
              * Created At
              * Format: date-time
              */
@@ -1891,6 +1952,11 @@ export interface components {
             /** Asset */
             asset: string;
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** ReferenceImageBinding */
         ReferenceImageBinding: {
@@ -1925,6 +1991,11 @@ export interface components {
             /** Page Assets */
             page_assets: string[];
             manga_json: components["schemas"]["MangaProject"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -2392,7 +2463,9 @@ export interface operations {
     };
     update_manga_json_api_projects__project_id__manga_json_put: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2449,6 +2522,15 @@ export interface operations {
                     "application/json": components["schemas"]["RenderResponse"];
                 };
             };
+            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2456,6 +2538,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 画像生成バックエンドが失敗した */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -2470,7 +2561,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["GenerationJobCreate"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2481,6 +2576,15 @@ export interface operations {
                     "application/json": components["schemas"]["PanelImageGenerationResponse"];
                 };
             };
+            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2488,6 +2592,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 画像生成バックエンドが失敗した */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
                 };
             };
         };
@@ -2755,7 +2868,9 @@ export interface operations {
     };
     upload_character_reference_api_projects__project_id__characters__character_id__reference_image_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2787,7 +2902,9 @@ export interface operations {
     };
     upload_location_reference_api_projects__project_id__locations__location_id__reference_image_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2821,6 +2938,7 @@ export interface operations {
         parameters: {
             query: {
                 load_node_id: string;
+                revision: number;
             };
             header?: never;
             path: {
@@ -2854,7 +2972,9 @@ export interface operations {
     };
     upload_overlay_asset_api_projects__project_id__pages__page_number__overlays__overlay_id___asset_kind__post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3583,7 +3703,9 @@ export interface operations {
     };
     apply_story_session_api_story_sessions__session_id__apply_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -3645,7 +3767,9 @@ export interface operations {
     };
     restore_project_revision_api_projects__project_id__revisions__revision_id__restore_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;

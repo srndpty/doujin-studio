@@ -20,6 +20,16 @@ from .schemas import Panel
 NO_TEXT_PROMPT_SUFFIX = "no text, no speech bubble, no watermark, no manga panel text"
 
 
+def is_transient_comfyui_error(exc: BaseException) -> bool:
+    """stub退避してよい一時障害か（接続不可・タイムアウト等）。
+
+    ワークフロー不正・ノード不足・参照画像不正・ComfyUI 4xxなどの設定不備は
+    退避せずエラーとして表面化させる（黙ってstubにすると診断不能になる）。
+    """
+    # httpx.HTTPStatusError(4xx/5xx)はTransportErrorではないため設定不備側に分類される。
+    return isinstance(exc, (httpx.TransportError, TimeoutError, ConnectionError))
+
+
 @dataclass(frozen=True)
 class ImageResult:
     backend: str
@@ -60,11 +70,12 @@ class ImageBackend(Protocol):
         export_dir: Path,
         target_path: Path | None = None,
         progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+        on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
     ) -> ImageResult:
         pass
 
 
-def load_font(size: int) -> ImageFont.ImageFont:
+def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     candidates = [
         Path("C:/Windows/Fonts/YuGothM.ttc"),
         Path("C:/Windows/Fonts/YuGothR.ttc"),
@@ -84,6 +95,7 @@ class StubImageBackend:
         export_dir: Path,
         target_path: Path | None = None,
         progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+        on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
     ) -> ImageResult:
         panel_dir = export_dir / project_id / "panels"
         panel_dir.mkdir(parents=True, exist_ok=True)
@@ -117,11 +129,13 @@ class ComfyUIImageBackend:
         workflow_config: ComfyUIWorkflowConfig,
         timeout_seconds: float,
         fallback: StubImageBackend | None = None,
+        allow_stub_fallback: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.workflow_config = workflow_config
         self.timeout_seconds = timeout_seconds
         self.fallback = fallback or StubImageBackend()
+        self.allow_stub_fallback = allow_stub_fallback
 
     async def generate_panel(
         self,
@@ -130,6 +144,7 @@ class ComfyUIImageBackend:
         export_dir: Path,
         target_path: Path | None = None,
         progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+        on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
     ) -> ImageResult:
         target = target_path or export_dir / project_id / "panels" / f"{panel.panel_id}.png"
         try:
@@ -159,6 +174,9 @@ class ComfyUIImageBackend:
                 prompt_id = response.json().get("prompt_id")
                 if not prompt_id:
                     raise RuntimeError("ComfyUIからprompt_idが返りませんでした")
+                # prompt_idを即時通知し、キャンセル時にリモート停止できるようにする。
+                if on_prompt_id:
+                    await on_prompt_id(prompt_id)
                 if progress_callback:
                     await progress_callback(0, 1, None, "ComfyUIへ投入しました")
                 if websocket:
@@ -185,7 +203,13 @@ class ComfyUIImageBackend:
                 return ImageResult(
                     "comfyui", "done", target, "ComfyUI画像を取得しました", prompt_id=prompt_id
                 )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            # 設定不備（ワークフロー不正・ノード不足・参照画像不正・4xx等）は
+            # 黙ってstubへ退避せず、エラーとして表面化させる。
+            if not self.allow_stub_fallback or not is_transient_comfyui_error(exc):
+                raise
             fallback = await self.fallback.generate_panel(
                 project_id,
                 panel,
@@ -197,7 +221,7 @@ class ComfyUIImageBackend:
                 "comfyui",
                 "fallback",
                 fallback.asset_path,
-                f"ComfyUI生成に失敗したためstubに戻しました: {exc}",
+                f"ComfyUIへ接続できないためstubに退避しました: {exc}",
             )
 
     async def get_status(self) -> ComfyUIStatus:
@@ -251,6 +275,7 @@ def build_image_backend(settings: Settings) -> ImageBackend:
                 save_prefix_node_id=settings.comfyui_save_prefix_node_id,
             ),
             timeout_seconds=settings.comfyui_timeout_seconds,
+            allow_stub_fallback=settings.comfyui_fallback_to_stub,
         )
     return StubImageBackend()
 

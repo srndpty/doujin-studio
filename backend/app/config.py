@@ -20,6 +20,9 @@ class Settings:
     comfyui_width_node_id: str = "5"
     comfyui_height_node_id: str = "5"
     comfyui_save_prefix_node_id: str = "9"
+    # 接続不可・タイムアウトなど一時障害のときだけstub画像へ退避する。
+    # ワークフロー不正やノード不足などの設定不備は退避せずエラーにする。
+    comfyui_fallback_to_stub: bool = True
     llm_provider: str = "stub"
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     llm_model: str = ""
@@ -45,6 +48,8 @@ class Settings:
             comfyui_width_node_id=os.getenv("COMFYUI_WIDTH_NODE_ID", "5"),
             comfyui_height_node_id=os.getenv("COMFYUI_HEIGHT_NODE_ID", "5"),
             comfyui_save_prefix_node_id=os.getenv("COMFYUI_SAVE_PREFIX_NODE_ID", "9"),
+            comfyui_fallback_to_stub=os.getenv("COMFYUI_FALLBACK_TO_STUB", "true").lower()
+            not in {"0", "false", "no"},
             llm_provider=os.getenv("LLM_PROVIDER", "stub"),
             llm_base_url=os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
             llm_model=os.getenv("LLM_MODEL", ""),

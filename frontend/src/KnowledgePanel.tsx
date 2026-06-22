@@ -84,6 +84,8 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
 
   useEffect(() => {
     void refreshSources();
+    // 作品名が変わったときだけ再取得する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workName]);
 
   async function importFiles(files: FileList) {

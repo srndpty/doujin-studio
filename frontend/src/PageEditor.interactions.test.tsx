@@ -151,6 +151,7 @@ function panel(id: string, bbox: [number, number, number, number], text: string,
 function setup(overrides: Partial<Parameters<typeof PageEditor>[0]> = {}) {
   const props = {
     projectId: "project",
+    revision: 0,
     manga: sampleManga(),
     pageNumber: 1,
     assetVersion: 1,
@@ -232,7 +233,7 @@ describe("PageEditor interactions", () => {
     fireEvent.change(within(controls).getByLabelText("画像"), { target: { files: [file] } });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const [saveUrl, saveOptions] = fetchMock.mock.calls[0];
-    expect(saveUrl).toBe("/api/projects/project/manga-json");
+    expect(saveUrl).toBe("/api/projects/project/manga-json?revision=0");
     expect(saveOptions?.method).toBe("PUT");
     const savedManga = JSON.parse(String(saveOptions?.body)) as MangaProject;
     expect(savedManga.pages[0].overlay_elements).toHaveLength(1);

@@ -238,6 +238,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -317,6 +326,26 @@
               }
             }
           },
+          "409": {
+            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "画像生成バックエンドが失敗した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -354,6 +383,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerationJobCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -361,6 +407,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "画像生成バックエンドが失敗した",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -793,6 +859,15 @@
               "type": "string",
               "title": "Character Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -840,6 +915,15 @@
             "schema": {
               "type": "string",
               "title": "Location Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
             }
           }
         ],
@@ -907,6 +991,15 @@
               "type": "string",
               "title": "Load Node Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -972,6 +1065,15 @@
             "schema": {
               "type": "string",
               "title": "Asset Kind"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
             }
           }
         ],
@@ -1980,6 +2082,15 @@
               "type": "string",
               "title": "Session Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -2071,6 +2182,15 @@
               "type": "string",
               "title": "Revision Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -2137,6 +2257,20 @@
   },
   "components": {
     "schemas": {
+      "ApiErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ApiErrorResponse",
+        "description": "FastAPI標準のエラー本体({\"detail\": ...})に対応する型。\n\n409(キャンセル)・502(生成バックエンド失敗)などの同期API契約をOpenAPIへ明示するため。"
+      },
       "BalloonTail": {
         "properties": {
           "enabled": {
@@ -2336,6 +2470,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -2530,6 +2669,14 @@
             "type": "string",
             "title": "Absolute Path"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
+          "manga_json": {
+            "$ref": "#/components/schemas/MangaProject"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -2542,7 +2689,8 @@
         "required": [
           "project_id",
           "cbz_asset",
-          "absolute_path"
+          "absolute_path",
+          "manga_json"
         ],
         "title": "ExportResponse"
       },
@@ -2607,6 +2755,11 @@
       },
       "GenerateNameRequest": {
         "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision"
+          },
           "work_name": {
             "type": "string",
             "maxLength": 120,
@@ -2650,6 +2803,7 @@
         },
         "type": "object",
         "required": [
+          "revision",
           "work_name",
           "character_a",
           "character_b",
@@ -2706,6 +2860,17 @@
               }
             ],
             "title": "Prompt Id"
+          },
+          "active_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Job Id"
           },
           "width": {
             "anyOf": [
@@ -2946,6 +3111,17 @@
             },
             "type": "array",
             "title": "Candidate Ids"
+          },
+          "generation_input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Input Hash"
           },
           "created_at": {
             "type": "string",
@@ -3486,6 +3662,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -3914,6 +4095,28 @@
               }
             ],
             "title": "Rendered At"
+          },
+          "render_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Asset"
+          },
+          "render_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Hash"
           }
         },
         "additionalProperties": false,
@@ -4009,6 +4212,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "warnings": {
             "items": {
@@ -4217,6 +4425,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -4243,6 +4456,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "warnings": {
             "items": {
@@ -4392,6 +4610,11 @@
             "type": "string",
             "title": "Work Name"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4518,6 +4741,11 @@
             "type": "string",
             "title": "Work Name"
           },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -4581,6 +4809,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           }
         },
         "type": "object",
@@ -4654,6 +4887,11 @@
           },
           "manga_json": {
             "$ref": "#/components/schemas/MangaProject"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
           },
           "warnings": {
             "items": {
