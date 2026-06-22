@@ -1644,6 +1644,78 @@ def test_worker_panel_mutation_cannot_change_other_panel(tmp_path: Path) -> None
     assert result.result == "ok"
 
 
+def test_worker_panel_mutation_cannot_touch_other_pages(tmp_path: Path) -> None:
+    """対象panelの所属ページ以外（別ページのrender状態偽装・panel移動）も拒否する。"""
+    from backend.app.mutation import (
+        ProjectMutationService,
+        WorkerScopeViolationError,
+        mark_page_dirty,
+    )
+
+    manga = MangaProject(
+        title="scope",
+        pages=[
+            Page(
+                page=1,
+                theme="t1",
+                layout_template="single",
+                reading_order=["p1"],
+                panels=[Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="a")],
+            ),
+            Page(
+                page=2,
+                theme="t2",
+                layout_template="single",
+                reading_order=["p2"],
+                panels=[Panel(panel_id="p2", bbox=(0.0, 0.0, 1.0, 1.0), shot="b")],
+            ),
+        ],
+    )
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'worker-scope2.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=manga.title,
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    # 別ページのrender状態をdoneへ偽装する変更は拒否する。
+    def forge_other_page_done(manga: MangaProject, _panel: Panel, _page: Page) -> None:
+        manga.pages[1].render_status = "done"
+        manga.pages[1].render_asset = "assets/forged.png"
+        manga.pages[1].render_hash = "deadbeef"
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel(
+            "p", panel_id="p1", expected_epoch=0, mutate=forge_other_page_done
+        )
+
+    # 対象panelを別ページへ移動する変更も拒否する。
+    def move_target_panel(_manga: MangaProject, panel: Panel, page: Page) -> None:
+        page.panels.remove(panel)
+        _manga.pages[1].panels.append(panel)
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=move_target_panel)
+
+    # 所属ページ(page=1)自身のrender状態変更は許可する。
+    def dirty_owner_page(_manga: MangaProject, _panel: Panel, page: Page) -> str:
+        mark_page_dirty(page)
+        return "ok"
+
+    result = service.mutate_worker_panel(
+        "p", panel_id="p1", expected_epoch=0, mutate=dirty_owner_page
+    )
+    assert result.result == "ok"
+
+
 def test_generation_service_runs_without_fastapi_app(tmp_path: Path) -> None:
     from backend.app.generation_service import GenerationRuntime, GenerationService
     from backend.app.mutation import ProjectMutationService

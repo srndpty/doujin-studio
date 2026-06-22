@@ -123,20 +123,31 @@ def _find_panel_and_page(manga: MangaProject, panel_id: str) -> tuple[Panel | No
 _PAGE_RENDER_FIELDS = ("render_status", "rendered_at", "render_asset", "render_hash")
 
 
-def _worker_panel_scope_fingerprint(manga: MangaProject, panel_id: str) -> str:
+def _worker_panel_scope_fingerprint(
+    manga: MangaProject, panel_id: str, owner_page_number: int
+) -> str:
     """worker panel mutationで「変更を許可しない範囲」の指紋。
 
-    許可するのは対象panel自身の変更と、ページのrender状態(render_status系)だけ。
-    そのため対象panelを各ページから除き、ページのrender状態フィールドをマスクした上で
-    JSON化する。これが前後で一致すれば、対象panel・page render状態以外は不変と分かる。
-    他panel・characters/locations・page構造・overlay・reading_order・project全体への
-    書き換えはすべてこの指紋を変えるため検出できる。
+    許可するのは対象panel自身の内容変更と、**所属ページだけ**のrender状態(render_status系)
+    だけ。所属ページの対象panelはplaceholderへ置換し、内容変化は無視しつつ「所属ページ・
+    list内index・出現回数」は固定する。所属ページのrender状態フィールドはマスクする。
+
+    他ページは一切マスクしない。これにより、
+    - 別ページのrender状態をdoneへ偽装する変更
+    - 対象panelを別ページへ移動・複製する変更（reading_orderを触らなくても）
+    - 他panel・characters/locations・page構造・overlay・project全体の変更
+    はすべてfingerprintを変え、:class:`WorkerScopeViolationError` で検出できる。
     """
     data = manga.model_dump(mode="json")
     for page in data["pages"]:
+        if page.get("page") != owner_page_number:
+            continue
         for field in _PAGE_RENDER_FIELDS:
             page[field] = None
-        page["panels"] = [panel for panel in page["panels"] if panel.get("panel_id") != panel_id]
+        page["panels"] = [
+            {"__worker_target_panel__": True} if panel.get("panel_id") == panel_id else panel
+            for panel in page["panels"]
+        ]
     return json.dumps(data, sort_keys=True, ensure_ascii=False)
 
 
@@ -312,12 +323,17 @@ class ProjectMutationService:
                 panel, page = _find_panel_and_page(manga, panel_id)
                 if panel is None or page is None:
                     raise PanelNotFoundError()
+                # 所属ページをmutate前に固定し、スコープ判定の基準にする。
+                owner_page_number = page.page
                 before = manga.model_dump_json()
-                scope_before = _worker_panel_scope_fingerprint(manga, panel_id)
+                scope_before = _worker_panel_scope_fingerprint(manga, panel_id, owner_page_number)
                 result = mutate(manga, panel, page)
                 # normalize前にスコープ判定する。normalizeはasset正規化のためのシステム処理で、
                 # mutate自身の更新範囲には含めない。
-                if _worker_panel_scope_fingerprint(manga, panel_id) != scope_before:
+                if (
+                    _worker_panel_scope_fingerprint(manga, panel_id, owner_page_number)
+                    != scope_before
+                ):
                     raise WorkerScopeViolationError()
                 normalize_manga_assets(manga, self.export_dir)
                 if manga.model_dump_json() == before:
