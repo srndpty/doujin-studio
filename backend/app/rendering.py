@@ -449,13 +449,17 @@ class RenderingService:
                 latest_page.render_hash = page_render_hash(snapshot, snapshot_page)
                 latest_page.render_asset = asset_to_id(asset_by_page[page_number], self.export_dir)
 
-        _result, manga, revision = self.mutation.mutate(
-            project_id,
-            finalize,
-            expected_revision=expected_revision,
-            expected_epoch=expected_epoch,
-        )
-        return manga, revision
+        if expected_revision is not None:
+            result = self.mutation.mutate_user(
+                project_id, expected_revision=expected_revision, mutate=finalize
+            )
+        elif expected_epoch is not None:
+            result = self.mutation.mutate_worker(
+                project_id, expected_epoch=expected_epoch, mutate=finalize
+            )
+        else:
+            result = self.mutation.mutate_local(project_id, finalize)
+        return result.project.manga, result.project.revision
 
     def render_and_commit_page(
         self,

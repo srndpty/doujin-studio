@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from ..asset_storage import (
@@ -32,16 +33,16 @@ from ..database import (
 )
 from ..generation_service import (
     ActiveJobConflictError,
-    PanelNotFoundError,
     find_panel_and_page,
 )
 from ..jobs import GenerationJob, JobManager
 from ..mutation import (
     EpochMismatchError,
     InvalidProjectJsonError,
+    PanelNotFoundError,
     ProjectConflictError,
-    ProjectMutationService,
     ProjectNotFoundError,
+    WorkerScopeViolationError,
 )
 from ..rendering import (
     InconsistentSelectedPanelError,
@@ -70,6 +71,69 @@ GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
     },
     502: {"model": ApiErrorResponse, "description": "画像生成バックエンドが失敗した"},
 }
+
+
+def _error_response(status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    """domain/service例外をHTTP応答へ一括変換する。
+
+    RouterはHTTP境界としてDTO整形や入力検証だけを担当し、CAS再試行やjob状態遷移は
+    service層へ寄せる。domain例外のHTTP化はここで集約する。
+    """
+
+    @app.exception_handler(ProjectNotFoundError)
+    async def _project_not_found(_request: Request, _exc: ProjectNotFoundError) -> JSONResponse:
+        return _error_response(404, "プロジェクトが見つかりません")
+
+    @app.exception_handler(PanelNotFoundError)
+    async def _panel_not_found(_request: Request, _exc: PanelNotFoundError) -> JSONResponse:
+        return _error_response(404, "コマが見つかりません")
+
+    @app.exception_handler(ProjectConflictError)
+    async def _project_conflict(_request: Request, _exc: ProjectConflictError) -> JSONResponse:
+        return _error_response(
+            409,
+            "他の操作（生成完了や別タブの保存）で更新されています。最新を読み込み直してください。",
+        )
+
+    @app.exception_handler(ActiveJobConflictError)
+    async def _active_job_conflict(_request: Request, _exc: ActiveJobConflictError) -> JSONResponse:
+        return _error_response(409, "対象コマは生成中です")
+
+    @app.exception_handler(EpochMismatchError)
+    async def _epoch_mismatch(_request: Request, _exc: EpochMismatchError) -> JSONResponse:
+        return _error_response(409, "作品構成が更新されています")
+
+    @app.exception_handler(WorkerScopeViolationError)
+    async def _worker_scope_violation(
+        _request: Request, _exc: WorkerScopeViolationError
+    ) -> JSONResponse:
+        return _error_response(500, "worker更新の対象範囲が不正です")
+
+    @app.exception_handler(InvalidProjectJsonError)
+    async def _invalid_project_json(
+        _request: Request, exc: InvalidProjectJsonError
+    ) -> JSONResponse:
+        return _error_response(422, exc.detail)
+
+    @app.exception_handler(RenderInputChangedError)
+    async def _render_input_changed(
+        _request: Request, _exc: RenderInputChangedError
+    ) -> JSONResponse:
+        return _error_response(
+            409, "描画中にページ内容が更新されました。再度レンダリングしてください。"
+        )
+
+    @app.exception_handler(InconsistentSelectedPanelError)
+    async def _inconsistent_selected_panel(
+        _request: Request, exc: InconsistentSelectedPanelError
+    ) -> JSONResponse:
+        return _error_response(
+            409, f"{exc.panel_id}: 採用画像が欠損/不整合です。再選択または再生成してください。"
+        )
 
 
 def ensure_generation_succeeded(job: GenerationJob) -> None:
@@ -117,10 +181,8 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
     export_dir = request.app.state.settings.export_dir
     if migrate_legacy_render_state(manga, export_dir):
         # 旧形式のdoneを安全側へ戻す。CAS競合時は最新へ同じ移行を再適用する。
-        run_mutation(
-            request.app.state.mutation,
-            project_id,
-            lambda latest: migrate_legacy_render_state(latest, export_dir),
+        request.app.state.mutation.mutate_local(
+            project_id, lambda latest: migrate_legacy_render_state(latest, export_dir)
         )
         with request.app.state.SessionLocal() as session:
             record = request.app.state.repository.get(session, project_id)
@@ -132,71 +194,6 @@ def load_project_record(request: Request, project_id: str) -> ProjectRecord:
         manga, request.app.state.settings.export_dir
     ).model_dump_json()
     return record
-
-
-def referenced_project_asset_paths(app: FastAPI, project_id: str) -> set[Path]:
-    return app.state.rendering.referenced_project_asset_paths(project_id)
-
-
-def cleanup_published_assets(app: FastAPI, project_id: str, ownership: dict[Path, bool]) -> None:
-    app.state.rendering.cleanup_published_assets(project_id, ownership)
-
-
-def commit_rendered_pages(
-    app: FastAPI,
-    project_id: str,
-    snapshot: MangaProject,
-    assets: list[Path],
-    *,
-    expected_revision: int | None = None,
-    expected_epoch: int | None = None,
-) -> tuple[MangaProject, int]:
-    """RenderingServiceでdoneをCAS確定し、確定不能なdomain例外を409へ変換する。"""
-    try:
-        return app.state.rendering.commit_rendered_pages(
-            project_id,
-            snapshot,
-            assets,
-            expected_revision=expected_revision,
-            expected_epoch=expected_epoch,
-        )
-    except RenderInputChangedError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="描画中にページ内容が更新されました。再度レンダリングしてください。",
-        ) from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
-    except EpochMismatchError as exc:
-        raise HTTPException(status_code=409, detail="作品構成が更新されています") from exc
-
-
-def render_and_commit_page(
-    app: FastAPI,
-    project_id: str,
-    snapshot: MangaProject,
-    snapshot_revision: int,
-    page_number: int,
-) -> tuple[Path, list[str], MangaProject, int]:
-    """RenderingServiceで対象ページを描画・確定し、domain例外を409へ変換する。"""
-    try:
-        return app.state.rendering.render_and_commit_page(
-            project_id, snapshot, snapshot_revision, page_number
-        )
-    except InconsistentSelectedPanelError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=(f"{exc.panel_id}: 採用画像が欠損/不整合です。再選択または再生成してください。"),
-        ) from exc
-    except RenderInputChangedError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="描画中にページ内容が更新されました。再度レンダリングしてください。",
-        ) from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
-    except EpochMismatchError as exc:
-        raise HTTPException(status_code=409, detail="作品構成が更新されています") from exc
 
 
 async def save_request_image(request: Request, target: Path, preserve_alpha: bool = False) -> None:
@@ -249,119 +246,6 @@ def find_panel(manga: MangaProject, panel_id: str):
 def find_panel_optional(manga: MangaProject, panel_id: str):
     panel, _page = find_panel_and_page(manga, panel_id)
     return panel
-
-
-def run_mutation(service: ProjectMutationService, project_id: str, mutate, expected_revision=None):
-    """ProjectMutationServiceを呼び、サービス例外をHTTPExceptionへ変換する。"""
-    try:
-        return service.mutate(project_id, mutate, expected_revision=expected_revision)
-    except ProjectNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "他の操作（生成完了や別タブの保存）で更新されています。"
-                "最新を読み込み直してください。"
-            ),
-        ) from exc
-    except InvalidProjectJsonError as exc:
-        raise HTTPException(status_code=422, detail=exc.detail) from exc
-
-
-def replace_project(
-    service: ProjectMutationService,
-    project_id: str,
-    manga: MangaProject,
-    *,
-    expected_revision: int,
-    increment_epoch: bool = False,
-) -> tuple[MangaProject, int]:
-    try:
-        return service.replace(
-            project_id,
-            manga,
-            expected_revision=expected_revision,
-            increment_epoch=increment_epoch,
-        )
-    except ProjectNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="他の操作で更新されています。最新を読み込み直してください。",
-        ) from exc
-    except InvalidProjectJsonError as exc:
-        raise HTTPException(status_code=422, detail=exc.detail) from exc
-
-
-def replace_project_with_history(
-    service: ProjectMutationService,
-    project_id: str,
-    build_replacement,
-    *,
-    expected_revision: int,
-    history_label: str,
-) -> tuple[MangaProject, int]:
-    try:
-        return service.replace_with_history(
-            project_id,
-            build_replacement,
-            expected_revision=expected_revision,
-            history_label=history_label,
-        )
-    except ProjectNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="他の操作で更新されています。最新を読み込み直してください。",
-        ) from exc
-    except InvalidProjectJsonError as exc:
-        raise HTTPException(status_code=422, detail=exc.detail) from exc
-
-
-def enqueue_panel_jobs(
-    app: FastAPI,
-    project_id: str,
-    panel_ids: list[str],
-    candidate_count: int,
-    message: str,
-    *,
-    skip_active: bool = False,
-    expected_epoch: int | None = None,
-) -> list[GenerationJob]:
-    """panelのqueued化・GenerationJobRecord追加・revision更新を単一トランザクションで確定する。
-
-    別トランザクションに分けると、間でプロセス停止した際に「panelはqueuedだが対応ジョブが無い」
-    という復旧不能な状態が残るため、同じSQLiteトランザクションで原子的に行う。
-    commit後にメモリ登録し、Taskは呼び出し側がcommit確認後に開始する。
-    """
-    try:
-        jobs = app.state.generation.enqueue(
-            project_id,
-            panel_ids,
-            candidate_count,
-            message,
-            skip_active=skip_active,
-            expected_epoch=expected_epoch,
-        )
-    except ProjectNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="プロジェクトが見つかりません") from exc
-    except PanelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="コマが見つかりません") from exc
-    except (ActiveJobConflictError, EpochMismatchError) as exc:
-        raise HTTPException(
-            status_code=409, detail="対象コマまたは作品構成が更新されています"
-        ) from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(
-            status_code=409, detail="ジョブ登録中に競合しました。再実行してください。"
-        ) from exc
-    manager: JobManager = app.state.job_manager
-    for job in jobs:
-        manager.register_in_memory(job)
-    return jobs
 
 
 def find_panel_page_number(manga: MangaProject, panel_id: str) -> int:

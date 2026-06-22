@@ -1,6 +1,5 @@
 """画像生成ジョブ・候補選択・同期生成のHTTPルーター。"""
 
-import asyncio
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -9,13 +8,8 @@ from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocke
 
 from ..generation_service import (
     apply_candidate_selection,
-    await_job,
-    find_active_panel_job,
     find_panel_and_page,
-    mark_panel_job_stopped,
     register_generation_candidate,
-    run_generation_job,
-    stop_comfyui_generation,
 )
 from ..image_backends import StubImageBackend
 from ..jobs import TERMINAL_JOB_STATUSES, JobManager
@@ -36,17 +30,12 @@ from ..schemas import (
 )
 from .common import (
     GENERATION_ERROR_RESPONSES,
-    cleanup_published_assets,
-    commit_rendered_pages,
-    enqueue_panel_jobs,
     ensure_generation_succeeded,
     find_panel,
     find_panel_page_number,
     get_job_or_404,
     load_project_record,
     parse_manga_json,
-    render_and_commit_page,
-    run_mutation,
     to_job_response,
 )
 
@@ -67,7 +56,6 @@ async def render_project(
     manga = parse_manga_json(record.manga_json)
     settings = request.app.state.settings
     force = payload.force if payload else False
-    manager: JobManager = request.app.state.job_manager
     started_epoch = record.generation_epoch
 
     def ensure_same_epoch() -> None:
@@ -82,18 +70,16 @@ async def render_project(
             if not (force or not panel.image_asset):
                 continue
             ensure_same_epoch()
-            job = find_active_panel_job(manager, project_id, panel.panel_id)
+            job = request.app.state.generation.find_active_panel_job(project_id, panel.panel_id)
             if job is None:
-                job = enqueue_panel_jobs(
-                    request.app,
+                job = request.app.state.generation.start(
                     project_id,
                     [panel.panel_id],
                     1,
                     "全体生成ジョブを登録しました",
                     expected_epoch=started_epoch,
                 )[0]
-                manager.start(job, run_generation_job(request.app, job))
-            ensure_generation_succeeded(await await_job(request.app, job))
+            ensure_generation_succeeded(await request.app.state.generation.await_completion(job))
             ensure_same_epoch()
 
     ensure_same_epoch()
@@ -117,11 +103,11 @@ async def render_project(
             latest.revision,
             ownership=published_by_request,
         )
-        manga, revision = commit_rendered_pages(
-            request.app, project_id, snapshot, page_assets, expected_epoch=started_epoch
+        manga, revision = request.app.state.rendering.commit_rendered_pages(
+            project_id, snapshot, page_assets, expected_epoch=started_epoch
         )
     except Exception:
-        cleanup_published_assets(request.app, project_id, published_by_request)
+        request.app.state.rendering.cleanup_published_assets(project_id, published_by_request)
         raise
     return RenderResponse(
         project_id=project_id,
@@ -143,15 +129,13 @@ async def generate_panel_image(
     request: Request,
     payload: Annotated[GenerationJobCreate | None, Body()] = None,
 ) -> PanelImageGenerationResponse:
-    manager: JobManager = request.app.state.job_manager
-    if find_active_panel_job(manager, project_id, panel_id):
+    if request.app.state.generation.find_active_panel_job(project_id, panel_id):
         raise HTTPException(status_code=409, detail="このコマは画像生成中です")
     candidate_count = payload.candidate_count if payload else 1
-    job = enqueue_panel_jobs(
-        request.app, project_id, [panel_id], candidate_count, "画像生成ジョブを登録しました"
+    job = request.app.state.generation.start(
+        project_id, [panel_id], candidate_count, "画像生成ジョブを登録しました"
     )[0]
-    manager.start(job, run_generation_job(request.app, job))
-    ensure_generation_succeeded(await await_job(request.app, job))
+    ensure_generation_succeeded(await request.app.state.generation.await_completion(job))
     latest = load_project_record(request, project_id)
     return PanelImageGenerationResponse(
         project_id=project_id,
@@ -187,17 +171,14 @@ async def create_generation_job(
     request: Request,
     payload: Annotated[GenerationJobCreate | None, Body()] = None,
 ) -> GenerationJobResponse:
-    manager: JobManager = request.app.state.job_manager
-    if find_active_panel_job(manager, project_id, panel_id):
+    if request.app.state.generation.find_active_panel_job(project_id, panel_id):
         raise HTTPException(status_code=409, detail="このコマは画像生成中です")
-    job = enqueue_panel_jobs(
-        request.app,
+    job = request.app.state.generation.start(
         project_id,
         [panel_id],
         payload.candidate_count if payload else 1,
         "画像生成ジョブを登録しました",
     )[0]
-    manager.start(job, run_generation_job(request.app, job))
     return to_job_response(job)
 
 
@@ -219,27 +200,14 @@ async def create_batch_generation_jobs(
     ]
     if not panels:
         raise HTTPException(status_code=404, detail="生成対象のコマが見つかりません")
-    manager: JobManager = request.app.state.job_manager
-    active_keys = {
-        (item.project_id, item.panel_id)
-        for item in manager.jobs.values()
-        if item.status not in TERMINAL_JOB_STATUSES
-    }
-    target_ids = [
-        panel.panel_id for panel in panels if (project_id, panel.panel_id) not in active_keys
-    ]
-    if not target_ids:
-        raise HTTPException(status_code=409, detail="対象コマはすべて生成中です")
-    jobs = enqueue_panel_jobs(
-        request.app,
+    target_ids = [panel.panel_id for panel in panels]
+    jobs = request.app.state.generation.start(
         project_id,
         target_ids,
         options.candidate_count,
         "一括生成キューへ登録しました",
         skip_active=True,
     )
-    for job in jobs:
-        manager.start(job, run_generation_job(request.app, job))
     return BatchGenerationJobResponse(jobs=[to_job_response(job) for job in jobs])
 
 
@@ -259,23 +227,8 @@ def list_generation_jobs(project_id: str, request: Request) -> list[GenerationJo
 
 @router.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobResponse)
 async def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
-    manager: JobManager = request.app.state.job_manager
     job = get_job_or_404(request, job_id)
-    prompt_id = job.prompt_id
-    if not manager.cancel(job):
-        return to_job_response(job)
-    mark_panel_job_stopped(request.app, job, "生成をキャンセルしました")
-    remote = await asyncio.to_thread(stop_comfyui_generation, request.app.state.settings, prompt_id)
-    if remote == "failed":
-        manager.update(
-            job,
-            status="cancelled",
-            message="ローカルではキャンセルしましたが、ComfyUI側の停止に失敗しました",
-        )
-    task = manager.tasks.get(job.id)
-    if task is not None:
-        await asyncio.gather(task, return_exceptions=True)
-    return to_job_response(job)
+    return to_job_response(await request.app.state.generation.cancel(job))
 
 
 @router.websocket("/api/generation-jobs/{job_id}/ws")
@@ -320,9 +273,12 @@ def select_panel_candidate(
         mark_page_dirty(page)
         return page_number
 
-    page_number, manga, revision = run_mutation(request.app.state.mutation, project_id, select)
-    page_asset, warnings, manga, revision = render_and_commit_page(
-        request.app, project_id, manga, revision, page_number
+    mutation_result = request.app.state.mutation.mutate_local(project_id, select)
+    page_number = mutation_result.result
+    manga = mutation_result.project.manga
+    revision = mutation_result.project.revision
+    page_asset, warnings, manga, revision = request.app.state.rendering.render_and_commit_page(
+        project_id, manga, revision, page_number
     )
     return PanelPageRenderResponse(
         project_id=project_id,
@@ -361,7 +317,9 @@ async def use_stub_panel_image(
         if page is not None:
             mark_page_dirty(page)
 
-    _result, manga, revision = run_mutation(request.app.state.mutation, project_id, add)
+    mutation_result = request.app.state.mutation.mutate_local(project_id, add)
+    manga = mutation_result.project.manga
+    revision = mutation_result.project.revision
     return PanelImageGenerationResponse(
         project_id=project_id, panel_id=panel_id, manga_json=manga, revision=revision
     )

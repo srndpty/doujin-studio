@@ -10,7 +10,6 @@ from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
 from ..database import ProjectRecord, now_utc
-from ..generation_service import cancel_project_jobs_before_epoch
 from ..generator import generate_four_page_name
 from ..mutation import mark_page_dirty
 from ..rendering import (
@@ -42,16 +41,11 @@ from ..schemas import (
 )
 from .common import (
     _to_preflight_response,
-    cleanup_published_assets,
-    commit_rendered_pages,
     find_panel,
     find_panel_page_number,
     load_project_record,
     open_in_file_manager,
     parse_manga_json,
-    render_and_commit_page,
-    replace_project,
-    run_mutation,
     save_content_addressed_request_image,
     to_detail,
     to_summary,
@@ -109,15 +103,15 @@ async def generate_name(
         ending_direction=payload.ending_direction,
         target_pages=payload.target_pages,
     )
-    replace_project(
-        request.app.state.mutation,
+    mutation_result = request.app.state.mutation.replace(
         project_id,
         manga,
         expected_revision=payload.revision,
         increment_epoch=True,
     )
-    new_epoch = request.app.state.mutation.current_epoch(project_id)
-    await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
+    await request.app.state.generation.cancel_before_epoch(
+        project_id, mutation_result.project.generation_epoch
+    )
     return to_detail(load_project_record(request, project_id))
 
 
@@ -131,16 +125,16 @@ async def update_manga_json(
     previous = parse_manga_json(load_project_record(request, project_id).manga_json)
     structure_changed = structure_signature(payload) != structure_signature(previous)
     invalidate_changed_pages(payload, previous)
-    replace_project(
-        request.app.state.mutation,
+    mutation_result = request.app.state.mutation.replace(
         project_id,
         payload,
         expected_revision=revision,
         increment_epoch=structure_changed,
     )
     if structure_changed:
-        new_epoch = request.app.state.mutation.current_epoch(project_id)
-        await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
+        await request.app.state.generation.cancel_before_epoch(
+            project_id, mutation_result.project.generation_epoch
+        )
     return to_detail(
         load_project_record(request, project_id), request.app.state.settings.export_dir
     )
@@ -174,9 +168,11 @@ async def upload_character_reference(
             raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
         character.reference_image_asset = asset_id
 
-    _result, manga, revision_out = run_mutation(
-        request.app.state.mutation, project_id, mutate, expected_revision=revision
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
     )
+    manga = mutation_result.project.manga
+    revision_out = mutation_result.project.revision
     return CharacterReferenceResponse(
         character_id=character_id,
         asset=asset_id,
@@ -213,9 +209,11 @@ async def upload_location_reference(
             raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
         location.reference_image_asset = asset_id
 
-    _result, manga, revision_out = run_mutation(
-        request.app.state.mutation, project_id, mutate, expected_revision=revision
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
     )
+    manga = mutation_result.project.manga
+    revision_out = mutation_result.project.revision
     return ReferenceAssetResponse(
         target_id=location_id, asset=asset_id, manga_json=manga, revision=revision_out
     )
@@ -259,9 +257,12 @@ async def upload_panel_control_reference(
         panel.control_references.append(control)
         return control.id
 
-    target_id, manga, revision_out = run_mutation(
-        request.app.state.mutation, project_id, mutate, expected_revision=revision
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
     )
+    target_id = mutation_result.result
+    manga = mutation_result.project.manga
+    revision_out = mutation_result.project.revision
     return ReferenceAssetResponse(
         target_id=target_id, asset=asset_id, manga_json=manga, revision=revision_out
     )
@@ -314,9 +315,11 @@ async def upload_overlay_asset(
             overlay.asset = asset_id
         mark_page_dirty(page)
 
-    _result, manga, revision_out = run_mutation(
-        request.app.state.mutation, project_id, mutate, expected_revision=revision
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
     )
+    manga = mutation_result.project.manga
+    revision_out = mutation_result.project.revision
     return ReferenceAssetResponse(
         target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision_out
     )
@@ -350,7 +353,10 @@ def suggest_page_layout(
         mark_page_dirty(page)
         return page.layout_family
 
-    layout_family, manga, revision = run_mutation(request.app.state.mutation, project_id, relayout)
+    mutation_result = request.app.state.mutation.mutate_local(project_id, relayout)
+    layout_family = mutation_result.result
+    manga = mutation_result.project.manga
+    revision = mutation_result.project.revision
     return LayoutSuggestResponse(
         project_id=project_id,
         page=page_number,
@@ -397,8 +403,8 @@ def render_page_endpoint(project_id: str, page_number: int, request: Request) ->
     snapshot = parse_manga_json(record.manga_json)
     if not any(page.page == page_number for page in snapshot.pages):
         raise HTTPException(status_code=404, detail="ページが見つかりません")
-    page_asset, warnings, manga, revision = render_and_commit_page(
-        request.app, project_id, snapshot, record.revision, page_number
+    page_asset, warnings, manga, revision = request.app.state.rendering.render_and_commit_page(
+        project_id, snapshot, record.revision, page_number
     )
     page = next(item for item in manga.pages if item.page == page_number)
     issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
@@ -422,8 +428,8 @@ def render_panel_page(project_id: str, panel_id: str, request: Request) -> Panel
     record = load_project_record(request, project_id)
     snapshot = parse_manga_json(record.manga_json)
     page_number = find_panel_page_number(snapshot, panel_id)
-    page_asset, warnings, manga, revision = render_and_commit_page(
-        request.app, project_id, snapshot, record.revision, page_number
+    page_asset, warnings, manga, revision = request.app.state.rendering.render_and_commit_page(
+        project_id, snapshot, record.revision, page_number
     )
     return PanelPageRenderResponse(
         project_id=project_id,
@@ -476,8 +482,7 @@ def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
             record.revision,
             ownership=published_by_request,
         )
-        manga, revision = commit_rendered_pages(
-            request.app,
+        manga, revision = request.app.state.rendering.commit_rendered_pages(
             project_id,
             snapshot,
             page_assets,
@@ -485,7 +490,7 @@ def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
             expected_epoch=record.generation_epoch,
         )
     except Exception:
-        cleanup_published_assets(request.app, project_id, published_by_request)
+        request.app.state.rendering.cleanup_published_assets(project_id, published_by_request)
         raise
     return ExportResponse(
         project_id=project_id,

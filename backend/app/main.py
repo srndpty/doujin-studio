@@ -10,12 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
 from .database import create_session_factory
-from .generation_service import GenerationService, mark_panel_job_stopped, run_generation_job
+from .generation_service import GenerationRuntime, GenerationService
 from .jobs import JobManager
 from .mutation import ProjectMutationService
 from .rendering import RenderingService
 from .repository import ProjectRepository
 from .routers import generation, knowledge, projects, story, system
+from .routers.common import register_exception_handlers
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -32,9 +33,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.mutation = ProjectMutationService(
             app.state.SessionLocal, app_settings.export_dir, app.state.repository
         )
-        app.state.generation = GenerationService(
-            app.state.SessionLocal, app_settings.export_dir, app.state.repository
-        )
         app.state.rendering = RenderingService(
             app.state.SessionLocal,
             app_settings.export_dir,
@@ -42,22 +40,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.repository,
         )
         app.state.job_manager = JobManager(app.state.SessionLocal)
+        app.state.generation = GenerationService(
+            app.state.SessionLocal,
+            app_settings.export_dir,
+            GenerationRuntime(
+                settings=app_settings,
+                jobs=app.state.job_manager,
+                mutation=app.state.mutation,
+                rendering=app.state.rendering,
+                repository=app.state.repository,
+            ),
+        )
         to_start, interrupted = app.state.job_manager.restore_pending()
         for job in interrupted:
-            mark_panel_job_stopped(
-                app,
+            app.state.generation.mark_panel_job_stopped(
                 job,
                 "バックエンド再起動により中断されました。必要なら再実行してください",
                 error=True,
             )
         for job in to_start:
-            app.state.job_manager.start(job, run_generation_job(app, job))
+            app.state.job_manager.start(job, app.state.generation.run(job))
         try:
             yield
         finally:
             await app.state.job_manager.shutdown()
 
     app = FastAPI(title="Local Doujin Studio", lifespan=lifespan)
+    register_exception_handlers(app)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],

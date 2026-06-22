@@ -4,16 +4,21 @@ import io
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 from PIL import Image
 
 import backend.app.asset_storage as asset_storage_module
 import backend.app.generation_service as generation_module
-import backend.app.routers.common as router_common
 from backend.app.config import Settings
 from backend.app.database import ProjectRecord, ProjectRevisionRecord, now_utc
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
+from backend.app.mutation import (
+    EpochMismatchError,
+    InvalidProjectJsonError,
+    PanelNotFoundError,
+    ProjectConflictError,
+    ProjectNotFoundError,
+)
 from backend.app.schemas import MangaProject
 
 
@@ -200,7 +205,7 @@ def test_referenced_paths_skip_malformed_revision_json(tmp_path: Path) -> None:
                 )
             )
             session.commit()
-        paths = router_common.referenced_project_asset_paths(app, project_id)
+        paths = app.state.rendering.referenced_project_asset_paths(project_id)
         assert isinstance(paths, set)
 
 
@@ -278,10 +283,10 @@ def test_upload_missing_entities_return_404(tmp_path: Path) -> None:
             assert response.status_code == 404, path
 
 
-# --- mutation service / run_mutation / replace_project の例外変換 ---
+# --- mutation service のdomain例外 ---
 
 
-def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
+def test_mutation_service_error_paths(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         app = client.app
         service = app.state.mutation
@@ -293,85 +298,69 @@ def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
         def noop(_manga: MangaProject) -> None:
             return None
 
-        with pytest.raises(HTTPException) as missing:
-            router_common.run_mutation(service, "missing", noop)
-        assert missing.value.status_code == 404
+        with pytest.raises(ProjectNotFoundError):
+            service.mutate_local("missing", noop)
 
-        with pytest.raises(HTTPException) as conflict:
-            router_common.run_mutation(service, project_id, noop, expected_revision=99999)
-        assert conflict.value.status_code == 409
+        with pytest.raises(ProjectConflictError):
+            service.mutate_user(project_id, expected_revision=99999, mutate=noop)
 
-        with pytest.raises(HTTPException):
-            router_common.replace_project(service, "missing", manga, expected_revision=0)
-        with pytest.raises(HTTPException) as replace_conflict:
-            router_common.replace_project(service, project_id, manga, expected_revision=99999)
-        assert replace_conflict.value.status_code == 409
+        with pytest.raises(ProjectNotFoundError):
+            service.replace("missing", manga, expected_revision=0)
+        with pytest.raises(ProjectConflictError):
+            service.replace(project_id, manga, expected_revision=99999)
 
-        with pytest.raises(HTTPException):
-            router_common.replace_project_with_history(
-                service,
+        with pytest.raises(ProjectNotFoundError):
+            service.replace_with_history(
                 "missing",
                 lambda _session, latest: latest,
                 expected_revision=0,
                 history_label="x",
             )
-        with pytest.raises(HTTPException) as history_conflict:
-            router_common.replace_project_with_history(
-                service,
+        with pytest.raises(ProjectConflictError):
+            service.replace_with_history(
                 project_id,
                 lambda _session, latest: latest,
                 expected_revision=99999,
                 history_label="x",
             )
-        assert history_conflict.value.status_code == 409
 
-        # 破損Manga JSONはInvalidProjectJsonError→422へ変換される。
+        # 破損Manga JSONはInvalidProjectJsonErrorを送出する。
         with app.state.SessionLocal() as session:
             record = session.get(ProjectRecord, project_id)
             record.manga_json = "{壊れたJSON"
             session.commit()
-        with pytest.raises(HTTPException) as invalid:
-            router_common.run_mutation(service, project_id, noop)
-        assert invalid.value.status_code == 422
-
-        from backend.app.mutation import ProjectNotFoundError
+        with pytest.raises(InvalidProjectJsonError):
+            service.mutate_local(project_id, noop)
 
         with pytest.raises(ProjectNotFoundError):
             service.current_epoch("missing")
 
 
-# --- enqueue_panel_jobs の例外変換 ---
+# --- GenerationService.enqueue のdomain例外 ---
 
 
-def test_enqueue_panel_jobs_error_paths(tmp_path: Path) -> None:
+def test_generation_service_enqueue_error_paths(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         app = client.app
         project_id = create_project(client)
 
-        with pytest.raises(HTTPException) as missing_project:
-            router_common.enqueue_panel_jobs(app, "missing", ["p01_01"], 1, "m")
-        assert missing_project.value.status_code == 404
+        with pytest.raises(ProjectNotFoundError):
+            app.state.generation.enqueue("missing", ["p01_01"], 1, "m")
 
-        with pytest.raises(HTTPException) as missing_panel:
-            router_common.enqueue_panel_jobs(app, project_id, ["nope"], 1, "m")
-        assert missing_panel.value.status_code == 404
+        with pytest.raises(PanelNotFoundError):
+            app.state.generation.enqueue(project_id, ["nope"], 1, "m")
 
-        with pytest.raises(HTTPException) as bad_epoch:
-            router_common.enqueue_panel_jobs(
-                app, project_id, ["p01_01"], 1, "m", expected_epoch=99999
-            )
-        assert bad_epoch.value.status_code == 409
+        with pytest.raises(EpochMismatchError):
+            app.state.generation.enqueue(project_id, ["p01_01"], 1, "m", expected_epoch=99999)
 
         # 既にqueuedのコマへ再登録するとActiveJobConflict→409。
-        router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
-        with pytest.raises(HTTPException) as active:
-            router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m")
-        assert active.value.status_code == 409
+        app.state.generation.enqueue(project_id, ["p01_01"], 1, "m")
+        with pytest.raises(generation_module.ActiveJobConflictError):
+            app.state.generation.enqueue(project_id, ["p01_01"], 1, "m")
 
         # skip_active=Trueで全コマがactive除外され空になる場合もActiveJobConflict→409。
-        with pytest.raises(HTTPException) as skipped_empty:
-            router_common.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m", skip_active=True)
-        assert skipped_empty.value.status_code == 409
+        with pytest.raises(generation_module.ActiveJobConflictError):
+            app.state.generation.enqueue(project_id, ["p01_01"], 1, "m", skip_active=True)
 
 
 # --- JobManager の補助分岐 ---

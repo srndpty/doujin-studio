@@ -7,7 +7,6 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from .. import knowledge as knowledge_db
 from .. import story as story_module
 from ..database import ProjectRevisionRecord, StoryGenerationSessionRecord, now_utc
-from ..generation_service import cancel_project_jobs_before_epoch
 from ..llm import build_llm_client
 from ..schemas import (
     MangaProject,
@@ -22,8 +21,6 @@ from ..schemas import (
 from ..story import StoryError
 from .common import (
     load_project_record,
-    replace_project_with_history,
-    run_mutation,
     to_detail,
     to_story_summary,
 )
@@ -51,7 +48,7 @@ def create_story_session(
         def update_work_name(manga: MangaProject) -> None:
             manga.work_name = work_name
 
-        run_mutation(request.app.state.mutation, project_id, update_work_name)
+        request.app.state.mutation.mutate_local(project_id, update_work_name)
     with request.app.state.SessionLocal() as session:
         story_record = story_module.create_session(
             session,
@@ -157,15 +154,15 @@ async def apply_story_session(session_id: str, request: Request, revision: int) 
         except StoryError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    replace_project_with_history(
-        request.app.state.mutation,
+    mutation_result = request.app.state.mutation.replace_with_history(
         project_id,
         build_applied,
         expected_revision=revision,
         history_label=f"ストーリー適用前 ({now_utc().isoformat()})",
     )
-    new_epoch = request.app.state.mutation.current_epoch(project_id)
-    await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
+    await request.app.state.generation.cancel_before_epoch(
+        project_id, mutation_result.project.generation_epoch
+    )
     return to_detail(
         load_project_record(request, project_id), request.app.state.settings.export_dir
     )
@@ -207,15 +204,15 @@ async def restore_project_revision(
             raise HTTPException(status_code=404, detail="リビジョンが見つかりません")
         return story_module.restore_revision(stored.manga_json)
 
-    replace_project_with_history(
-        request.app.state.mutation,
+    mutation_result = request.app.state.mutation.replace_with_history(
         project_id,
         build_restored,
         expected_revision=revision,
         history_label=f"復元前 ({now_utc().isoformat()})",
     )
-    new_epoch = request.app.state.mutation.current_epoch(project_id)
-    await cancel_project_jobs_before_epoch(request.app, project_id, new_epoch)
+    await request.app.state.generation.cancel_before_epoch(
+        project_id, mutation_result.project.generation_epoch
+    )
     return to_detail(
         load_project_record(request, project_id), request.app.state.settings.export_dir
     )

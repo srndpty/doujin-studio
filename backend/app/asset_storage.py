@@ -17,7 +17,7 @@ from PIL import Image
 from .schemas import MangaProject
 
 # 1コマ画像として現実的な上限。展開後のピクセル数で「圧縮爆弾」を弾く。
-MAX_IMAGE_PIXELS = 64_000_000  # 約8000x8000
+MAX_IMAGE_PIXELS = 64_000_000  # 最大64メガピクセル（最大辺はMAX_IMAGE_DIMENSIONで別途制限）
 MAX_IMAGE_DIMENSION = 12_000
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 # Pillow自体の圧縮爆弾検知も明示的に有効化する（巨大画像でDecompressionBombErrorを投げる）。
@@ -48,7 +48,7 @@ def load_validated_image(content: bytes, *, preserve_alpha: bool = False) -> Ima
                 or width * height > MAX_IMAGE_PIXELS
             ):
                 raise ImageValidationError(
-                    "画像サイズが大きすぎます（最大8000x8000・約64メガピクセル）"
+                    "画像サイズが大きすぎます（最大辺12000px・最大64メガピクセル）"
                 )
             # 透過オーバーフレーム（人物切り抜き等）はアルファを保持する。
             return source.convert("RGBA" if preserve_alpha else "RGB")

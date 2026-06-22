@@ -3,3 +3,20 @@ frontend/src/api/openapi.json text eol=lf
 frontend/src/api/schema.d.ts text eol=lf
 # この既存テストはCRLFで履歴化されているため、行末CRを空白エラーから除外する。
 tests/test_backend.py whitespace=cr-at-eol
+
+# テキストファイルは Git 管理上・作業ツリー上とも LF に統一する
+* text=auto eol=lf
+
+# バイナリは改行変換しない
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.woff binary
+*.woff2 binary

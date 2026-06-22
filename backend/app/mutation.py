@@ -8,14 +8,15 @@ ProjectRepository → ProjectMutationService の最初の抽出。
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Generic, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from .assets import normalize_manga_assets
 from .repository import ProjectRepository
-from .schemas import MangaProject, Page
+from .schemas import MangaProject, Page, Panel
 
 T = TypeVar("T")
 
@@ -28,6 +29,14 @@ class ProjectConflictError(Exception):
     pass
 
 
+class PanelNotFoundError(Exception):
+    """対象panel_idがmanga内に存在しない。"""
+
+
+class WorkerScopeViolationError(Exception):
+    """worker mutationが対象panel以外のpanelを書き換えた（API境界違反）。"""
+
+
 class InvalidProjectJsonError(Exception):
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
@@ -36,6 +45,24 @@ class InvalidProjectJsonError(Exception):
 
 class EpochMismatchError(Exception):
     """ジョブ開始時とproject世代が変わった（ページ構成が全置換された）。"""
+
+
+@dataclass(frozen=True)
+class ProjectSnapshot:
+    """更新確定後のproject状態の不変スナップショット。"""
+
+    project_id: str
+    manga: MangaProject
+    revision: int
+    generation_epoch: int
+
+
+@dataclass(frozen=True)
+class MutationResult(Generic[T]):
+    """mutate系の統一戻り値。tuple戻り値を廃止し、result + snapshotで表現する。"""
+
+    result: T
+    project: ProjectSnapshot
 
 
 def mark_page_dirty(page: Page) -> None:
@@ -71,11 +98,38 @@ def parse_manga(raw: str) -> MangaProject:
         raise InvalidProjectJsonError(f"Manga JSONが不正です: {exc}") from exc
 
 
+def _find_panel_and_page(manga: MangaProject, panel_id: str) -> tuple[Panel | None, Page | None]:
+    for page in manga.pages:
+        for panel in page.panels:
+            if panel.panel_id == panel_id:
+                return panel, page
+    return None, None
+
+
+def _other_panel_fingerprint(manga: MangaProject, panel_id: str) -> dict[str, str]:
+    """対象panel以外のpanelのスコープ判定用指紋（panel_id→正規化JSON）。"""
+    return {
+        panel.panel_id: panel.model_dump_json()
+        for page in manga.pages
+        for panel in page.panels
+        if panel.panel_id != panel_id
+    }
+
+
 class ProjectMutationService:
     """最新manga_jsonを読み直し、mutateを適用してCAS保存するサービス。
 
-    - expected_revision指定（ユーザー起点）: 読み取り時に不一致なら即409、CAS失敗も409。
-    - expected_revision=None（バックグラウンド/暗黙）: 競合時は読み直して再適用するリトライ。
+    更新の入口を用途別に分離し、戻り値はすべて :class:`MutationResult` へ統一する。
+
+    - :meth:`mutate_user`: ユーザー起点。``expected_revision`` 必須で、競合時は一度も
+      再試行せず即 :class:`ProjectConflictError`（HTTP 409）にする。
+    - :meth:`mutate_local`: revision未導入のユーザー操作向け。競合時は読み直して再適用する
+      read-modify-writeリトライ（PR2でrevision必須化が進めば削る）。
+    - :meth:`mutate_worker`: 生成worker起点。``expected_epoch`` で世代を固定し、競合時は
+      読み直して再適用する。世代不一致なら :class:`EpochMismatchError`。
+    - :meth:`mutate_worker_panel`: workerの中でも対象panelだけを更新する用途。対象panel以外の
+      panelを書き換えたら :class:`WorkerScopeViolationError` で弾く。
+
     title/work_nameはmanga本体と常に同期する。
     """
 
@@ -96,39 +150,146 @@ class ProjectMutationService:
                 raise ProjectNotFoundError()
             return record.generation_epoch
 
-    def mutate(
+    def mutate_user(
+        self,
+        project_id: str,
+        *,
+        expected_revision: int,
+        mutate: Callable[[MangaProject], T],
+    ) -> MutationResult[T]:
+        """ユーザー起点のCAS更新。競合時は一度も再試行せず即409にする。"""
+        with self.session_factory() as session:
+            record = self.repository.get(session, project_id)
+            if record is None:
+                raise ProjectNotFoundError()
+            if record.revision != expected_revision:
+                raise ProjectConflictError()
+            base = record.revision
+            epoch = record.generation_epoch
+            manga = parse_manga(record.manga_json)
+            before = manga.model_dump_json()
+            result = mutate(manga)
+            normalize_manga_assets(manga, self.export_dir)
+            if manga.model_dump_json() == before:
+                return MutationResult(result, ProjectSnapshot(project_id, manga, base, epoch))
+            if self.repository.cas_set_manga(session, project_id, base, manga) == 1:
+                session.commit()
+                return MutationResult(result, ProjectSnapshot(project_id, manga, base + 1, epoch))
+            session.rollback()
+            raise ProjectConflictError()
+
+    def mutate_local(
         self,
         project_id: str,
         mutate: Callable[[MangaProject], T],
         *,
-        expected_revision: int | None = None,
-        expected_epoch: int | None = None,
         attempts: int = 5,
-    ) -> tuple[T, MangaProject, int]:
+    ) -> MutationResult[T]:
+        """revision未導入のユーザー操作向けread-modify-writeリトライ更新。"""
         for _ in range(attempts):
             with self.session_factory() as session:
                 record = self.repository.get(session, project_id)
                 if record is None:
                     raise ProjectNotFoundError()
-                # 構成全置換後の古いジョブは候補を書き込ませない（世代不一致で破棄）。
-                if expected_epoch is not None and record.generation_epoch != expected_epoch:
+                base = record.revision
+                epoch = record.generation_epoch
+                manga = parse_manga(record.manga_json)
+                before = manga.model_dump_json()
+                result = mutate(manga)
+                normalize_manga_assets(manga, self.export_dir)
+                if manga.model_dump_json() == before:
+                    return MutationResult(result, ProjectSnapshot(project_id, manga, base, epoch))
+                if self.repository.cas_set_manga(session, project_id, base, manga) == 1:
+                    session.commit()
+                    return MutationResult(
+                        result, ProjectSnapshot(project_id, manga, base + 1, epoch)
+                    )
+                session.rollback()
+        raise ProjectConflictError()
+
+    def mutate_worker(
+        self,
+        project_id: str,
+        *,
+        expected_epoch: int,
+        mutate: Callable[[MangaProject], T],
+        attempts: int = 5,
+    ) -> MutationResult[T]:
+        """生成worker起点の更新。世代を固定し、競合時は読み直して再適用する。"""
+        for _ in range(attempts):
+            with self.session_factory() as session:
+                record = self.repository.get(session, project_id)
+                if record is None:
+                    raise ProjectNotFoundError()
+                if record.generation_epoch != expected_epoch:
                     raise EpochMismatchError()
-                if expected_revision is not None and record.revision != expected_revision:
-                    raise ProjectConflictError()
                 base = record.revision
                 manga = parse_manga(record.manga_json)
                 before = manga.model_dump_json()
                 result = mutate(manga)
                 normalize_manga_assets(manga, self.export_dir)
                 if manga.model_dump_json() == before:
-                    return result, manga, base
-                if self.repository.cas_set_manga(session, project_id, base, manga) == 1:
+                    return MutationResult(
+                        result, ProjectSnapshot(project_id, manga, base, expected_epoch)
+                    )
+                if (
+                    self.repository.cas_set_manga(
+                        session, project_id, base, manga, require_epoch=expected_epoch
+                    )
+                    == 1
+                ):
                     session.commit()
-                    return result, manga, base + 1
+                    return MutationResult(
+                        result, ProjectSnapshot(project_id, manga, base + 1, expected_epoch)
+                    )
                 session.rollback()
-                # ユーザー起点は同値読みの並行commitも競合確定。暗黙更新は読み直して再試行。
-                if expected_revision is not None:
-                    raise ProjectConflictError()
+        raise ProjectConflictError()
+
+    def mutate_worker_panel(
+        self,
+        project_id: str,
+        *,
+        panel_id: str,
+        expected_epoch: int,
+        mutate: Callable[[Panel, Page], T],
+        attempts: int = 5,
+    ) -> MutationResult[T]:
+        """worker起点で「対象panelだけ」を更新する。"""
+        for _ in range(attempts):
+            with self.session_factory() as session:
+                record = self.repository.get(session, project_id)
+                if record is None:
+                    raise ProjectNotFoundError()
+                if record.generation_epoch != expected_epoch:
+                    raise EpochMismatchError()
+                base = record.revision
+                manga = parse_manga(record.manga_json)
+                panel, page = _find_panel_and_page(manga, panel_id)
+                if panel is None or page is None:
+                    raise PanelNotFoundError()
+                before = manga.model_dump_json()
+                others_before = _other_panel_fingerprint(manga, panel_id)
+                result = mutate(panel, page)
+                # normalize前にスコープ判定する。normalizeはasset正規化のためのシステム処理で、
+                # mutate自身の更新範囲には含めない。
+                if _other_panel_fingerprint(manga, panel_id) != others_before:
+                    raise WorkerScopeViolationError()
+                normalize_manga_assets(manga, self.export_dir)
+                if manga.model_dump_json() == before:
+                    return MutationResult(
+                        result, ProjectSnapshot(project_id, manga, base, expected_epoch)
+                    )
+                if (
+                    self.repository.cas_set_manga(
+                        session, project_id, base, manga, require_epoch=expected_epoch
+                    )
+                    == 1
+                ):
+                    session.commit()
+                    return MutationResult(
+                        result, ProjectSnapshot(project_id, manga, base + 1, expected_epoch)
+                    )
+                session.rollback()
         raise ProjectConflictError()
 
     def replace(
@@ -138,7 +299,7 @@ class ProjectMutationService:
         *,
         expected_revision: int,
         increment_epoch: bool = False,
-    ) -> tuple[MangaProject, int]:
+    ) -> MutationResult[None]:
         """全文を必須revision付きCASで置換する。
 
         全文保存で暗黙にDB上の最新revisionを期待値へ採用すると、古いクライアントの
@@ -170,7 +331,9 @@ class ProjectMutationService:
             if increment_epoch:
                 self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             session.commit()
-        return replacement, expected_revision + 1
+        return MutationResult(
+            None, ProjectSnapshot(project_id, replacement, expected_revision + 1, new_epoch)
+        )
 
     def replace_with_history(
         self,
@@ -179,7 +342,7 @@ class ProjectMutationService:
         *,
         expected_revision: int,
         history_label: str,
-    ) -> tuple[MangaProject, int]:
+    ) -> MutationResult[None]:
         """構造全置換と直前履歴の保存を同一トランザクションでCASする。"""
         with self.session_factory() as session:
             record = self.repository.get(session, project_id)
@@ -207,4 +370,6 @@ class ProjectMutationService:
             self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             self.repository.add_revision_history(session, project_id, history_label, previous_json)
             session.commit()
-        return replacement, expected_revision + 1
+        return MutationResult(
+            None, ProjectSnapshot(project_id, replacement, expected_revision + 1, new_epoch)
+        )
