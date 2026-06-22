@@ -1,1 +1,1 @@
-AGENTS.mdを参照
+- AGENTS.mdを正本として参照せよ

@@ -673,7 +673,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "locations"
             / stable_asset_name(location_id, "location").removesuffix(".png")
         )
-        target, _created = await save_content_addressed_request_image(request, asset_dir, "location")
+        target, _created = await save_content_addressed_request_image(
+            request, asset_dir, "location"
+        )
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
 
         def mutate(manga: MangaProject) -> None:

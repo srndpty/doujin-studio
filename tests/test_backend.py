@@ -2435,7 +2435,9 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
     assert list(target.parent.glob("*.tmp")) == []
 
 
-def test_reference_upload_conflict_keeps_content_addressed_asset(tmp_path: Path, monkeypatch) -> None:
+def test_reference_upload_conflict_keeps_content_addressed_asset(
+    tmp_path: Path, monkeypatch
+) -> None:
     """PNG保存後・JSON反映前に競合(409)しても、内容hash不変assetは削除しない。
 
     削除すると、同一内容を並行uploadしたcreated=Falseの後続リクエストがcommit直前に
