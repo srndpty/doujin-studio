@@ -58,6 +58,7 @@ def png_bytes(color: str) -> bytes:
 
 # --- iter_manga_asset_strings: 全asset種別の列挙 ---
 
+
 def test_iter_manga_asset_strings_collects_every_asset_field() -> None:
     manga = MangaProject.model_validate(
         {
@@ -165,9 +166,7 @@ def test_generation_input_hash_digests_present_and_missing_assets(tmp_path: Path
                                 }
                             ],
                             "generation": {
-                                "reference_images": [
-                                    {"node_id": "31", "asset": "proj/missing.png"}
-                                ]
+                                "reference_images": [{"node_id": "31", "asset": "proj/missing.png"}]
                             },
                         }
                     ],
@@ -205,11 +204,16 @@ def test_referenced_paths_skip_malformed_revision_json(tmp_path: Path) -> None:
 
 # --- 参照画像アップロードの楽観ロック競合（cleanup except branch） ---
 
+
 def add_overlay(client, project_id: str) -> None:
     detail = client.get(f"/api/projects/{project_id}").json()
     manga = detail["manga_json"]
     manga["pages"][0]["overlay_elements"] = [
-        {"id": "ov1", "source_panel_id": manga["pages"][0]["panels"][0]["panel_id"], "box": [0.2, 0.2, 0.4, 0.4]}
+        {
+            "id": "ov1",
+            "source_panel_id": manga["pages"][0]["panels"][0]["panel_id"],
+            "box": [0.2, 0.2, 0.4, 0.4],
+        }
     ]
     assert (
         client.put(
@@ -246,7 +250,9 @@ def test_stale_revision_uploads_conflict_and_cleanup(tmp_path: Path) -> None:
             f"/api/projects/{project_id}/pages/1/overlays/ov1/asset?revision={stale}",
         ]
         for path in endpoints:
-            response = client.post(path, content=png_bytes("red"), headers={"Content-Type": "image/png"})
+            response = client.post(
+                path, content=png_bytes("red"), headers={"Content-Type": "image/png"}
+            )
             assert response.status_code == 409, path
         # 孤児.tmpが残らないこと。
         assert list((tmp_path / "exports").rglob("*.tmp")) == []
@@ -264,11 +270,14 @@ def test_upload_missing_entities_return_404(tmp_path: Path) -> None:
             f"/api/projects/{project_id}/pages/999/overlays/x/asset?revision={rev}",
         ]
         for path in cases:
-            response = client.post(path, content=png_bytes("blue"), headers={"Content-Type": "image/png"})
+            response = client.post(
+                path, content=png_bytes("blue"), headers={"Content-Type": "image/png"}
+            )
             assert response.status_code == 404, path
 
 
 # --- mutation service / run_mutation / replace_project の例外変換 ---
+
 
 def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
@@ -331,6 +340,7 @@ def test_mutation_helpers_translate_service_errors(tmp_path: Path) -> None:
 
 # --- enqueue_panel_jobs の例外変換 ---
 
+
 def test_enqueue_panel_jobs_error_paths(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         app = client.app
@@ -345,7 +355,9 @@ def test_enqueue_panel_jobs_error_paths(tmp_path: Path) -> None:
         assert missing_panel.value.status_code == 404
 
         with pytest.raises(HTTPException) as bad_epoch:
-            main_module.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m", expected_epoch=99999)
+            main_module.enqueue_panel_jobs(
+                app, project_id, ["p01_01"], 1, "m", expected_epoch=99999
+            )
         assert bad_epoch.value.status_code == 409
 
         # 既にqueuedのコマへ再登録するとActiveJobConflict→409。
@@ -356,13 +368,12 @@ def test_enqueue_panel_jobs_error_paths(tmp_path: Path) -> None:
 
         # skip_active=Trueで全コマがactive除外され空になる場合もActiveJobConflict→409。
         with pytest.raises(HTTPException) as skipped_empty:
-            main_module.enqueue_panel_jobs(
-                app, project_id, ["p01_01"], 1, "m", skip_active=True
-            )
+            main_module.enqueue_panel_jobs(app, project_id, ["p01_01"], 1, "m", skip_active=True)
         assert skipped_empty.value.status_code == 409
 
 
 # --- JobManager の補助分岐 ---
+
 
 def test_job_manager_without_session_factory() -> None:
     manager = JobManager()
@@ -412,6 +423,7 @@ def test_job_manager_loads_job_from_db(tmp_path: Path) -> None:
 
 
 # --- schemas: 保存不能な構造破綻はValidationError ---
+
 
 @pytest.mark.parametrize(
     "mutate",
