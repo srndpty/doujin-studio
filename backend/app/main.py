@@ -13,6 +13,7 @@ from .database import create_session_factory
 from .generation_service import GenerationRuntime, GenerationService
 from .jobs import JobManager
 from .mutation import ProjectMutationService
+from .project_render_service import ProjectRenderService
 from .rendering import RenderingService
 from .repository import ProjectRepository
 from .routers import generation, knowledge, projects, story, system
@@ -50,6 +51,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 rendering=app.state.rendering,
                 repository=app.state.repository,
             ),
+        )
+        app.state.project_render = ProjectRenderService(
+            app_settings,
+            app.state.SessionLocal,
+            app.state.repository,
+            app.state.mutation,
+            app.state.generation,
+            app.state.rendering,
         )
         to_start, interrupted = app.state.job_manager.restore_pending()
         for job in interrupted:

@@ -1,8 +1,6 @@
 # 生成物の改行をLFに固定し、Windows/Linux間でdiffが出ないようにする。
 frontend/src/api/openapi.json text eol=lf
 frontend/src/api/schema.d.ts text eol=lf
-# この既存テストはCRLFで履歴化されているため、行末CRを空白エラーから除外する。
-tests/test_backend.py whitespace=cr-at-eol
 
 # テキストファイルは Git 管理上・作業ツリー上とも LF に統一する
 * text=auto eol=lf

@@ -1,7 +1,6 @@
 """プロジェクト編集・画像アップロード・描画・出力のHTTPルーター。"""
 
 import uuid
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -9,16 +8,12 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
-from ..database import ProjectRecord, now_utc
 from ..generator import generate_four_page_name
 from ..mutation import mark_page_dirty
 from ..rendering import (
     asset_to_id,
     build_production_status,
-    export_confirmed_cbz,
-    find_inconsistent_selected_panel,
     invalidate_changed_pages,
-    render_snapshot_pages,
     structure_signature,
 )
 from ..schemas import (
@@ -56,22 +51,9 @@ router = APIRouter()
 
 @router.post("/api/projects", response_model=ProjectDetail)
 def create_project(payload: ProjectCreate, request: Request) -> ProjectDetail:
-    project_id = str(uuid.uuid4())
-    manga = MangaProject(
+    record = request.app.state.mutation.create(
         title=payload.title, work_name=payload.work_name, target_pages=payload.target_pages
     )
-    record = ProjectRecord(
-        id=project_id,
-        title=payload.title,
-        work_name=payload.work_name,
-        manga_json=manga.model_dump_json(),
-        created_at=now_utc(),
-        updated_at=now_utc(),
-    )
-    with request.app.state.SessionLocal() as session:
-        request.app.state.repository.add(session, record)
-        session.commit()
-        session.refresh(record)
     return to_detail(record, request.app.state.settings.export_dir)
 
 
@@ -403,18 +385,19 @@ def render_page_endpoint(project_id: str, page_number: int, request: Request) ->
     snapshot = parse_manga_json(record.manga_json)
     if not any(page.page == page_number for page in snapshot.pages):
         raise HTTPException(status_code=404, detail="ページが見つかりません")
-    page_asset, warnings, manga, revision = request.app.state.rendering.render_and_commit_page(
+    rendered = request.app.state.rendering.render_and_commit_page(
         project_id, snapshot, record.revision, page_number
     )
+    manga = rendered.project.manga
     page = next(item for item in manga.pages if item.page == page_number)
     issues = preflight_module.preflight_page(manga, page, export_dir=settings.export_dir)
     return PageRenderResponse(
         project_id=project_id,
         page=page_number,
-        page_asset=asset_to_id(page_asset, settings.export_dir),
+        page_asset=asset_to_id(rendered.asset, settings.export_dir),
         manga_json=manga,
-        revision=revision,
-        warnings=warnings,
+        revision=rendered.project.revision,
+        warnings=rendered.warnings,
         preflight=_to_preflight_response(project_id, page_number, issues),
     )
 
@@ -428,77 +411,30 @@ def render_panel_page(project_id: str, panel_id: str, request: Request) -> Panel
     record = load_project_record(request, project_id)
     snapshot = parse_manga_json(record.manga_json)
     page_number = find_panel_page_number(snapshot, panel_id)
-    page_asset, warnings, manga, revision = request.app.state.rendering.render_and_commit_page(
+    rendered = request.app.state.rendering.render_and_commit_page(
         project_id, snapshot, record.revision, page_number
     )
     return PanelPageRenderResponse(
         project_id=project_id,
         panel_id=panel_id,
-        page_asset=asset_to_id(page_asset, settings.export_dir),
-        manga_json=manga,
-        revision=revision,
-        warnings=warnings,
+        page_asset=asset_to_id(rendered.asset, settings.export_dir),
+        manga_json=rendered.project.manga,
+        revision=rendered.project.revision,
+        warnings=rendered.warnings,
     )
 
 
 @router.post("/api/projects/{project_id}/export/cbz", response_model=ExportResponse)
 def export_project_cbz(project_id: str, request: Request) -> ExportResponse:
     settings = request.app.state.settings
-    record = load_project_record(request, project_id)
-    snapshot = parse_manga_json(record.manga_json)
-    preflight_errors = [
-        issue
-        for issue in preflight_module.preflight_project(snapshot, settings.export_dir)
-        if issue.level == "error"
-    ]
-    if preflight_errors:
-        raise HTTPException(
-            status_code=422,
-            detail="プリフライトで重大エラーが見つかりました: "
-            + "; ".join(f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]),
-        )
-    inconsistent = find_inconsistent_selected_panel(snapshot, settings.export_dir)
-    if inconsistent is not None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{inconsistent.panel_id}: 採用画像が欠損/不整合です。CBZ出力前に修正してください。",
-        )
-    status = build_production_status(project_id, snapshot, settings.export_dir)
-    blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
-    published_by_request: dict[Path, bool] = {}
-    try:
-        page_assets, render_warnings = render_snapshot_pages(
-            project_id,
-            snapshot,
-            settings.export_dir,
-            record.revision,
-            ownership=published_by_request,
-        )
-        cbz_path = export_confirmed_cbz(
-            project_id,
-            snapshot.title,
-            page_assets,
-            settings.export_dir,
-            record.revision,
-            ownership=published_by_request,
-        )
-        manga, revision = request.app.state.rendering.commit_rendered_pages(
-            project_id,
-            snapshot,
-            page_assets,
-            expected_revision=record.revision,
-            expected_epoch=record.generation_epoch,
-        )
-    except Exception:
-        request.app.state.rendering.cleanup_published_assets(project_id, published_by_request)
-        raise
+    result = request.app.state.project_render.export_cbz(project_id)
     return ExportResponse(
         project_id=project_id,
-        cbz_asset=asset_to_id(cbz_path, settings.export_dir),
-        absolute_path=str(cbz_path.resolve()),
-        revision=revision,
-        manga_json=manga,
-        warnings=blockers + render_warnings,
+        cbz_asset=asset_to_id(result.cbz_path, settings.export_dir),
+        absolute_path=str(result.cbz_path.resolve()),
+        revision=result.project.revision,
+        manga_json=result.project.manga,
+        warnings=result.warnings,
     )
 
 

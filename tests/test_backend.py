@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import backend.app.generation_service as generation_module
+import backend.app.project_render_service as project_render_module
 import backend.app.rendering as rendering_module
 import backend.app.routers.common as router_common
 import backend.app.routers.projects as projects_router
@@ -68,11 +69,14 @@ def commit_rendered_pages(
     app, project_id: str, snapshot: MangaProject, assets: list[Path], **kwargs
 ):
     try:
-        return app.state.rendering.commit_rendered_pages(project_id, snapshot, assets, **kwargs)
+        committed = app.state.rendering.commit_rendered_pages(
+            project_id, snapshot, assets, **kwargs
+        )
     except RenderInputChangedError as exc:
         raise HTTPException(status_code=409, detail="描画入力競合") from exc
     except (ProjectConflictError, EpochMismatchError) as exc:
         raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
+    return committed.manga, committed.revision
 
 
 def make_client(
@@ -1339,7 +1343,7 @@ def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
         project_dir = tmp_path / "exports" / project_id
         pngs_before = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
         monkeypatch.setattr(
-            projects_router,
+            project_render_module,
             "export_confirmed_cbz",
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CBZ失敗")),
         )
@@ -1371,7 +1375,7 @@ def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkey
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         app = client.app
-        original_export = projects_router.export_confirmed_cbz
+        original_export = project_render_module.export_confirmed_cbz
 
         def update_then_export(*args, **kwargs):
             def break_reading_order(manga: MangaProject) -> None:
@@ -1380,7 +1384,7 @@ def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkey
             app.state.mutation.mutate_local(project_id, break_reading_order)
             return original_export(*args, **kwargs)
 
-        monkeypatch.setattr(projects_router, "export_confirmed_cbz", update_then_export)
+        monkeypatch.setattr(project_render_module, "export_confirmed_cbz", update_then_export)
         response = client.post(f"/api/projects/{project_id}/export/cbz")
         assert response.status_code == 409
         latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
@@ -1392,14 +1396,14 @@ def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, mon
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         barrier = threading.Barrier(2)
-        original_export = projects_router.export_confirmed_cbz
+        original_export = project_render_module.export_confirmed_cbz
 
         def synchronized_export(*args, **kwargs):
             path = original_export(*args, **kwargs)
             barrier.wait(timeout=10)
             return path
 
-        monkeypatch.setattr(projects_router, "export_confirmed_cbz", synchronized_export)
+        monkeypatch.setattr(project_render_module, "export_confirmed_cbz", synchronized_export)
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = list(
                 executor.map(
@@ -1581,7 +1585,11 @@ def test_mutate_user_conflict_does_not_retry_and_returns_snapshot(tmp_path: Path
 
 
 def test_worker_panel_mutation_cannot_change_other_panel(tmp_path: Path) -> None:
-    from backend.app.mutation import ProjectMutationService, WorkerScopeViolationError
+    from backend.app.mutation import (
+        ProjectMutationService,
+        WorkerScopeViolationError,
+        mark_page_dirty,
+    )
 
     manga = MangaProject(
         title="scope",
@@ -1613,11 +1621,27 @@ def test_worker_panel_mutation_cannot_change_other_panel(tmp_path: Path) -> None
         session.commit()
     service = ProjectMutationService(session_factory, tmp_path / "exports")
 
-    def break_scope(_panel: Panel, page: Page) -> None:
+    def break_scope(_manga: MangaProject, _panel: Panel, page: Page) -> None:
         page.panels[1].prompt = "対象外変更"
 
     with pytest.raises(WorkerScopeViolationError):
         service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=break_scope)
+
+    # ページ構造・overlay等への変更も拒否する。
+    def break_page_scope(_manga: MangaProject, _panel: Panel, page: Page) -> None:
+        page.theme = "別テーマ"
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=break_page_scope)
+
+    # 対象panel自身とページのrender状態(render_status系)の変更は許可する。
+    def in_scope(_manga: MangaProject, panel: Panel, page: Page) -> str:
+        panel.prompt = "対象内変更"
+        mark_page_dirty(page)
+        return "ok"
+
+    result = service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=in_scope)
+    assert result.result == "ok"
 
 
 def test_generation_service_runs_without_fastapi_app(tmp_path: Path) -> None:

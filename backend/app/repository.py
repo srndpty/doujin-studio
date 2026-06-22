@@ -33,6 +33,20 @@ class ProjectRepository:
     def add(self, session: Session, record: ProjectRecord) -> None:
         session.add(record)
 
+    def create(
+        self, session: Session, *, title: str, work_name: str, manga_json: str
+    ) -> ProjectRecord:
+        record = ProjectRecord(
+            id=str(uuid.uuid4()),
+            title=title,
+            work_name=work_name,
+            manga_json=manga_json,
+            created_at=now_utc(),
+            updated_at=now_utc(),
+        )
+        session.add(record)
+        return record
+
     def cas_set_manga(
         self,
         session: Session,

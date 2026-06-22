@@ -10,13 +10,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from .assets import normalize_manga_assets
 from .repository import ProjectRepository
 from .schemas import MangaProject, Page, Panel
+
+if TYPE_CHECKING:
+    from .database import ProjectRecord
 
 T = TypeVar("T")
 
@@ -27,6 +30,17 @@ class ProjectNotFoundError(Exception):
 
 class ProjectConflictError(Exception):
     pass
+
+
+class ProjectReplaceConflictError(ProjectConflictError):
+    """全文置換(replace / replace_with_history)でのrevision競合。
+
+    汎用のProjectConflictErrorとは別メッセージを維持するためのサブクラス。
+    """
+
+
+class RenderCommitConflictError(ProjectConflictError):
+    """描画結果のdone確定時のrevision競合（CBZ/ページrender確定）。"""
 
 
 class PanelNotFoundError(Exception):
@@ -106,14 +120,24 @@ def _find_panel_and_page(manga: MangaProject, panel_id: str) -> tuple[Panel | No
     return None, None
 
 
-def _other_panel_fingerprint(manga: MangaProject, panel_id: str) -> dict[str, str]:
-    """対象panel以外のpanelのスコープ判定用指紋（panel_id→正規化JSON）。"""
-    return {
-        panel.panel_id: panel.model_dump_json()
-        for page in manga.pages
-        for panel in page.panels
-        if panel.panel_id != panel_id
-    }
+_PAGE_RENDER_FIELDS = ("render_status", "rendered_at", "render_asset", "render_hash")
+
+
+def _worker_panel_scope_fingerprint(manga: MangaProject, panel_id: str) -> str:
+    """worker panel mutationで「変更を許可しない範囲」の指紋。
+
+    許可するのは対象panel自身の変更と、ページのrender状態(render_status系)だけ。
+    そのため対象panelを各ページから除き、ページのrender状態フィールドをマスクした上で
+    JSON化する。これが前後で一致すれば、対象panel・page render状態以外は不変と分かる。
+    他panel・characters/locations・page構造・overlay・reading_order・project全体への
+    書き換えはすべてこの指紋を変えるため検出できる。
+    """
+    data = manga.model_dump(mode="json")
+    for page in data["pages"]:
+        for field in _PAGE_RENDER_FIELDS:
+            page[field] = None
+        page["panels"] = [panel for panel in page["panels"] if panel.get("panel_id") != panel_id]
+    return json.dumps(data, sort_keys=True, ensure_ascii=False)
 
 
 class ProjectMutationService:
@@ -142,6 +166,21 @@ class ProjectMutationService:
         self.session_factory = session_factory
         self.export_dir = export_dir
         self.repository = repository or ProjectRepository()
+
+    def create(self, *, title: str, work_name: str, target_pages: int) -> "ProjectRecord":
+        """新規projectを生成し、トランザクションを管理して確定する。
+
+        Router側でSessionを開いてcommitしていた処理をServiceへ寄せる。
+        """
+        manga = MangaProject(title=title, work_name=work_name, target_pages=target_pages)
+        with self.session_factory() as session:
+            record = self.repository.create(
+                session, title=title, work_name=work_name, manga_json=manga.model_dump_json()
+            )
+            session.commit()
+            session.refresh(record)
+            session.expunge(record)
+        return record
 
     def current_epoch(self, project_id: str) -> int:
         with self.session_factory() as session:
@@ -251,10 +290,16 @@ class ProjectMutationService:
         *,
         panel_id: str,
         expected_epoch: int,
-        mutate: Callable[[Panel, Page], T],
+        mutate: Callable[[MangaProject, Panel, Page], T],
         attempts: int = 5,
     ) -> MutationResult[T]:
-        """worker起点で「対象panelだけ」を更新する。"""
+        """worker起点で「対象panelだけ」を更新する。
+
+        mutateは ``(manga, panel, page)`` を受け取る。mangaは生成入力hash算出など読み取り
+        専用の文脈で、書き込みは対象panelとページのrender状態(render_status系)に限る。
+        対象panel以外のpanel・page構造・overlay・project全体を書き換えたら
+        :class:`WorkerScopeViolationError` で弾く。
+        """
         for _ in range(attempts):
             with self.session_factory() as session:
                 record = self.repository.get(session, project_id)
@@ -268,11 +313,11 @@ class ProjectMutationService:
                 if panel is None or page is None:
                     raise PanelNotFoundError()
                 before = manga.model_dump_json()
-                others_before = _other_panel_fingerprint(manga, panel_id)
-                result = mutate(panel, page)
+                scope_before = _worker_panel_scope_fingerprint(manga, panel_id)
+                result = mutate(manga, panel, page)
                 # normalize前にスコープ判定する。normalizeはasset正規化のためのシステム処理で、
                 # mutate自身の更新範囲には含めない。
-                if _other_panel_fingerprint(manga, panel_id) != others_before:
+                if _worker_panel_scope_fingerprint(manga, panel_id) != scope_before:
                     raise WorkerScopeViolationError()
                 normalize_manga_assets(manga, self.export_dir)
                 if manga.model_dump_json() == before:
@@ -314,7 +359,7 @@ class ProjectMutationService:
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
-                raise ProjectConflictError()
+                raise ProjectReplaceConflictError()
             new_epoch = record.generation_epoch + 1 if increment_epoch else record.generation_epoch
             if (
                 self.repository.cas_set_manga(
@@ -327,7 +372,7 @@ class ProjectMutationService:
                 != 1
             ):
                 session.rollback()
-                raise ProjectConflictError()
+                raise ProjectReplaceConflictError()
             if increment_epoch:
                 self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             session.commit()
@@ -349,7 +394,7 @@ class ProjectMutationService:
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
-                raise ProjectConflictError()
+                raise ProjectReplaceConflictError()
             new_epoch = record.generation_epoch + 1
             previous_json = record.manga_json
             replacement = build_replacement(session, parse_manga(previous_json))
@@ -366,7 +411,7 @@ class ProjectMutationService:
                 != 1
             ):
                 session.rollback()
-                raise ProjectConflictError()
+                raise ProjectReplaceConflictError()
             self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             self.repository.add_revision_history(session, project_id, history_label, previous_json)
             session.commit()

@@ -33,6 +33,9 @@ from ..database import (
 )
 from ..generation_service import (
     ActiveJobConflictError,
+    JobEnqueueConflictError,
+    JobEnqueueScopeConflictError,
+    SyncGenerationError,
     find_panel_and_page,
 )
 from ..jobs import GenerationJob, JobManager
@@ -42,7 +45,15 @@ from ..mutation import (
     PanelNotFoundError,
     ProjectConflictError,
     ProjectNotFoundError,
+    ProjectReplaceConflictError,
+    RenderCommitConflictError,
     WorkerScopeViolationError,
+)
+from ..project_render_service import (
+    CbzPreflightError,
+    CbzSelectionInconsistentError,
+    RenderEpochChangedError,
+    RenderSelectionInconsistentError,
 )
 from ..rendering import (
     InconsistentSelectedPanelError,
@@ -92,6 +103,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _panel_not_found(_request: Request, _exc: PanelNotFoundError) -> JSONResponse:
         return _error_response(404, "コマが見つかりません")
 
+    # ProjectConflictErrorのサブクラスは、操作文脈ごとに従来の409文言を維持する。
+    # Starletteはtype(exc).__mro__を辿って最初に一致したhandlerを使うため、サブクラスを
+    # 個別に登録すれば汎用handlerより優先される。
     @app.exception_handler(ProjectConflictError)
     async def _project_conflict(_request: Request, _exc: ProjectConflictError) -> JSONResponse:
         return _error_response(
@@ -99,9 +113,33 @@ def register_exception_handlers(app: FastAPI) -> None:
             "他の操作（生成完了や別タブの保存）で更新されています。最新を読み込み直してください。",
         )
 
+    @app.exception_handler(ProjectReplaceConflictError)
+    async def _replace_conflict(
+        _request: Request, _exc: ProjectReplaceConflictError
+    ) -> JSONResponse:
+        return _error_response(409, "他の操作で更新されています。最新を読み込み直してください。")
+
+    @app.exception_handler(RenderCommitConflictError)
+    async def _render_commit_conflict(
+        _request: Request, _exc: RenderCommitConflictError
+    ) -> JSONResponse:
+        return _error_response(409, "描画結果の確定中に競合しました")
+
+    @app.exception_handler(JobEnqueueConflictError)
+    async def _job_enqueue_conflict(
+        _request: Request, _exc: JobEnqueueConflictError
+    ) -> JSONResponse:
+        return _error_response(409, "ジョブ登録中に競合しました。再実行してください。")
+
+    @app.exception_handler(JobEnqueueScopeConflictError)
+    async def _job_enqueue_scope_conflict(
+        _request: Request, _exc: JobEnqueueScopeConflictError
+    ) -> JSONResponse:
+        return _error_response(409, "対象コマまたは作品構成が更新されています")
+
     @app.exception_handler(ActiveJobConflictError)
     async def _active_job_conflict(_request: Request, _exc: ActiveJobConflictError) -> JSONResponse:
-        return _error_response(409, "対象コマは生成中です")
+        return _error_response(409, "対象コマまたは作品構成が更新されています")
 
     @app.exception_handler(EpochMismatchError)
     async def _epoch_mismatch(_request: Request, _exc: EpochMismatchError) -> JSONResponse:
@@ -135,14 +173,39 @@ def register_exception_handlers(app: FastAPI) -> None:
             409, f"{exc.panel_id}: 採用画像が欠損/不整合です。再選択または再生成してください。"
         )
 
+    @app.exception_handler(SyncGenerationError)
+    async def _sync_generation_failed(_request: Request, exc: SyncGenerationError) -> JSONResponse:
+        # cancelled(入力変更・構成置換)は409、その他のbackend失敗は502。
+        return _error_response(409 if exc.cancelled else 502, exc.message)
 
-def ensure_generation_succeeded(job: GenerationJob) -> None:
-    """同期完了を要求するendpointでは失敗・キャンセルを成功レスポンスにしない。"""
-    if job.status == "done":
-        return
-    if job.status == "cancelled":
-        raise HTTPException(status_code=409, detail=job.message)
-    raise HTTPException(status_code=502, detail=job.message)
+    @app.exception_handler(RenderEpochChangedError)
+    async def _render_epoch_changed(
+        _request: Request, _exc: RenderEpochChangedError
+    ) -> JSONResponse:
+        return _error_response(
+            409, "レンダリング中に作品構成が更新されました。最新で再実行してください。"
+        )
+
+    @app.exception_handler(RenderSelectionInconsistentError)
+    async def _render_selection_inconsistent(
+        _request: Request, exc: RenderSelectionInconsistentError
+    ) -> JSONResponse:
+        return _error_response(
+            409,
+            f"{exc.panel_id}: 採用画像が欠損/不整合です。再選択または再生成してから出力してください。",
+        )
+
+    @app.exception_handler(CbzSelectionInconsistentError)
+    async def _cbz_selection_inconsistent(
+        _request: Request, exc: CbzSelectionInconsistentError
+    ) -> JSONResponse:
+        return _error_response(
+            422, f"{exc.panel_id}: 採用画像が欠損/不整合です。CBZ出力前に修正してください。"
+        )
+
+    @app.exception_handler(CbzPreflightError)
+    async def _cbz_preflight(_request: Request, exc: CbzPreflightError) -> JSONResponse:
+        return _error_response(422, exc.detail)
 
 
 def get_job_or_404(request: Request, job_id: str) -> GenerationJob:

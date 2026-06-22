@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -22,7 +23,12 @@ from sqlalchemy.orm import sessionmaker
 from .asset_storage import iter_manga_asset_strings, publish_immutable_asset
 from .assets import path_to_asset_id, resolve_asset_path
 from .database import ProjectRevisionRecord, now_utc
-from .mutation import ProjectMutationService
+from .mutation import (
+    ProjectConflictError,
+    ProjectMutationService,
+    ProjectSnapshot,
+    RenderCommitConflictError,
+)
 from .renderer import (
     export_cbz,
     render_project_page,
@@ -51,6 +57,15 @@ class InconsistentSelectedPanelError(Exception):
     def __init__(self, panel_id: str) -> None:
         super().__init__(panel_id)
         self.panel_id = panel_id
+
+
+@dataclass(frozen=True)
+class RenderedPage:
+    """単一ページ描画・確定の戻り値。位置展開tupleを廃止し意味を明示する。"""
+
+    asset: Path
+    warnings: list[str]
+    project: ProjectSnapshot
 
 
 def asset_to_id(path: Path, export_dir: Path) -> str:
@@ -419,11 +434,11 @@ class RenderingService:
         *,
         expected_revision: int | None = None,
         expected_epoch: int | None = None,
-    ) -> tuple[MangaProject, int]:
+    ) -> ProjectSnapshot:
         """最新入力がsnapshotと一致する場合だけdoneと不変assetをCAS確定する。
 
-        確定不能時は RenderInputChangedError / ProjectConflictError / EpochMismatchError を
-        送出する（HTTP変換は呼び出し側）。
+        確定不能時は RenderInputChangedError / RenderCommitConflictError /
+        EpochMismatchError を送出する（HTTP変換は呼び出し側）。
         """
         snapshot_pages = {page.page: page for page in snapshot.pages}
         asset_by_page = {
@@ -449,17 +464,22 @@ class RenderingService:
                 latest_page.render_hash = page_render_hash(snapshot, snapshot_page)
                 latest_page.render_asset = asset_to_id(asset_by_page[page_number], self.export_dir)
 
-        if expected_revision is not None:
-            result = self.mutation.mutate_user(
-                project_id, expected_revision=expected_revision, mutate=finalize
-            )
-        elif expected_epoch is not None:
-            result = self.mutation.mutate_worker(
-                project_id, expected_epoch=expected_epoch, mutate=finalize
-            )
-        else:
-            result = self.mutation.mutate_local(project_id, finalize)
-        return result.project.manga, result.project.revision
+        # revision競合は描画確定固有メッセージを維持する（PR1のエラーメッセージ互換）。
+        # RenderInputChangedError / EpochMismatchError はそのまま伝播させる。
+        try:
+            if expected_revision is not None:
+                result = self.mutation.mutate_user(
+                    project_id, expected_revision=expected_revision, mutate=finalize
+                )
+            elif expected_epoch is not None:
+                result = self.mutation.mutate_worker(
+                    project_id, expected_epoch=expected_epoch, mutate=finalize
+                )
+            else:
+                result = self.mutation.mutate_local(project_id, finalize)
+        except ProjectConflictError as exc:
+            raise RenderCommitConflictError() from exc
+        return result.project
 
     def render_and_commit_page(
         self,
@@ -467,7 +487,7 @@ class RenderingService:
         snapshot: MangaProject,
         snapshot_revision: int,
         page_number: int,
-    ) -> tuple[Path, list[str], MangaProject, int]:
+    ) -> RenderedPage:
         # 全体render・CBZと同じ不変条件をここに集約する。直接ページrender・候補選択後renderも
         # この経路を通るため、採用candidateとassetが不整合ならプレースホルダを確定しない。
         inconsistent = find_inconsistent_selected_panel_for_page(
@@ -489,8 +509,8 @@ class RenderingService:
             page = next(item for item in snapshot.pages if item.page == page_number)
             commit_snapshot = snapshot.model_copy(deep=True)
             commit_snapshot.pages = [page.model_copy(deep=True)]
-            manga, revision = self.commit_rendered_pages(project_id, commit_snapshot, [asset])
+            committed = self.commit_rendered_pages(project_id, commit_snapshot, [asset])
         except Exception:
             self.cleanup_published_assets(project_id, published_by_request)
             raise
-        return asset, warnings, manga, revision
+        return RenderedPage(asset=asset, warnings=warnings, project=committed)

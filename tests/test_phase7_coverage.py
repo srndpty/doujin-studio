@@ -13,7 +13,6 @@ from backend.app.database import ProjectRecord, ProjectRevisionRecord, now_utc
 from backend.app.jobs import JobManager
 from backend.app.main import create_app
 from backend.app.mutation import (
-    EpochMismatchError,
     InvalidProjectJsonError,
     PanelNotFoundError,
     ProjectConflictError,
@@ -350,7 +349,8 @@ def test_generation_service_enqueue_error_paths(tmp_path: Path) -> None:
         with pytest.raises(PanelNotFoundError):
             app.state.generation.enqueue(project_id, ["nope"], 1, "m")
 
-        with pytest.raises(EpochMismatchError):
+        # enqueueのepoch不一致は、登録文脈の409文言を維持するためScope競合へ変換する。
+        with pytest.raises(generation_module.JobEnqueueScopeConflictError):
             app.state.generation.enqueue(project_id, ["p01_01"], 1, "m", expected_epoch=99999)
 
         # 既にqueuedのコマへ再登録するとActiveJobConflict→409。

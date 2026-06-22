@@ -31,7 +31,7 @@ from .mutation import (
 )
 from .prompt_composer import prepare_panel_for_generation
 from .repository import ProjectRepository
-from .schemas import ImageCandidate, MangaProject
+from .schemas import ImageCandidate, MangaProject, Page, Panel
 
 if TYPE_CHECKING:
     from .rendering import RenderingService
@@ -46,8 +46,16 @@ class GenerationRuntime:
     repository: ProjectRepository
 
 
-class ActiveJobConflictError(Exception):
-    pass
+class ActiveJobConflictError(ProjectConflictError):
+    """登録対象panelが既に同epochで生成中。"""
+
+
+class JobEnqueueScopeConflictError(ProjectConflictError):
+    """ジョブ登録時の世代/対象コマ競合（epoch不一致・active重複）。"""
+
+
+class JobEnqueueConflictError(ProjectConflictError):
+    """ジョブ登録CASがリトライ上限まで競合した。"""
 
 
 class GenerationInputMismatchError(Exception):
@@ -56,6 +64,25 @@ class GenerationInputMismatchError(Exception):
 
 class JobOwnershipLostError(Exception):
     pass
+
+
+class SyncGenerationError(Exception):
+    """同期生成endpointでジョブがdone以外で終端した。
+
+    cancelled(入力変更・構成置換など)は409、その他のbackend失敗は502へ変換する。
+    """
+
+    def __init__(self, message: str, *, cancelled: bool) -> None:
+        super().__init__(message)
+        self.message = message
+        self.cancelled = cancelled
+
+
+def ensure_sync_generation_succeeded(job: GenerationJob) -> None:
+    """同期完了を要求する経路で、失敗・キャンセルを成功扱いにしない。"""
+    if job.status == "done":
+        return
+    raise SyncGenerationError(job.message, cancelled=job.status == "cancelled")
 
 
 # リモート(ComfyUI)停止結果の区分。UI表示にも使う。
@@ -258,7 +285,7 @@ class GenerationService:
                 if required_epoch is None:
                     required_epoch = record.generation_epoch
                 elif record.generation_epoch != required_epoch:
-                    raise EpochMismatchError()
+                    raise JobEnqueueScopeConflictError()
                 manga = parse_manga(record.manga_json)
                 panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
                 if any(panel_id not in panels for panel_id in panel_ids):
@@ -338,7 +365,7 @@ class GenerationService:
                 except IntegrityError as exc:
                     session.rollback()
                     raise ActiveJobConflictError() from exc
-        raise ProjectConflictError()
+        raise JobEnqueueConflictError()
 
     def start(
         self,
@@ -372,12 +399,16 @@ class GenerationService:
     def update_panel_in_latest(
         self, project_id: str, panel_id: str, mutate, *, expected_epoch: int
     ) -> MangaProject:
-        """最新のmanga_jsonへ対象パネル限定のworker mutationを適用してCAS保存する。"""
+        """最新のmanga_jsonへ対象パネル限定のworker mutationを適用してCAS保存する。
+
+        mutateは ``(panel, page)`` を受け取る薄い用途向け。mangaの読み取りが必要な
+        候補保存などは mutate_worker_panel を直接使う。
+        """
         result = self.require_runtime().mutation.mutate_worker_panel(
             project_id,
             panel_id=panel_id,
             expected_epoch=expected_epoch,
-            mutate=mutate,
+            mutate=lambda _manga, panel, page: mutate(panel, page),
         )
         return result.project.manga
 
@@ -624,12 +655,11 @@ class GenerationService:
 
                 def add_candidate_to_latest(
                     latest: MangaProject,
+                    target_panel: Panel,
+                    target_page: Page,
                     new_candidate: ImageCandidate = candidate,
                     is_last_candidate: bool = candidate_index == job.candidate_count - 1,
                 ) -> bool:
-                    target_panel, target_page = find_panel_and_page(latest, job.panel_id)
-                    if target_panel is None:
-                        raise RuntimeError("コマが見つかりません")
                     if target_panel.generation.active_job_id != job.id:
                         raise JobOwnershipLostError()
                     latest_hash = generation_input_hash(
@@ -674,10 +704,13 @@ class GenerationService:
                         target_panel.generation.active_job_id = None
                     return True
 
-                # 候補ごとに最新を読み直してマージし、生成中のユーザー編集を残す。
-                # 構成全置換後（世代不一致）なら候補を保存せず破棄する（EpochMismatchError）。
-                mutation_result = runtime.mutation.mutate_worker(
+                # 候補ごとに最新を読み直して対象panelだけへマージし、生成中のユーザー編集を
+                # 残す。panel限定APIに通すことで、候補保存が誤って他panel・page構造・project
+                # 全体を書き換えないことをCAS確定前に保証する。構成全置換後（世代不一致）なら
+                # 候補を保存せず破棄する（EpochMismatchError）。
+                mutation_result = runtime.mutation.mutate_worker_panel(
                     job.project_id,
+                    panel_id=job.panel_id,
                     expected_epoch=job.epoch,
                     mutate=add_candidate_to_latest,
                 )
