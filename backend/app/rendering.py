@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import shutil
 import uuid
 from pathlib import Path
@@ -20,6 +19,7 @@ from typing import Literal
 from pydantic import ValidationError
 from sqlalchemy.orm import sessionmaker
 
+from .asset_storage import iter_manga_asset_strings, publish_immutable_asset
 from .assets import path_to_asset_id, resolve_asset_path
 from .database import ProjectRevisionRecord, now_utc
 from .mutation import ProjectMutationService
@@ -258,24 +258,6 @@ def invalidate_changed_pages(payload: MangaProject, previous: MangaProject) -> N
             mark_page_dirty(page)
 
 
-def publish_immutable_asset(staged: Path, target: Path) -> bool:
-    """既存成果物を上書きせず、同内容なら再利用する。"""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(staged, target)
-        created = True
-    except FileExistsError as exc:
-        if (
-            hashlib.sha256(staged.read_bytes()).digest()
-            != hashlib.sha256(target.read_bytes()).digest()
-        ):
-            raise RuntimeError(f"不変アセットの内容が一致しません: {target.name}") from exc
-        created = False
-    finally:
-        staged.unlink(missing_ok=True)
-    return created
-
-
 def render_snapshot_page(
     project_id: str,
     manga: MangaProject,
@@ -364,44 +346,6 @@ def export_confirmed_cbz(
         return target
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-
-
-def iter_manga_asset_strings(manga: MangaProject):
-    """Manga JSON内の「アセットを指すフィールド」だけを列挙する。
-
-    prompt・台詞・作品名など任意文字列をパス候補にすると、長文で
-    OSError(File name too long)を誘発し、cleanupを巻き込んでジョブを停止不能にする。
-    そのためassetフィールドを明示的に収集する。
-    """
-    for character in manga.characters:
-        if character.reference_image_asset:
-            yield character.reference_image_asset
-    for location in manga.locations:
-        if location.reference_image_asset:
-            yield location.reference_image_asset
-    for page in manga.pages:
-        if page.render_asset:
-            yield page.render_asset
-        for overlay in page.overlay_elements:
-            if overlay.asset:
-                yield overlay.asset
-            if overlay.mask_asset:
-                yield overlay.mask_asset
-        for panel in page.panels:
-            if panel.image_asset:
-                yield panel.image_asset
-            for control in panel.control_references:
-                if control.asset:
-                    yield control.asset
-            for reference in panel.generation.reference_images:
-                if reference.asset:
-                    yield reference.asset
-            for candidate in panel.image_candidates:
-                if candidate.asset:
-                    yield candidate.asset
-                for reference in candidate.reference_images:
-                    if reference.asset:
-                        yield reference.asset
 
 
 class RenderingService:

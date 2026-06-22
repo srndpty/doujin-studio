@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 import logging
 import subprocess
@@ -17,7 +16,6 @@ import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from PIL import Image
 from pydantic import ValidationError
 
 from . import fonts as font_registry
@@ -25,6 +23,13 @@ from . import knowledge as knowledge_db
 from . import layout_engine
 from . import preflight as preflight_module
 from . import story as story_module
+from .asset_storage import (
+    ImageValidationError,
+    iter_manga_asset_strings,  # noqa: F401  テスト・後方互換のため再export
+    load_validated_image,
+    publish_immutable_asset,
+    save_image_atomic,
+)
 from .assets import (
     normalize_manga_assets,
     path_to_asset_id,
@@ -65,10 +70,8 @@ from .rendering import (
     export_confirmed_cbz,
     find_inconsistent_selected_panel,
     invalidate_changed_pages,
-    iter_manga_asset_strings,  # noqa: F401  テスト・後方互換のため再export
     migrate_legacy_render_state,
     page_render_hash,  # noqa: F401  テスト・後方互換のため再export
-    publish_immutable_asset,
     render_snapshot_page,  # noqa: F401  テスト・後方互換のため再export
     render_snapshot_pages,
     structure_signature,
@@ -1960,49 +1963,14 @@ def render_and_commit_page(
         raise HTTPException(status_code=409, detail="作品構成が更新されています") from exc
 
 
-# 1コマ画像として現実的な上限。展開後のピクセル数で「圧縮爆弾」を弾く。
-MAX_IMAGE_PIXELS = 64_000_000  # 約8000x8000
-MAX_IMAGE_DIMENSION = 12_000
-# Pillow自体の圧縮爆弾検知も明示的に有効化する（巨大画像でDecompressionBombErrorを投げる）。
-Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
-
-
 async def save_request_image(request: Request, target: Path, preserve_alpha: bool = False) -> None:
+    """Requestを読み取り、検証済みPNGを原子的に保存する（HTTP境界）。"""
     content = await request.body()
-    if not content or len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=422, detail="参照画像は20MB以下にしてください")
     try:
-        with Image.open(io.BytesIO(content)) as source:
-            # 圧縮後が小さくても展開後に巨大化しうるため、ピクセル数・縦横を先に検査する。
-            width, height = source.size
-            if (
-                width <= 0
-                or height <= 0
-                or width > MAX_IMAGE_DIMENSION
-                or height > MAX_IMAGE_DIMENSION
-                or width * height > MAX_IMAGE_PIXELS
-            ):
-                raise HTTPException(
-                    status_code=422,
-                    detail="画像サイズが大きすぎます（最大8000x8000・約64メガピクセル）",
-                )
-            # 透過オーバーフレーム（人物切り抜き等）はアルファを保持する。
-            image = source.convert("RGBA" if preserve_alpha else "RGB")
-    except HTTPException:
-        raise
-    except Image.DecompressionBombError as exc:
-        raise HTTPException(status_code=422, detail="画像サイズが大きすぎます") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail="参照画像を読み込めません") from exc
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # 検証済み画像を一時ファイルへ書き出し、成功後にreplaceで原子的に差し替える。
-    # 同じ参照先への並行アップロードで一時ファイルが衝突しないよう、リクエストごとに一意化する。
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        image.save(temporary, format="PNG")
-        temporary.replace(target)
-    finally:
-        temporary.unlink(missing_ok=True)
+        image = load_validated_image(content, preserve_alpha=preserve_alpha)
+    except ImageValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
+    save_image_atomic(image, target)
 
 
 async def save_content_addressed_request_image(
