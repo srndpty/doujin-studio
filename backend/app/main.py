@@ -1684,6 +1684,19 @@ async def execute_generation_job(app: FastAPI, job: GenerationJob) -> None:
         )
 
 
+def job_may_stop_panel(generation, job_id: str) -> bool:
+    """停止/失敗更新を、panel所有権を持つjobだけに限定する。
+
+    所有者(active_job_id)が自分なら更新可。後方互換として、所有者未設定(None)の
+    旧形式jobはまだqueued/runningのときだけ解放を許す。これにより、後続の新jobが完了して
+    active_job_id=Noneへ戻した後に、遅れて到着した旧jobの停止処理がdoneをskippedへ
+    戻すのを防ぐ。
+    """
+    if generation.active_job_id == job_id:
+        return True
+    return generation.active_job_id is None and generation.status in {"queued", "running"}
+
+
 def mark_panel_job_stopped(
     app: FastAPI, job: GenerationJob, message: str, error: bool = False
 ) -> None:
@@ -1695,7 +1708,7 @@ def mark_panel_job_stopped(
             if record is None or record.generation_epoch != job.epoch:
                 return
             current = find_panel_optional(parse_manga_json(record.manga_json), job.panel_id)
-            if current is None or current.generation.active_job_id not in {None, job.id}:
+            if current is None or not job_may_stop_panel(current.generation, job.id):
                 return
             if (
                 current.generation.status == desired_status
@@ -1707,7 +1720,7 @@ def mark_panel_job_stopped(
         return
 
     def mutate(panel, page) -> None:
-        if panel.generation.active_job_id not in {None, job.id}:
+        if not job_may_stop_panel(panel.generation, job.id):
             return
         panel.generation.status = desired_status
         panel.generation.prompt_id = None

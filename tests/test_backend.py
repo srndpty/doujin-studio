@@ -31,7 +31,7 @@ from backend.app.image_backends import (
     apply_panel_to_workflow,
     apply_reference_images_to_workflow,
 )
-from backend.app.jobs import JobManager
+from backend.app.jobs import GenerationJob, JobManager
 from backend.app.main import create_app
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
@@ -1649,6 +1649,48 @@ def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) ->
         # 構成置換後のページをdoneへ確定しない。
         pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
         assert all(page["render_status"] == "pending" for page in pages)
+
+
+def test_completed_job_not_reverted_by_stale_job_stop(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        # 新jobを正常完了させる（完了時にactive_job_id=Noneへ戻る）。
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                json={"candidate_count": 1},
+            ).status_code
+            == 200
+        )
+        panel = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert panel["generation"]["status"] == "done"
+        selected_before = panel["selected_candidate_id"]
+        candidates_before = len(panel["image_candidates"])
+
+        # 遅れて到着した旧jobの停止処理は、完了済みpanelを上書きしない。
+        epoch = app.state.mutation.current_epoch(project_id)
+        stale_job = GenerationJob(
+            project_id=project_id, panel_id="p01_01", candidate_count=1, epoch=epoch
+        )
+        main_module.mark_panel_job_stopped(app, stale_job, "生成をキャンセルしました")
+
+        after = next(
+            p
+            for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+                "panels"
+            ]
+            if p["panel_id"] == "p01_01"
+        )
+        assert after["generation"]["status"] == "done"
+        assert after["selected_candidate_id"] == selected_before
+        assert len(after["image_candidates"]) == candidates_before
 
 
 def test_missing_selected_asset_blocks_render_and_cbz(tmp_path: Path) -> None:
