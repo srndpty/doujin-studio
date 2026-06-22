@@ -2868,7 +2868,9 @@ export interface operations {
     };
     upload_character_reference_api_projects__project_id__characters__character_id__reference_image_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2900,7 +2902,9 @@ export interface operations {
     };
     upload_location_reference_api_projects__project_id__locations__location_id__reference_image_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2934,6 +2938,7 @@ export interface operations {
         parameters: {
             query: {
                 load_node_id: string;
+                revision: number;
             };
             header?: never;
             path: {
@@ -2967,7 +2972,9 @@ export interface operations {
     };
     upload_overlay_asset_api_projects__project_id__pages__page_number__overlays__overlay_id___asset_kind__post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;

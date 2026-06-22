@@ -1086,11 +1086,14 @@ export function App() {
     const projectId = selected.id;
     const revision = selected.revision;
     await runTask(async () => {
-      const response = await fetch(`/api/projects/${projectId}/characters/${characterId}/reference-image?revision=${revision}`, {
-        method: "POST",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file
-      });
+      const response = await fetch(
+        `/api/projects/${projectId}/characters/${characterId}/reference-image?revision=${revision}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file
+        }
+      );
       if (!response.ok) throw new Error(await response.text());
       const payload = (await response.json()) as MangaMutationResult;
       applyProjectMutation(projectId, payload.manga_json, payload.revision);

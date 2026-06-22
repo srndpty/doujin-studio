@@ -2254,7 +2254,9 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
         except Exception as exc:  # noqa: BLE001 - テストで全例外を収集する
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(make_png(color),)) for color in ("red", "blue")]
+    threads = [
+        threading.Thread(target=worker, args=(make_png(color),)) for color in ("red", "blue")
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -2283,6 +2285,7 @@ def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch
                 request, asset_dir, asset_kind, preserve_alpha=preserve_alpha
             )
             captured["target"] = target
+
             # 保存直後に別経路でchar_aを削除し、revisionを進めて競合を起こす。
             def delete_char(manga: MangaProject) -> None:
                 manga.characters = [item for item in manga.characters if item.id != "char_a"]
@@ -2349,7 +2352,9 @@ def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, mon
 
     def worker() -> None:
         target, created = asyncio.run(
-            main_module.save_content_addressed_request_image(FakeRequest(png), asset_dir, "character")
+            main_module.save_content_addressed_request_image(
+                FakeRequest(png), asset_dir, "character"
+            )
         )
         with lock:
             results.append((target, created))

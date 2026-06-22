@@ -859,6 +859,15 @@
               "type": "string",
               "title": "Character Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -906,6 +915,15 @@
             "schema": {
               "type": "string",
               "title": "Location Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
             }
           }
         ],
@@ -973,6 +991,15 @@
               "type": "string",
               "title": "Load Node Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -1038,6 +1065,15 @@
             "schema": {
               "type": "string",
               "title": "Asset Kind"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
             }
           }
         ],
