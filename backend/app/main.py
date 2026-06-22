@@ -2349,12 +2349,10 @@ async def save_content_addressed_request_image(
     await save_request_image(request, temporary, preserve_alpha=preserve_alpha)
     digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
     target = asset_dir / f"{asset_kind}-{digest}.png"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        temporary.unlink(missing_ok=True)
-        return target, False
-    temporary.replace(target)
-    return target, True
+    # exists()事前確認だと同一内容の並行公開で両者がcreated=Trueになり、
+    # 失敗側cleanupが成功側assetを消しうる。os.linkで原子的に「初公開か」を判定する。
+    created = publish_immutable_asset(temporary, target)
+    return target, created
 
 
 def parse_manga_json(raw: str) -> MangaProject:

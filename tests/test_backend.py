@@ -2314,6 +2314,96 @@ def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch
         assert asset_id not in json.dumps(manga, ensure_ascii=False)
 
 
+def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, monkeypatch) -> None:
+    """同一内容を同じ参照先へ並行公開しても、created=Trueは原子的に1回だけになる。
+
+    両スレッドが一時ファイル書き込み後・publish前で揃うため、exists()事前確認方式なら
+    両者がcreated=Trueになって失敗側cleanupが成功側assetを消しうる状況を再現する。
+    """
+    import threading
+
+    asset_dir = tmp_path / "refs"
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10), "red").save(buffer, format="PNG")
+    png = buffer.getvalue()
+
+    class FakeRequest:
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        async def body(self) -> bytes:
+            return self._content
+
+    original_save = main_module.save_request_image
+    barrier = threading.Barrier(2)
+
+    async def synced_save(request, target, preserve_alpha=False):
+        await original_save(request, target, preserve_alpha=preserve_alpha)
+        # 両スレッドがtemp書き込みを終え、publish直前で揃える。
+        barrier.wait(timeout=5)
+
+    monkeypatch.setattr(main_module, "save_request_image", synced_save)
+
+    results: list[tuple[Path, bool]] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        target, created = asyncio.run(
+            main_module.save_content_addressed_request_image(FakeRequest(png), asset_dir, "character")
+        )
+        with lock:
+            results.append((target, created))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    targets = {target for target, _ in results}
+    assert len(targets) == 1, "同一内容は同一targetへ公開される"
+    # 原子的判定なら初公開だけTrue。exists()方式だと両方Trueになりこのassertで落ちる。
+    assert sorted(created for _, created in results) == [False, True]
+    assert next(iter(targets)).exists()
+    assert [item for item in asset_dir.iterdir() if item.name.startswith(".")] == []
+
+
+def test_same_content_parallel_upload_keeps_winner_asset(tmp_path: Path) -> None:
+    """同一内容を同じ参照先へ並行upload相当で送り、片方409でも成功側assetを消さない。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        buffer = io.BytesIO()
+        Image.new("RGB", (14, 14), "blue").save(buffer, format="PNG")
+        png = buffer.getvalue()
+
+        winner_revision = current_revision(client, project_id)
+        # 先行リクエスト: 成功してassetをJSONへ紐付ける。
+        first = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={winner_revision}",
+            content=png,
+            headers={"Content-Type": "image/png"},
+        )
+        assert first.status_code == 200
+        asset = first.json()["asset"]
+        assert (tmp_path / "exports" / asset).is_file()
+
+        # 後発リクエスト: 同一内容・同一参照先だがrevisionが古く409。
+        # 後発のpublishはcreated=Falseとなり、cleanupは成功側assetを消さない。
+        second = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={winner_revision}",
+            content=png,
+            headers={"Content-Type": "image/png"},
+        )
+        assert second.status_code == 409
+
+        # 成功側のJSONがassetを参照し続け、ファイルも残る。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert manga["characters"][0]["reference_image_asset"] == asset
+        assert (tmp_path / "exports" / asset).is_file()
+        # 孤児.tmpが残らないこと。
+        assert list((tmp_path / "exports").rglob("*.tmp")) == []
+
+
 @pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
 def test_reference_upload_keeps_colliding_ids_separate(
     tmp_path: Path, left: str, right: str
