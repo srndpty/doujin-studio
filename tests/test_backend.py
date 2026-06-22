@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import backend.app.main as main_module
+import backend.app.rendering as rendering_module
 from backend.app.config import Settings
 from backend.app.database import (
     GenerationJobRecord,
@@ -1131,7 +1132,7 @@ def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, mo
         (output_dir / "page_001.png").write_bytes(b"incomplete-page")
         raise RuntimeError("描画失敗")
 
-    monkeypatch.setattr(main_module, "render_project_page", fail_after_staging)
+    monkeypatch.setattr(rendering_module, "render_project_page", fail_after_staging)
     with pytest.raises(RuntimeError, match="描画失敗"):
         main_module.render_snapshot_page(
             "project", MangaProject(title="test"), 1, export_dir, revision=3
@@ -1144,10 +1145,10 @@ def test_page_render_conflict_cleans_its_unreferenced_png(tmp_path: Path, monkey
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         monkeypatch.setattr(
-            main_module,
+            rendering_module.RenderingService,
             "commit_rendered_pages",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                HTTPException(status_code=409, detail="描画競合")
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(
+                rendering_module.RenderInputChangedError()
             ),
         )
         response = client.post(f"/api/projects/{project_id}/pages/1/render")
@@ -1194,7 +1195,7 @@ def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> Non
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         monkeypatch.setattr(
-            main_module,
+            rendering_module,
             "render_project_page",
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("描画失敗")),
         )
