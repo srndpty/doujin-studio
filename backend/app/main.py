@@ -1461,12 +1461,16 @@ async def run_generation_job(app: FastAPI, job: GenerationJob) -> None:
         # API側で即時解放できなかった経路（shutdown等）と競合時の冪等な保険。
         # job状態はHTTPキャンセルのmanager.cancel()またはshutdown()が既に確定している。
         if manager.shutting_down:
-            mark_panel_job_stopped(
-                app,
-                job,
-                "バックエンド停止により中断されました。必要なら再実行してください",
-                error=True,
-            )
+            # shutdown()はrunningジョブだけをerrorへ確定し、未開始のqueuedジョブは
+            # 次回起動のrestore_pendingで再開するため状態を変えずに残す。queuedジョブの
+            # panelをerrorにすると、DBは再開対象なのにManga JSONだけ停止エラーになり食い違う。
+            if job.status != "queued":
+                mark_panel_job_stopped(
+                    app,
+                    job,
+                    "バックエンド停止により中断されました。必要なら再実行してください",
+                    error=True,
+                )
         else:
             mark_panel_job_stopped(app, job, "生成をキャンセルしました")
         raise
@@ -1978,7 +1982,10 @@ def generation_input_hash(manga: MangaProject, panel, export_dir: Path) -> str:
         }
     )
     generation = payload["generation"]
-    for volatile in ("status", "message", "prompt_id"):
+    # statusなどの揮発フィールドに加え、apply_candidate_selection()が書き換える選択由来の
+    # フィールド（backend/seed）も除外する。生成中にユーザーが既存候補を選び直しただけで
+    # 入力変更と誤判定し、進行中ジョブをcancelしてしまうのを防ぐ。
+    for volatile in ("status", "message", "prompt_id", "backend", "seed"):
         generation.pop(volatile, None)
     asset_ids = {reference.asset for reference in generated.control_references} | {
         reference.asset for reference in generated.generation.reference_images

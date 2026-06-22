@@ -35,7 +35,14 @@ from backend.app.jobs import GenerationJob, JobManager
 from backend.app.main import create_app
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
-from backend.app.schemas import Dialogue, GenerationInfo, MangaProject, Page, Panel
+from backend.app.schemas import (
+    Dialogue,
+    GenerationInfo,
+    ImageCandidate,
+    MangaProject,
+    Page,
+    Panel,
+)
 
 
 def make_client(
@@ -433,6 +440,104 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
         jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
         assert jobs[0]["status"] == "cancelled"
         assert jobs[0]["generation_input_hash"]
+
+
+def test_candidate_selection_does_not_change_generation_input_hash(tmp_path: Path) -> None:
+    """既存候補の採用でseed/backendが変わってもgeneration_input_hashは不変であること。
+
+    apply_candidate_selection()由来のフィールドをhashへ残すと、生成中の候補選び直しを
+    入力変更と誤判定してジョブをcancelしてしまうため、それらは除外する。
+    """
+    export_dir = tmp_path / "exports"
+    candidate = ImageCandidate(
+        id="cand-a",
+        asset="exports/project/panels/p01_01/cand-a.png",
+        backend="comfyui",
+        status="done",
+        seed=999,
+        created_at=db_now_utc(),
+    )
+    manga = MangaProject(
+        title="hash",
+        target_pages=4,
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="one",
+                panels=[
+                    Panel(
+                        panel_id="p01_01",
+                        bbox=(0, 0, 1, 1),
+                        shot="顔",
+                        prompt="base",
+                        image_candidates=[candidate],
+                        generation=GenerationInfo(backend="stub", prompt="base", seed=1),
+                    )
+                ],
+            )
+        ],
+    )
+    panel = manga.pages[0].panels[0]
+    before = main_module.generation_input_hash(manga, panel, export_dir)
+    # ユーザーが既存候補を採用した状況を再現（seed/backend/statusが書き換わる）。
+    main_module.apply_candidate_selection(panel, candidate)
+    assert panel.generation.seed == 999 and panel.generation.backend == "comfyui"
+    after = main_module.generation_input_hash(manga, panel, export_dir)
+    assert before == after, "候補選択は生成入力の変更として扱わない"
+
+    # 一方で実プロンプトの変更はhashへ反映される（過剰除外していないこと）。
+    panel.generation.prompt = "changed"
+    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+
+
+def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch) -> None:
+    """shutdown時、未開始queuedジョブのpanelをerrorにせずqueued+所有権のまま残すこと。
+
+    複数ジョブのうち1件がgeneration_lockを取って生成中、残りがlock待ちqueuedの状態で
+    正常終了すると、queuedジョブのpanelがerror化してDB(queued/再開対象)と食い違っていた。
+    """
+    import time
+
+    class BlockingBackend:
+        async def generate_panel(self, *args, **kwargs):
+            await asyncio.Event().wait()  # cancelされるまで永久にブロックする
+
+    monkeypatch.setattr(main_module, "build_image_backend", lambda settings: BlockingBackend())
+
+    db_path = tmp_path / "test.db"
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            f"/api/projects/{project_id}/generation-jobs", json={"page": 1, "candidate_count": 1}
+        )
+        assert response.status_code == 200
+        jobs = response.json()["jobs"]
+        assert len(jobs) >= 2
+        # 先頭ジョブがlock取得→set_running→generate_panelで停止し、残りはlock待ちqueuedになる。
+        time.sleep(0.5)
+        # ここでwithを抜けるとlifespan shutdown→JobManager.shutdown()が走る。
+
+    factory = create_session_factory(f"sqlite:///{db_path}")
+    with factory() as session:
+        record = session.get(ProjectRecord, project_id)
+        manga = MangaProject.model_validate(json.loads(record.manga_json))
+        panels = {panel.panel_id: panel for page in manga.pages for panel in page.panels}
+        statuses = []
+        for job in jobs:
+            db_job = session.get(GenerationJobRecord, job["id"])
+            panel = panels[job["panel_id"]]
+            statuses.append(db_job.status)
+            if db_job.status == "queued":
+                # 再開対象はqueuedのまま。所有権も維持し、Manga JSONをerrorにしない。
+                assert panel.generation.status == "queued"
+                assert panel.generation.active_job_id == job["id"]
+            else:
+                # 生成中だったジョブはshutdownがerror確定。panelもerrorで揃える。
+                assert db_job.status == "error"
+                assert panel.generation.status == "error"
+        # 少なくとも1件はqueuedで再開待ちとして残ること（本テストの主眼）。
+        assert "queued" in statuses
 
 
 def _queue_client(running: list[str], pending: list[str], posted: list[tuple[str, dict | None]]):
