@@ -1084,8 +1084,9 @@ export function App() {
   async function uploadReferenceImage(characterId: string, file: File) {
     if (!selected) return;
     const projectId = selected.id;
+    const revision = selected.revision;
     await runTask(async () => {
-      const response = await fetch(`/api/projects/${projectId}/characters/${characterId}/reference-image`, {
+      const response = await fetch(`/api/projects/${projectId}/characters/${characterId}/reference-image?revision=${revision}`, {
         method: "POST",
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file
@@ -1102,7 +1103,7 @@ export function App() {
     if (!selected) return;
     await uploadProjectImage(
       selected.id,
-      `/api/projects/${selected.id}/locations/${locationId}/reference-image`,
+      `/api/projects/${selected.id}/locations/${locationId}/reference-image?revision=${selected.revision}`,
       file,
       "ロケーション参照画像を登録しました"
     );
@@ -1118,7 +1119,7 @@ export function App() {
     }
     await uploadProjectImage(
       selected.id,
-      `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/controls/${kind}/reference-image?load_node_id=${encodeURIComponent(nodeId)}`,
+      `/api/projects/${selected.id}/panels/${currentPanel.panel_id}/controls/${kind}/reference-image?load_node_id=${encodeURIComponent(nodeId)}&revision=${selected.revision}`,
       file,
       `${kind}参照画像を登録しました`
     );

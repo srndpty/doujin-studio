@@ -616,18 +616,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project_id: str,
         character_id: str,
         request: Request,
+        revision: int,
     ) -> CharacterReferenceResponse:
         record = load_project_record(request, project_id)
         manga0 = parse_manga_json(record.manga_json)
         if not any(item.id == character_id for item in manga0.characters):
             raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
-        target = (
+        asset_dir = (
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "references"
-            / stable_asset_name(character_id, "character")
+            / stable_asset_name(character_id, "character").removesuffix(".png")
         )
-        await save_request_image(request, target)
+        target, created = await save_content_addressed_request_image(request, asset_dir, "character")
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
 
         def mutate(manga: MangaProject) -> None:
@@ -636,12 +637,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
             character.reference_image_asset = asset_id
 
-        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
+        try:
+            _result, manga, revision_out = run_mutation(
+                request.app.state.mutation, project_id, mutate, expected_revision=revision
+            )
+        except Exception:
+            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
+            raise
         return CharacterReferenceResponse(
             character_id=character_id,
             asset=asset_id,
             manga_json=manga,
-            revision=revision,
+            revision=revision_out,
         )
 
     @app.post(
@@ -652,18 +659,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project_id: str,
         location_id: str,
         request: Request,
+        revision: int,
     ) -> ReferenceAssetResponse:
         record = load_project_record(request, project_id)
         manga0 = parse_manga_json(record.manga_json)
         if not any(item.id == location_id for item in manga0.locations):
             raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
-        target = (
+        asset_dir = (
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "locations"
-            / stable_asset_name(location_id, "location")
+            / stable_asset_name(location_id, "location").removesuffix(".png")
         )
-        await save_request_image(request, target)
+        target, created = await save_content_addressed_request_image(request, asset_dir, "location")
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
 
         def mutate(manga: MangaProject) -> None:
@@ -672,9 +680,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
             location.reference_image_asset = asset_id
 
-        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
+        try:
+            _result, manga, revision_out = run_mutation(
+                request.app.state.mutation, project_id, mutate, expected_revision=revision
+            )
+        except Exception:
+            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
+            raise
         return ReferenceAssetResponse(
-            target_id=location_id, asset=asset_id, manga_json=manga, revision=revision
+            target_id=location_id, asset=asset_id, manga_json=manga, revision=revision_out
         )
 
     @app.post(
@@ -687,19 +701,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         kind: str,
         request: Request,
         load_node_id: str,
+        revision: int,
     ) -> ReferenceAssetResponse:
         if kind not in {"pose", "depth", "lineart", "background"}:
             raise HTTPException(status_code=422, detail="Control参照種別が不正です")
         record = load_project_record(request, project_id)
         find_panel(parse_manga_json(record.manga_json), panel_id)  # 事前に存在確認(404)
-        target = (
+        asset_dir = (
             request.app.state.settings.export_dir
             / safe_component(project_id, "project")
             / "controls"
             / stable_asset_name(panel_id, "panel").removesuffix(".png")
-            / f"{kind}.png"
         )
-        await save_request_image(request, target)
+        target, created = await save_content_addressed_request_image(request, asset_dir, kind)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         new_control_id = str(uuid.uuid4())
 
@@ -716,9 +730,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             panel.control_references.append(control)
             return control.id
 
-        target_id, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
+        try:
+            target_id, manga, revision_out = run_mutation(
+                request.app.state.mutation, project_id, mutate, expected_revision=revision
+            )
+        except Exception:
+            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
+            raise
         return ReferenceAssetResponse(
-            target_id=target_id, asset=asset_id, manga_json=manga, revision=revision
+            target_id=target_id, asset=asset_id, manga_json=manga, revision=revision_out
         )
 
     @app.post(
@@ -731,6 +751,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         overlay_id: str,
         asset_kind: str,
         request: Request,
+        revision: int,
     ) -> ReferenceAssetResponse:
         if asset_kind not in {"asset", "mask"}:
             raise HTTPException(status_code=422, detail="overlayアセット種別が不正です")
@@ -747,7 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "overlays"
             / stable_asset_name(overlay_id, "overlay").removesuffix(".png")
         )
-        target = await save_content_addressed_request_image(
+        target, created = await save_content_addressed_request_image(
             request,
             asset_dir,
             asset_kind,
@@ -769,9 +790,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # overlay画像/maskの差し替えは描画に影響するため、ページを再レンダリング対象へ。
             mark_page_dirty(page)
 
-        _result, manga, revision = run_mutation(request.app.state.mutation, project_id, mutate)
+        try:
+            _result, manga, revision_out = run_mutation(
+                request.app.state.mutation, project_id, mutate, expected_revision=revision
+            )
+        except Exception:
+            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
+            raise
         return ReferenceAssetResponse(
-            target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision
+            target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision_out
         )
 
     @app.post(
@@ -2311,8 +2338,13 @@ async def save_content_addressed_request_image(
     asset_kind: str,
     *,
     preserve_alpha: bool = False,
-) -> Path:
-    """正規化済みPNGの内容hashを持つ不変assetとして保存する。"""
+) -> tuple[Path, bool]:
+    """正規化済みPNGの内容hashを持つ不変assetとして保存する。
+
+    返り値の2要素目`created`は、このリクエストでcanonical targetを新規公開したか。
+    既存hashと一致した（他リクエスト/過去の同一内容が既にある）場合はFalseを返し、
+    競合失敗時のcleanupで他リクエストのassetを誤って消さないようにする。
+    """
     temporary = asset_dir / f".{asset_kind}-{uuid.uuid4().hex}.png"
     await save_request_image(request, temporary, preserve_alpha=preserve_alpha)
     digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
@@ -2320,9 +2352,9 @@ async def save_content_addressed_request_image(
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         temporary.unlink(missing_ok=True)
-    else:
-        temporary.replace(target)
-    return target
+        return target, False
+    temporary.replace(target)
+    return target, True
 
 
 def parse_manga_json(raw: str) -> MangaProject:

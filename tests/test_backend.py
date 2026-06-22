@@ -57,6 +57,10 @@ def put_manga(client: TestClient, project_id: str, manga: dict):
     return client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
 
 
+def current_revision(client: TestClient, project_id: str) -> int:
+    return client.get(f"/api/projects/{project_id}").json()["revision"]
+
+
 def create_generated_project(client: TestClient) -> str:
     response = client.post("/api/projects", json={"title": "テスト本", "work_name": "テスト作品"})
     assert response.status_code == 200
@@ -1090,7 +1094,8 @@ def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
             buffer = io.BytesIO()
             Image.new("RGBA", (16, 16), color).save(buffer, format="PNG")
             return client.post(
-                f"/api/projects/{project_id}/pages/1/overlays/same/asset",
+                f"/api/projects/{project_id}/pages/1/overlays/same/asset"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -2197,7 +2202,8 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/characters/char_a/reference-image",
+            f"/api/projects/{project_id}/characters/char_a/reference-image"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
@@ -2262,6 +2268,52 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
     assert list(target.parent.glob("*.tmp")) == []
 
 
+def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch) -> None:
+    """PNG保存後・JSON反映前に対象characterが構造置換で消えると、409後に孤児PNGが残らない。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        stale_revision = current_revision(client, project_id)
+
+        captured: dict[str, Path] = {}
+        original = main_module.save_content_addressed_request_image
+
+        async def inject_conflict(request, asset_dir, asset_kind, *, preserve_alpha=False):
+            target, created = await original(
+                request, asset_dir, asset_kind, preserve_alpha=preserve_alpha
+            )
+            captured["target"] = target
+            # 保存直後に別経路でchar_aを削除し、revisionを進めて競合を起こす。
+            def delete_char(manga: MangaProject) -> None:
+                manga.characters = [item for item in manga.characters if item.id != "char_a"]
+                for page in manga.pages:
+                    for panel in page.panels:
+                        panel.characters = [cid for cid in panel.characters if cid != "char_a"]
+
+            app.state.mutation.mutate(project_id, delete_char)
+            return target, created
+
+        monkeypatch.setattr(main_module, "save_content_addressed_request_image", inject_conflict)
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (12, 12), "red").save(buffer, format="PNG")
+        response = client.post(
+            f"/api/projects/{project_id}/characters/char_a/reference-image?revision={stale_revision}",
+            content=buffer.getvalue(),
+            headers={"Content-Type": "image/png"},
+        )
+        # revision不一致（409）かchar_a消失（404）で失敗すること。
+        assert response.status_code in {404, 409}
+        # 保存したPNGがcleanupで回収され、孤児が残らないこと。
+        assert "target" in captured
+        assert not captured["target"].exists()
+        # 置換後JSONはchar_aもそのassetも参照しないこと。
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert all(item["id"] != "char_a" for item in manga["characters"])
+        asset_id = main_module.path_to_asset_id(captured["target"], app.state.settings.export_dir)
+        assert asset_id not in json.dumps(manga, ensure_ascii=False)
+
+
 @pytest.mark.parametrize("left,right", [("春香", "千早"), ("a/b", "a:b")])
 def test_reference_upload_keeps_colliding_ids_separate(
     tmp_path: Path, left: str, right: str
@@ -2279,7 +2331,8 @@ def test_reference_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image",
+                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -2314,7 +2367,8 @@ def test_location_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image",
+                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -2349,7 +2403,8 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/pages/1/overlays/hero%20unsafe/asset",
+            f"/api/projects/{project_id}/pages/1/overlays/hero%20unsafe/asset"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
@@ -2387,7 +2442,8 @@ def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, 
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/pages/1/overlays/{quote(overlay_id, safe='')}/asset",
+                f"/api/projects/{project_id}/pages/1/overlays/{quote(overlay_id, safe='')}/asset"
+                f"?revision={current_revision(client, project_id)}",
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
@@ -2491,13 +2547,15 @@ def test_location_and_control_image_upload_apis(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/locations/default_room/reference-image",
+            f"/api/projects/{project_id}/locations/default_room/reference-image"
+            f"?revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image?load_node_id=51",
+            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image"
+            f"?load_node_id=51&revision={current_revision(client, project_id)}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )

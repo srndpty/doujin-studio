@@ -276,8 +276,9 @@ def test_overlay_asset_upload_preserves_alpha(tmp_path: Path) -> None:
         # 透過PNG（人物切り抜きを想定）をアップロード。
         buffer = io.BytesIO()
         Image.new("RGBA", (20, 20), (255, 0, 0, 0)).save(buffer, format="PNG")
+        overlay_revision = client.get(f"/api/projects/{project_id}").json()["revision"]
         response = client.post(
-            f"/api/projects/{project_id}/pages/1/overlays/ov1/asset",
+            f"/api/projects/{project_id}/pages/1/overlays/ov1/asset?revision={overlay_revision}",
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )

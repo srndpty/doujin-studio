@@ -311,7 +311,7 @@ export function PageEditor({
     onChange(saved.manga_json, saved.revision);
 
     const response = await fetch(
-      `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlay.id)}/${kind}`,
+      `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlay.id)}/${kind}?revision=${saved.revision}`,
       { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }
     );
     if (!response.ok) throw new Error(await response.text());
