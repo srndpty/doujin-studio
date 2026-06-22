@@ -628,7 +628,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "references"
             / stable_asset_name(character_id, "character").removesuffix(".png")
         )
-        target, created = await save_content_addressed_request_image(
+        target, _created = await save_content_addressed_request_image(
             request, asset_dir, "character"
         )
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
@@ -639,13 +639,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="キャラクターが見つかりません")
             character.reference_image_asset = asset_id
 
-        try:
-            _result, manga, revision_out = run_mutation(
-                request.app.state.mutation, project_id, mutate, expected_revision=revision
-            )
-        except Exception:
-            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
-            raise
+        # 失敗(409/404)してもtargetは削除しない。targetは内容hashで重複排除される不変assetで、
+        # 残置は無害（同一内容の再uploadで再利用される）。逆にここで消すと、同一内容を並行
+        # uploadしたcreated=Falseの後続リクエストがcommit直前のtargetを失い、成功応答なのに
+        # JSONが欠損assetを参照する不整合になる。
+        _result, manga, revision_out = run_mutation(
+            request.app.state.mutation, project_id, mutate, expected_revision=revision
+        )
         return CharacterReferenceResponse(
             character_id=character_id,
             asset=asset_id,
@@ -673,7 +673,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "locations"
             / stable_asset_name(location_id, "location").removesuffix(".png")
         )
-        target, created = await save_content_addressed_request_image(request, asset_dir, "location")
+        target, _created = await save_content_addressed_request_image(request, asset_dir, "location")
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
 
         def mutate(manga: MangaProject) -> None:
@@ -682,13 +682,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="ロケーションが見つかりません")
             location.reference_image_asset = asset_id
 
-        try:
-            _result, manga, revision_out = run_mutation(
-                request.app.state.mutation, project_id, mutate, expected_revision=revision
-            )
-        except Exception:
-            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
-            raise
+        # 失敗してもtargetは削除しない（内容hash不変asset・並行upload安全のため。詳細は
+        # upload_character_referenceのコメント参照）。
+        _result, manga, revision_out = run_mutation(
+            request.app.state.mutation, project_id, mutate, expected_revision=revision
+        )
         return ReferenceAssetResponse(
             target_id=location_id, asset=asset_id, manga_json=manga, revision=revision_out
         )
@@ -715,7 +713,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "controls"
             / stable_asset_name(panel_id, "panel").removesuffix(".png")
         )
-        target, created = await save_content_addressed_request_image(request, asset_dir, kind)
+        target, _created = await save_content_addressed_request_image(request, asset_dir, kind)
         asset_id = path_to_asset_id(target, request.app.state.settings.export_dir)
         new_control_id = str(uuid.uuid4())
 
@@ -732,13 +730,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             panel.control_references.append(control)
             return control.id
 
-        try:
-            target_id, manga, revision_out = run_mutation(
-                request.app.state.mutation, project_id, mutate, expected_revision=revision
-            )
-        except Exception:
-            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
-            raise
+        # 失敗してもtargetは削除しない（内容hash不変asset・並行upload安全のため。詳細は
+        # upload_character_referenceのコメント参照）。
+        target_id, manga, revision_out = run_mutation(
+            request.app.state.mutation, project_id, mutate, expected_revision=revision
+        )
         return ReferenceAssetResponse(
             target_id=target_id, asset=asset_id, manga_json=manga, revision=revision_out
         )
@@ -770,7 +766,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             / "overlays"
             / stable_asset_name(overlay_id, "overlay").removesuffix(".png")
         )
-        target, created = await save_content_addressed_request_image(
+        target, _created = await save_content_addressed_request_image(
             request,
             asset_dir,
             asset_kind,
@@ -792,13 +788,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # overlay画像/maskの差し替えは描画に影響するため、ページを再レンダリング対象へ。
             mark_page_dirty(page)
 
-        try:
-            _result, manga, revision_out = run_mutation(
-                request.app.state.mutation, project_id, mutate, expected_revision=revision
-            )
-        except Exception:
-            cleanup_published_assets(request.app, project_id, {target.resolve(): created})
-            raise
+        # 失敗してもtargetは削除しない（内容hash不変asset・並行upload安全のため。詳細は
+        # upload_character_referenceのコメント参照）。
+        _result, manga, revision_out = run_mutation(
+            request.app.state.mutation, project_id, mutate, expected_revision=revision
+        )
         return ReferenceAssetResponse(
             target_id=overlay_id, asset=asset_id, manga_json=manga, revision=revision_out
         )

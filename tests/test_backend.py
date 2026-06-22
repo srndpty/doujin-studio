@@ -2435,8 +2435,13 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
     assert list(target.parent.glob("*.tmp")) == []
 
 
-def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch) -> None:
-    """PNG保存後・JSON反映前に対象characterが構造置換で消えると、409後に孤児PNGが残らない。"""
+def test_reference_upload_conflict_keeps_content_addressed_asset(tmp_path: Path, monkeypatch) -> None:
+    """PNG保存後・JSON反映前に競合(409)しても、内容hash不変assetは削除しない。
+
+    削除すると、同一内容を並行uploadしたcreated=Falseの後続リクエストがcommit直前に
+    targetを失い、成功応答なのにJSONが欠損assetを参照する不整合になる。失敗側は
+    targetを残し（無害な内容キャッシュ）、JSONは未参照のままにする。
+    """
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         app = client.app
@@ -2451,14 +2456,11 @@ def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch
             )
             captured["target"] = target
 
-            # 保存直後に別経路でchar_aを削除し、revisionを進めて競合を起こす。
-            def delete_char(manga: MangaProject) -> None:
-                manga.characters = [item for item in manga.characters if item.id != "char_a"]
-                for page in manga.pages:
-                    for panel in page.panels:
-                        panel.characters = [cid for cid in panel.characters if cid != "char_a"]
+            # 保存直後に別経路でmanga_jsonを変更しrevisionを進め、楽観ロック競合(409)を起こす。
+            def bump(manga: MangaProject) -> None:
+                manga.premise = (manga.premise or "") + "x"
 
-            app.state.mutation.mutate(project_id, delete_char)
+            app.state.mutation.mutate(project_id, bump)
             return target, created
 
         monkeypatch.setattr(main_module, "save_content_addressed_request_image", inject_conflict)
@@ -2470,16 +2472,17 @@ def test_reference_upload_conflict_cleans_orphan_png(tmp_path: Path, monkeypatch
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
-        # revision不一致（409）かchar_a消失（404）で失敗すること。
-        assert response.status_code in {404, 409}
-        # 保存したPNGがcleanupで回収され、孤児が残らないこと。
+        # revision不一致で409になること。
+        assert response.status_code == 409
+        # 失敗してもtargetは削除されない（並行する後続リクエストの参照を壊さないため）。
         assert "target" in captured
-        assert not captured["target"].exists()
-        # 置換後JSONはchar_aもそのassetも参照しないこと。
+        assert captured["target"].exists()
+        # 失敗リクエスト自身のJSONはassetを参照しないこと。
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
-        assert all(item["id"] != "char_a" for item in manga["characters"])
         asset_id = main_module.path_to_asset_id(captured["target"], app.state.settings.export_dir)
-        assert asset_id not in json.dumps(manga, ensure_ascii=False)
+        assert manga["characters"][0]["reference_image_asset"] != asset_id
+        # 一時ファイルも残らないこと。
+        assert list((tmp_path / "exports").rglob("*.tmp")) == []
 
 
 def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, monkeypatch) -> None:
