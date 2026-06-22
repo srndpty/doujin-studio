@@ -580,9 +580,7 @@ def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeyp
 
                     def reselect(target_panel, target_page) -> None:
                         candidate = next(
-                            item
-                            for item in target_panel.image_candidates
-                            if item.id == other["id"]
+                            item for item in target_panel.image_candidates if item.id == other["id"]
                         )
                         main_module.apply_candidate_selection(target_panel, candidate)
 
