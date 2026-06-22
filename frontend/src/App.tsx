@@ -331,7 +331,15 @@ export function App() {
     if (selectedProjectIdRef.current !== projectId) return false;
     setSelected((current) =>
       current && current.id === projectId
-        ? { ...current, manga_json: mangaJson, revision: revision ?? current.revision }
+        ? {
+            ...current,
+            // ProjectRecord.title/work_nameもmanga_jsonと同時に更新される。トップレベル値も
+            // 揃えないと、StoryPanel/KnowledgePanelが旧work_nameで知識同期やセッション作成をしてしまう。
+            title: mangaJson.title,
+            work_name: mangaJson.work_name,
+            manga_json: mangaJson,
+            revision: revision ?? current.revision
+          }
         : current
     );
     setJsonText(JSON.stringify(mangaJson, null, 2));
