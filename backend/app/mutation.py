@@ -8,15 +8,13 @@ ProjectRepository → ProjectMutationService の最初の抽出。
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.orm import Session, sessionmaker
 
 from .assets import normalize_manga_assets
-from .database import GenerationJobRecord, ProjectRecord, ProjectRevisionRecord, now_utc
+from .repository import ProjectRepository
 from .schemas import MangaProject, Page
 
 T = TypeVar("T")
@@ -81,13 +79,19 @@ class ProjectMutationService:
     title/work_nameはmanga本体と常に同期する。
     """
 
-    def __init__(self, session_factory: sessionmaker, export_dir: Path) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker,
+        export_dir: Path,
+        repository: ProjectRepository | None = None,
+    ) -> None:
         self.session_factory = session_factory
         self.export_dir = export_dir
+        self.repository = repository or ProjectRepository()
 
     def current_epoch(self, project_id: str) -> int:
         with self.session_factory() as session:
-            record = session.get(ProjectRecord, project_id)
+            record = self.repository.get(session, project_id)
             if record is None:
                 raise ProjectNotFoundError()
             return record.generation_epoch
@@ -103,7 +107,7 @@ class ProjectMutationService:
     ) -> tuple[T, MangaProject, int]:
         for _ in range(attempts):
             with self.session_factory() as session:
-                record = session.get(ProjectRecord, project_id)
+                record = self.repository.get(session, project_id)
                 if record is None:
                     raise ProjectNotFoundError()
                 # 構成全置換後の古いジョブは候補を書き込ませない（世代不一致で破棄）。
@@ -118,18 +122,7 @@ class ProjectMutationService:
                 normalize_manga_assets(manga, self.export_dir)
                 if manga.model_dump_json() == before:
                     return result, manga, base
-                outcome = session.execute(
-                    sqlalchemy_update(ProjectRecord)
-                    .where(ProjectRecord.id == project_id, ProjectRecord.revision == base)
-                    .values(
-                        title=manga.title,
-                        work_name=manga.work_name,
-                        manga_json=manga.model_dump_json(),
-                        revision=ProjectRecord.revision + 1,
-                        updated_at=now_utc(),
-                    )
-                )
-                if outcome.rowcount == 1:
+                if self.repository.cas_set_manga(session, project_id, base, manga) == 1:
                     session.commit()
                     return result, manga, base + 1
                 session.rollback()
@@ -156,49 +149,26 @@ class ProjectMutationService:
             reset_inflight_generation_state(replacement)
         normalize_manga_assets(replacement, self.export_dir)
         with self.session_factory() as session:
-            record = session.get(ProjectRecord, project_id)
+            record = self.repository.get(session, project_id)
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
                 raise ProjectConflictError()
             new_epoch = record.generation_epoch + 1 if increment_epoch else record.generation_epoch
-            outcome = session.execute(
-                sqlalchemy_update(ProjectRecord)
-                .where(
-                    ProjectRecord.id == project_id,
-                    ProjectRecord.revision == expected_revision,
+            if (
+                self.repository.cas_set_manga(
+                    session,
+                    project_id,
+                    expected_revision,
+                    replacement,
+                    increment_epoch=increment_epoch,
                 )
-                .values(
-                    title=replacement.title,
-                    work_name=replacement.work_name,
-                    manga_json=replacement.model_dump_json(),
-                    revision=ProjectRecord.revision + 1,
-                    generation_epoch=(
-                        ProjectRecord.generation_epoch + 1
-                        if increment_epoch
-                        else ProjectRecord.generation_epoch
-                    ),
-                    updated_at=now_utc(),
-                )
-            )
-            if outcome.rowcount != 1:
+                != 1
+            ):
                 session.rollback()
                 raise ProjectConflictError()
             if increment_epoch:
-                session.execute(
-                    sqlalchemy_update(GenerationJobRecord)
-                    .where(
-                        GenerationJobRecord.project_id == project_id,
-                        GenerationJobRecord.epoch < new_epoch,
-                        GenerationJobRecord.status.in_(["queued", "running"]),
-                    )
-                    .values(
-                        status="cancelled",
-                        prompt_id=None,
-                        message="作品構成の更新により前の生成を中断しました",
-                        updated_at=now_utc(),
-                    )
-                )
+                self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             session.commit()
         return replacement, expected_revision + 1
 
@@ -212,7 +182,7 @@ class ProjectMutationService:
     ) -> tuple[MangaProject, int]:
         """構造全置換と直前履歴の保存を同一トランザクションでCASする。"""
         with self.session_factory() as session:
-            record = session.get(ProjectRecord, project_id)
+            record = self.repository.get(session, project_id)
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
@@ -222,46 +192,19 @@ class ProjectMutationService:
             replacement = build_replacement(session, parse_manga(previous_json))
             reset_inflight_generation_state(replacement)
             normalize_manga_assets(replacement, self.export_dir)
-            outcome = session.execute(
-                sqlalchemy_update(ProjectRecord)
-                .where(
-                    ProjectRecord.id == project_id,
-                    ProjectRecord.revision == expected_revision,
+            if (
+                self.repository.cas_set_manga(
+                    session,
+                    project_id,
+                    expected_revision,
+                    replacement,
+                    increment_epoch=True,
                 )
-                .values(
-                    title=replacement.title,
-                    work_name=replacement.work_name,
-                    manga_json=replacement.model_dump_json(),
-                    revision=ProjectRecord.revision + 1,
-                    generation_epoch=ProjectRecord.generation_epoch + 1,
-                    updated_at=now_utc(),
-                )
-            )
-            if outcome.rowcount != 1:
+                != 1
+            ):
                 session.rollback()
                 raise ProjectConflictError()
-            session.execute(
-                sqlalchemy_update(GenerationJobRecord)
-                .where(
-                    GenerationJobRecord.project_id == project_id,
-                    GenerationJobRecord.epoch < new_epoch,
-                    GenerationJobRecord.status.in_(["queued", "running"]),
-                )
-                .values(
-                    status="cancelled",
-                    prompt_id=None,
-                    message="作品構成の更新により前の生成を中断しました",
-                    updated_at=now_utc(),
-                )
-            )
-            session.add(
-                ProjectRevisionRecord(
-                    id=str(uuid.uuid4()),
-                    project_id=project_id,
-                    label=history_label,
-                    manga_json=previous_json,
-                    created_at=now_utc(),
-                )
-            )
+            self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
+            self.repository.add_revision_history(session, project_id, history_label, previous_json)
             session.commit()
         return replacement, expected_revision + 1

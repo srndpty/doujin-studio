@@ -64,6 +64,7 @@ from .renderer import (
     render_project_pages,
     sanitize_export_filename,
 )
+from .repository import ProjectRepository
 from .schemas import (
     ApiErrorResponse,
     BatchGenerationJobCreate,
@@ -139,8 +140,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path("data").mkdir(parents=True, exist_ok=True)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
-        app.state.mutation = ProjectMutationService(app.state.SessionLocal, app_settings.export_dir)
-        app.state.generation = GenerationService(app.state.SessionLocal, app_settings.export_dir)
+        app.state.repository = ProjectRepository()
+        app.state.mutation = ProjectMutationService(
+            app.state.SessionLocal, app_settings.export_dir, app.state.repository
+        )
+        app.state.generation = GenerationService(
+            app.state.SessionLocal, app_settings.export_dir, app.state.repository
+        )
         app.state.job_manager = JobManager(app.state.SessionLocal)
         to_start, interrupted = app.state.job_manager.restore_pending()
         # クラッシュ復旧で中断扱いにしたジョブは、対応panelのgeneration.statusもerrorへ同期する

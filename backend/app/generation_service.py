@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from .assets import normalize_manga_assets
-from .database import GenerationJobRecord, ProjectRecord, now_utc
+from .database import GenerationJobRecord
 from .jobs import GenerationJob
 from .mutation import EpochMismatchError, ProjectConflictError, ProjectNotFoundError, parse_manga
+from .repository import ProjectRepository
 
 
 class PanelNotFoundError(Exception):
@@ -23,9 +23,15 @@ class ActiveJobConflictError(Exception):
 
 
 class GenerationService:
-    def __init__(self, session_factory: sessionmaker, export_dir: Path) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker,
+        export_dir: Path,
+        repository: ProjectRepository | None = None,
+    ) -> None:
         self.session_factory = session_factory
         self.export_dir = export_dir
+        self.repository = repository or ProjectRepository()
 
     def enqueue(
         self,
@@ -47,7 +53,7 @@ class GenerationService:
         required_epoch: int | None = expected_epoch
         for _ in range(attempts):
             with self.session_factory() as session:
-                record = session.get(ProjectRecord, project_id)
+                record = self.repository.get(session, project_id)
                 if record is None:
                     raise ProjectNotFoundError()
                 base_revision = record.revision
@@ -61,31 +67,12 @@ class GenerationService:
                     raise PanelNotFoundError()
                 # 旧epochのactive履歴は現在世代の登録を妨げない。候補保存はepoch CASで
                 # 拒否されるため、DB上もcancelledへ終端化して部分一意indexを解放する。
-                session.execute(
-                    sqlalchemy_update(GenerationJobRecord)
-                    .where(
-                        GenerationJobRecord.project_id == project_id,
-                        GenerationJobRecord.panel_id.in_(panel_ids),
-                        GenerationJobRecord.status.in_(["queued", "running"]),
-                        GenerationJobRecord.epoch != required_epoch,
-                    )
-                    .values(
-                        status="cancelled",
-                        message="作品構成の更新により前の生成を中断しました",
-                        updated_at=now_utc(),
-                    )
+                self.repository.cancel_active_jobs_other_epoch(
+                    session, project_id, panel_ids, required_epoch
                 )
-                active_db = {
-                    panel_id
-                    for (panel_id,) in session.query(GenerationJobRecord.panel_id)
-                    .filter(
-                        GenerationJobRecord.project_id == project_id,
-                        GenerationJobRecord.panel_id.in_(panel_ids),
-                        GenerationJobRecord.status.in_(["queued", "running"]),
-                        GenerationJobRecord.epoch == required_epoch,
-                    )
-                    .all()
-                }
+                active_db = self.repository.active_panel_ids(
+                    session, project_id, panel_ids, required_epoch
+                )
                 # JSON表示だけactiveで同epochのDB jobが無ければ孤立状態として自己修復する。
                 for panel_id in panel_ids:
                     panel = panels[panel_id]
@@ -119,24 +106,21 @@ class GenerationService:
                     panel.generation.message = message
                     jobs.append(job)
                 normalize_manga_assets(manga, self.export_dir)
-                outcome = session.execute(
-                    sqlalchemy_update(ProjectRecord)
-                    .where(
-                        ProjectRecord.id == project_id,
-                        ProjectRecord.revision == base_revision,
-                        ProjectRecord.generation_epoch == required_epoch,
+                if (
+                    self.repository.cas_set_manga(
+                        session,
+                        project_id,
+                        base_revision,
+                        manga,
+                        require_epoch=required_epoch,
                     )
-                    .values(
-                        manga_json=manga.model_dump_json(),
-                        revision=ProjectRecord.revision + 1,
-                        updated_at=now_utc(),
-                    )
-                )
-                if outcome.rowcount != 1:
+                    != 1
+                ):
                     session.rollback()
                     continue
                 for job in jobs:
-                    session.add(
+                    self.repository.add_generation_job(
+                        session,
                         GenerationJobRecord(
                             id=job.id,
                             project_id=project_id,
@@ -148,7 +132,7 @@ class GenerationService:
                             candidate_ids_json="[]",
                             created_at=job.created_at,
                             updated_at=job.updated_at,
-                        )
+                        ),
                     )
                 try:
                     session.commit()
