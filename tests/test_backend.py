@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
+import backend.app.generation_service as generation_module
 import backend.app.main as main_module
 import backend.app.rendering as rendering_module
 from backend.app.config import Settings
@@ -378,7 +379,9 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
                 Image.new("RGB", (8, 8), (9, 9, 9)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: SelectingBackend()
+        )
 
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
@@ -425,7 +428,9 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "old input result")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: EditingBackend()
+        )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 2},
@@ -510,7 +515,9 @@ def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch
         async def generate_panel(self, *args, **kwargs):
             await asyncio.Event().wait()  # cancelされるまで永久にブロックする
 
-    monkeypatch.setattr(main_module, "build_image_backend", lambda settings: BlockingBackend())
+    monkeypatch.setattr(
+        generation_module, "build_image_backend", lambda settings: BlockingBackend()
+    )
 
     db_path = tmp_path / "test.db"
     with make_client(tmp_path) as client:
@@ -590,7 +597,9 @@ def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeyp
                 Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: SelectingBackend()
+        )
         second = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 2},
@@ -630,9 +639,9 @@ def test_stop_comfyui_removes_queued_without_global_interrupt(monkeypatch) -> No
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
+        generation_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
     )
-    assert main_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
     assert any(url.endswith("/queue") and json == {"delete": ["pid"]} for url, json in posted)
     assert not any(url.endswith("/interrupt") for url, _ in posted)
 
@@ -641,9 +650,9 @@ def test_stop_comfyui_interrupts_only_when_running(monkeypatch) -> None:
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
+        generation_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
     )
-    assert main_module.stop_comfyui_generation(settings, "pid") == "interrupted"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "interrupted"
     assert any(url.endswith("/interrupt") for url, _ in posted)
 
 
@@ -651,10 +660,12 @@ def test_stop_comfyui_skips_unrelated_generation(monkeypatch) -> None:
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client(["other"], ["another"], posted)
+        generation_module.httpx,
+        "Client",
+        lambda *a, **k: _queue_client(["other"], ["another"], posted),
     )
     # 対象prompt_idがキューに無ければグローバルinterruptもqueue削除もしない。
-    assert main_module.stop_comfyui_generation(settings, "pid") == "not_requested"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "not_requested"
     assert posted == []
 
 
@@ -1032,7 +1043,7 @@ def test_cancelled_job_stays_cancelled_when_backend_raises_late(
                     raise RuntimeError("キャンセル後の遅延例外") from exc
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: LateFailingBackend()
+            generation_module, "build_image_backend", lambda settings: LateFailingBackend()
         )
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
@@ -1626,7 +1637,7 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         )
         stopped: list[str | None] = []
         monkeypatch.setattr(
-            main_module,
+            generation_module,
             "stop_comfyui_generation",
             lambda settings, prompt_id: stopped.append(prompt_id) or "interrupted",
         )
@@ -1788,7 +1799,7 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
                 return ImageResult("stub", "done", target_path, "ok")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+            generation_module, "build_image_backend", lambda settings: EpochBumpingBackend()
         )
 
         response = client.post(
@@ -1841,7 +1852,7 @@ def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) ->
                 return ImageResult("stub", "done", target_path, "ok")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+            generation_module, "build_image_backend", lambda settings: EpochBumpingBackend()
         )
 
         # 開始時epochで固定された/renderは、途中で世代が変わると409で止まる。
@@ -1987,7 +1998,9 @@ def test_long_prompt_does_not_break_stale_candidate_cleanup(tmp_path: Path, monk
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: EditingBackend()
+        )
         # 長promptでも、入力不一致の破棄が502ではなく本来の409で完結する。
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
@@ -2062,7 +2075,9 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
                 return ImageResult("stub", "done", target_path, "ok")
 
         shared_backend = CancelledThenReturnBackend()
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: shared_backend)
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: shared_backend
+        )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 1},
@@ -2108,7 +2123,7 @@ def test_backend_exception_after_png_write_cleans_up_orphan(tmp_path: Path, monk
                 raise RuntimeError("backend爆発")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: WriteThenFailBackend()
+            generation_module, "build_image_backend", lambda settings: WriteThenFailBackend()
         )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
