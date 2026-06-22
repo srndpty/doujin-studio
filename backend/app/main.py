@@ -89,3 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(story.router)
     return app
+
+
+# uvicorn/ASGIの標準エントリポイント（backend.app.main:app）。
+# 構築・Router登録のみで、DB等の副作用はlifespanで起動時に行う。
+app = create_app()
