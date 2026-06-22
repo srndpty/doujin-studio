@@ -443,10 +443,10 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
 
 
 def test_candidate_selection_does_not_change_generation_input_hash(tmp_path: Path) -> None:
-    """既存候補の採用でseed/backendが変わってもgeneration_input_hashは不変であること。
+    """候補採用はgeneration_input_hashを変えないが、ユーザーのseed編集は検出すること。
 
-    apply_candidate_selection()由来のフィールドをhashへ残すと、生成中の候補選び直しを
-    入力変更と誤判定してジョブをcancelしてしまうため、それらは除外する。
+    候補採用はseedを書き換えない（candidate.seedで表示）ためhash不変。一方seedは実際の
+    生成入力なのでhashに含め、別タブ等でのseed編集は古い候補の混入として検出する。
     """
     export_dir = tmp_path / "exports"
     candidate = ImageCandidate(
@@ -480,13 +480,19 @@ def test_candidate_selection_does_not_change_generation_input_hash(tmp_path: Pat
     )
     panel = manga.pages[0].panels[0]
     before = main_module.generation_input_hash(manga, panel, export_dir)
-    # ユーザーが既存候補を採用した状況を再現（seed/backend/statusが書き換わる）。
+    # 既存候補を採用してもseedは基準seedのまま（candidate.seedで表示する）。
     main_module.apply_candidate_selection(panel, candidate)
-    assert panel.generation.seed == 999 and panel.generation.backend == "comfyui"
+    assert panel.generation.seed == 1, "候補採用は基準seedを書き換えない"
+    assert panel.selected_candidate_id == "cand-a"
+    assert panel.generation.backend == "comfyui"  # backendは表示用に同期するがhash対象外
     after = main_module.generation_input_hash(manga, panel, export_dir)
-    assert before == after, "候補選択は生成入力の変更として扱わない"
+    assert before == after, "候補採用は生成入力の変更として扱わない"
 
-    # 一方で実プロンプトの変更はhashへ反映される（過剰除外していないこと）。
+    # ユーザーがseedを編集すると入力変更として検出される（古い候補の混入を防ぐ）。
+    panel.generation.seed = 4242
+    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+
+    # 実プロンプトの変更もhashへ反映される。
     panel.generation.prompt = "changed"
     assert main_module.generation_input_hash(manga, panel, export_dir) != after
 
@@ -538,6 +544,62 @@ def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch
                 assert panel.generation.status == "error"
         # 少なくとも1件はqueuedで再開待ちとして残ること（本テストの主眼）。
         assert "queued" in statuses
+
+
+def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeypatch) -> None:
+    """生成中に基準seedと異なる既存候補を採用しても、進行中ジョブが破棄されないこと。"""
+    with make_client(tmp_path) as client:
+        app = client.app
+        project_id = create_generated_project(client)
+        first = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        assert first.status_code == 200
+        candidates = first.json()["manga_json"]["pages"][0]["panels"][0]["image_candidates"]
+        assert len(candidates) == 2
+        # 最小seedの既存候補を生成中に採用する。修正前は旧ジョブ選択でgeneration.seedが
+        # 末尾候補のseedへ進むため、これを採用するとseed不一致でジョブが破棄されていた。
+        other = min(candidates, key=lambda candidate: candidate["seed"])
+
+        class SelectingBackend:
+            def __init__(self) -> None:
+                self.count = 0
+
+            async def generate_panel(
+                self,
+                project_id_,
+                panel_,
+                export_dir,
+                target_path=None,
+                progress_callback=None,
+                on_prompt_id=None,
+            ):
+                self.count += 1
+                if self.count == 1:
+
+                    def reselect(target_panel, target_page) -> None:
+                        candidate = next(
+                            item
+                            for item in target_panel.image_candidates
+                            if item.id == other["id"]
+                        )
+                        main_module.apply_candidate_selection(target_panel, candidate)
+
+                    main_module.update_panel_in_latest(app, project_id_, "p01_01", reselect)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
+                return ImageResult("stub", "done", target_path, "ok")
+
+        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        second = client.post(
+            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            json={"candidate_count": 2},
+        )
+        # 候補採用ではseedが変わらないため、ジョブはcancelされず新候補が保存される。
+        assert second.status_code == 200, second.text
+        panel = second.json()["manga_json"]["pages"][0]["panels"][0]
+        assert len(panel["image_candidates"]) == 4
 
 
 def _queue_client(running: list[str], pending: list[str], posted: list[tuple[str, dict | None]]):

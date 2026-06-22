@@ -1773,7 +1773,9 @@ def apply_candidate_selection(panel, candidate: ImageCandidate) -> None:
     panel.image_asset = candidate.asset
     panel.generation.backend = candidate.backend
     panel.generation.status = candidate.status
-    panel.generation.seed = candidate.seed
+    # generation.seedは「次の生成の基準seed」というユーザー入力なので、候補採用では書き換えない。
+    # 採用候補のseedはcandidate.seedに記録済みで表示もそこから行う。ここで上書きすると
+    # 候補選び直しが入力変更扱いになり、進行中ジョブの候補が破棄されてしまう。
     panel.generation.prompt_id = candidate.prompt_id
     panel.generation.message = candidate.message
 
@@ -1982,10 +1984,12 @@ def generation_input_hash(manga: MangaProject, panel, export_dir: Path) -> str:
         }
     )
     generation = payload["generation"]
-    # statusなどの揮発フィールドに加え、apply_candidate_selection()が書き換える選択由来の
-    # フィールド（backend/seed）も除外する。生成中にユーザーが既存候補を選び直しただけで
-    # 入力変更と誤判定し、進行中ジョブをcancelしてしまうのを防ぐ。
-    for volatile in ("status", "message", "prompt_id", "backend", "seed"):
+    # status等の揮発フィールドとbackendを除外する。backendは実際の生成先ではなく
+    # （実際はsettingsのbuild_image_backendで決まる）採用候補の記録/表示用なので入力ではない。
+    # 一方seedは実際にbackendへ渡す生成入力なので除外しない。これによりユーザーのseed編集は
+    # 検出しつつ、候補採用ではseedを書き換えない（apply_candidate_selection参照）ため、
+    # 採用し直しだけで入力変更と誤判定することはない。
+    for volatile in ("status", "message", "prompt_id", "backend"):
         generation.pop(volatile, None)
     asset_ids = {reference.asset for reference in generated.control_references} | {
         reference.asset for reference in generated.generation.reference_images
