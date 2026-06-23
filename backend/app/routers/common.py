@@ -171,12 +171,21 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _partial_success(
         request: Request, exc: ProjectMutationPartiallyAppliedError
     ) -> JSONResponse:
-        # completed_projectは前段(候補採用など)を確定したsnapshot。projectは応答時点の
-        # 最新DB stateで、partial-successは同時更新が原因のため両者が乖離しやすい。
-        completed_project, latest_revision = _detail_from_snapshot(request, exc.snapshot)
-        latest_project = to_detail(
-            load_project_record(request, exc.snapshot.project_id),
-            request.app.state.settings.export_dir,
+        # 最新recordを一度だけ読み、project/latest_revision/completed_projectのメタデータを
+        # すべて同一readから作る。二重readだとその間にrevisionが進み、project.revisionが
+        # latest_revisionを超える逆転が起き得るため、単一readでレスポンス内の単調性を保つ。
+        record = load_project_record(request, exc.snapshot.project_id)
+        latest_project = to_detail(record, request.app.state.settings.export_dir)
+        # completed_projectは前段(候補採用など)を確定したsnapshot。timestampsは同じ最新
+        # recordを流用し、revision/manga/title類はsnapshot由来にする。
+        completed_project = ProjectDetail(
+            id=record.id,
+            title=exc.snapshot.manga.title,
+            work_name=exc.snapshot.manga.work_name,
+            revision=exc.snapshot.revision,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            manga_json=exc.snapshot.manga,
         )
         payload = ProjectMutationPartialSuccessResponse(
             detail="前段の操作は適用されましたが、後続の操作が競合しました。最新を確認してください。",
@@ -184,7 +193,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             failed_operation=exc.failed_operation,
             completed_project=completed_project,
             project=latest_project,
-            latest_revision=latest_revision,
+            latest_revision=latest_project.revision,
         )
         return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
 

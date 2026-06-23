@@ -1118,6 +1118,9 @@ def test_select_candidate_partial_success_reports_latest_after_concurrent_update
         # projectは最新(別更新後)で、completed_projectより新しい。latest_revisionも最新。
         assert body["project"]["revision"] > body["completed_project"]["revision"]
         assert body["latest_revision"] == body["project"]["revision"]
+        # レスポンス内の単調性: completed <= latest が常に成り立つ（単一readで構成）。
+        assert body["completed_project"]["revision"] <= body["latest_revision"]
+        assert body["project"]["revision"] <= body["latest_revision"]
         assert body["project"]["manga_json"]["premise"] == "別タブ更新"
         # 候補採用自体は最新stateにも残っている。
         latest_panel = body["project"]["manga_json"]["pages"][0]["panels"][0]

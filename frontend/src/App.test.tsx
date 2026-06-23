@@ -1,6 +1,33 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { forwardRef, useImperativeHandle, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, type MangaProject } from "./App";
+
+// PageEditorはreact-konva(Canvas)を使うため、jsdomで描画できるようモック化する。
+vi.mock("react-konva", () => {
+  type MockNodeProps = { children?: ReactNode; text?: string; onClick?: () => void };
+  const Container = ({ children }: MockNodeProps) => <div>{children}</div>;
+  const Rect = forwardRef<HTMLButtonElement, MockNodeProps>(({ children, onClick }, ref) => (
+    <button type="button" data-testid="konva-rect" ref={ref} onClick={onClick}>
+      {children}
+    </button>
+  ));
+  const Transformer = forwardRef<object, MockNodeProps>((_props, ref) => {
+    useImperativeHandle(ref, () => ({ nodes: () => undefined, getLayer: () => null }));
+    return null;
+  });
+  return {
+    Stage: Container,
+    Layer: Container,
+    Group: Container,
+    Ellipse: Container,
+    Line: Container,
+    Image: Container,
+    Rect,
+    Text: ({ text }: MockNodeProps) => <span>{text}</span>,
+    Transformer
+  };
+});
 
 const manga: MangaProject = {
   title: "テスト本",
@@ -637,6 +664,186 @@ describe("AppのManga JSON保存", () => {
       img.getAttribute("src")?.includes("stale-10")
     );
     expect(staleImg).toBeUndefined();
+  });
+
+  it("render応答がlatest_revisionで再同期したら、旧result.page_assetでなく最新assetを表示する", async () => {
+    let generationStarted = false;
+    let renderDone = false;
+    const job = {
+      id: "job-1",
+      project_id: "p1",
+      panel_id: "p01_01",
+      candidate_count: 1,
+      status: "queued",
+      progress: 0,
+      message: "生成中",
+      node: null,
+      prompt_id: null,
+      candidate_ids: [],
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01"
+    };
+    class ImmediateWebSocket {
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor() {
+        window.setTimeout(() => {
+          this.onmessage?.({
+            data: JSON.stringify({ ...job, status: "done", progress: 100, message: "完了" })
+          });
+        }, 0);
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", ImmediateWebSocket);
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithPanel("本")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/generation-jobs")) {
+        generationStarted = true;
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 2,
+            manga_json: mangaWithPanel("本")
+          },
+          latest_revision: 2,
+          result: job
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderDone = true;
+        // render snapshotはrevision 13・page_asset=stale-A。だがDBは既にrevision 14へ。
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 13,
+            manga_json: mangaWithPanel("本", "p1/pages/stale-A.png")
+          },
+          latest_revision: 14,
+          result: { panel_id: "p01_01", page_asset: "p1/pages/stale-A.png", warnings: [] }
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "本", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // 再同期reload(render後)では、最新revision 14・最新asset=fresh-Bを返す。
+        return jsonResponse({
+          id: "p1",
+          title: "本",
+          work_name: "作品",
+          revision: renderDone ? 14 : generationStarted ? 12 : 0,
+          manga_json: mangaWithPanel("本", renderDone ? "p1/pages/fresh-B.png" : null)
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("本"));
+    await screen.findByDisplayValue("本");
+    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+
+    await waitFor(() => expect(screen.getByText(/候補を/)).toBeInTheDocument());
+    // 再同期後のプレビューは最新asset(fresh-B)で、古いrender結果(stale-A)では上書きしない。
+    await waitFor(() => {
+      const imgs = Array.from(container.querySelectorAll("img")).map((img) => img.getAttribute("src") ?? "");
+      expect(imgs.some((src) => src.includes("fresh-B"))).toBe(true);
+    });
+    const staleImg = Array.from(container.querySelectorAll("img")).find((img) =>
+      img.getAttribute("src")?.includes("stale-A")
+    );
+    expect(staleImg).toBeUndefined();
+  });
+
+  it("PageEditor保存後renderがtyped 409を返したら最新projectを採用する", async () => {
+    const competitorManga = mangaWithPanel("競合で進んだ最新");
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithPanel("本")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render")) {
+        // 保存後の /render が revision 競合。typed 409 を返す。
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              detail: "競合",
+              code: "project_revision_conflict",
+              expected_revision: 1,
+              actual_revision: 7,
+              project: {
+                id: "p1",
+                title: "競合で進んだ最新",
+                work_name: "作品",
+                revision: 7,
+                manga_json: competitorManga
+              }
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } }
+          )
+        );
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "本", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // 初期ロードはrevision 0の自分の状態。競合projectは409応答本体から採用する。
+        return jsonResponse({
+          id: "p1",
+          title: "本",
+          work_name: "作品",
+          revision: 0,
+          manga_json: mangaWithPanel("本")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("本"));
+    await screen.findByDisplayValue("本");
+    fireEvent.click(screen.getByRole("button", { name: "ページ編集" }));
+    fireEvent.click(await screen.findByRole("button", { name: "保存（レイアウト確定）" }));
+
+    // typed 409 が handleProjectMutationError に渡り、最新projectが採用される。
+    await waitFor(() => expect(screen.getByLabelText("本のタイトル")).toHaveValue("競合で進んだ最新"));
   });
 
   it.each(["画像生成", "ページ内全コマ生成", "全ページ生成"])(

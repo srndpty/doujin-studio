@@ -178,6 +178,14 @@ export type Project = {
 };
 
 export type ProjectMutationResponse<T> = ApiProjectMutationResponse<Project, T>;
+// adoptMutationResponseの戻り値。resynced=trueなら結果固有assetは陳腐化しているため、
+// callerはproject.manga_jsonから派生状態を作り直す。
+type Adopted<R> = {
+  applied: boolean;
+  resynced: boolean;
+  project: Project | null;
+  result: R;
+};
 type EmptyMutationResult = Schemas["EmptyMutationResult"];
 type PageRenderResult = Schemas["PageRenderResult"];
 type PanelImageGenerationResult = Schemas["PanelImageGenerationResult"];
@@ -392,7 +400,7 @@ export function App() {
     },
     [refreshProjectDerivedState]
   );
-  const { applyMutationResponse, handleProjectMutationError } = useProjectMutation<Project>({
+  const { handleProjectMutationError } = useProjectMutation<Project>({
     applyProject: applyProjectDetail,
     onConflict: onProjectConflict,
     onStale: (projectId) => {
@@ -523,15 +531,33 @@ export function App() {
   // ProjectMutationResponse を反映し、latest_revisionが応答snapshotより新しければ最新へ
   // 再同期する。後続mutationのあるフローは戻り値の project.revision を次のAPIへ渡せる。
   // applied=false（巻き戻し回避で未反映）なら派生状態を触らない。
-  async function adoptMutationResponse<R>(
-    response: ProjectMutationResponse<R>
-  ): Promise<{ applied: boolean; project: Project | null; result: R }> {
+  // resynced=true のとき、応答固有のresult（古いpage_asset等）はもう最新ではないので、
+  // callerは結果固有assetではなく project.manga_json から派生状態を作り直す。
+  async function adoptMutationResponse<R>(response: ProjectMutationResponse<R>): Promise<Adopted<R>> {
     const applied = applyProjectDetail(response.project);
     let project: Project | null = applied ? selectedRef.current : null;
+    let resynced = false;
     if (applied && response.latest_revision > response.project.revision) {
       project = await reloadSelectedProject(response.project.id);
+      resynced = true;
     }
-    return { applied, project, result: response.result };
+    return { applied, resynced, project, result: response.result };
+  }
+
+  // render系応答のpage_assetをプレビューへ反映する共通処理。再同期済みなら結果固有の
+  // 古いpage_assetは使わず、最新manga_jsonのrender_assetからプレビューを作り直す。
+  function applyRenderedPageAsset(adopted: Adopted<{ page_asset: string }>, pageNumber: number): void {
+    if (!adopted.applied || !adopted.project) return;
+    const project = adopted.project;
+    updateProjectPageAssets(project.id, (assets) => {
+      if (adopted.resynced) {
+        return project.manga_json.pages.map((page) => page.render_asset ?? "");
+      }
+      const next = [...assets];
+      next[pageNumber - 1] = adopted.result.page_asset;
+      return next;
+    });
+    setAssetVersion((value) => value + 1);
   }
 
   // 更新APIの応答(manga_json + revision)をselectedへ反映する。
@@ -553,7 +579,6 @@ export function App() {
       const saved = await saveJsonDraft("レンダリング前にManga JSONを保存しました");
       const projectId = saved?.id ?? selected.id;
       const manga = saved?.manga_json ?? selected.manga_json;
-      const nextAssets = [...pageAssets];
       let latestRevision = saved?.revision ?? selected.revision;
       for (const page of manga.pages) {
         const firstPanel = page.panels[0];
@@ -566,14 +591,10 @@ export function App() {
         const response = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
           withRevision(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`, latestRevision)
         );
-        const { applied, result } = await adoptMutationResponse(response);
+        const adopted = await adoptMutationResponse(response);
         // 次のrender-pageへは反映済みの最新revisionを渡す（再同期で進んだ場合も追従）。
         latestRevision = selectedRef.current?.revision ?? latestRevision;
-        if (applied) {
-          nextAssets[page.page - 1] = result.page_asset;
-          updateProjectPageAssets(projectId, () => [...nextAssets]);
-          setAssetVersion((value) => value + 1);
-        }
+        applyRenderedPageAsset(adopted, page.page);
       }
       setMessage("ページをレンダリングしました");
       await refreshProductionStatus(projectId);
@@ -601,15 +622,7 @@ export function App() {
           selectedRef.current?.revision ?? fresh.revision
         )
       );
-      const { applied, result } = await adoptMutationResponse(pageResponse);
-      if (applied) {
-        updateProjectPageAssets(projectId, (assets) => {
-          const next = [...assets];
-          next[selectedPage - 1] = result.page_asset;
-          return next;
-        });
-        setAssetVersion((value) => value + 1);
-      }
+      applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
       setProgress({ label: "プレビューを更新しました", current: 4, total: 4 });
       setMessage(`${currentPanel.panel_id}に候補を${candidateCount}件追加しました`);
       await refreshProductionStatus(projectId);
@@ -654,14 +667,7 @@ export function App() {
             selectedRef.current?.revision ?? selected.revision
           )
         );
-        const { applied, result } = await adoptMutationResponse(pageResponse);
-        if (applied) {
-          updateProjectPageAssets(projectId, (assets) => {
-            const next = [...assets];
-            next[selectedPage - 1] = result.page_asset;
-            return next;
-          });
-        }
+        applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
       }
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページの全コマを生成しました`);
@@ -717,7 +723,6 @@ export function App() {
   }
 
   async function renderAllPages(projectId: string, project: Project): Promise<void> {
-    const nextAssets = [...pageAssets];
     let latestRevision = project.revision;
     for (let index = 0; index < project.manga_json.pages.length; index += 1) {
       const page = project.manga_json.pages[index];
@@ -731,12 +736,9 @@ export function App() {
       const response = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
         withRevision(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`, latestRevision)
       );
-      const { applied, result } = await adoptMutationResponse(response);
+      const adopted = await adoptMutationResponse(response);
       latestRevision = selectedRef.current?.revision ?? latestRevision;
-      if (applied) {
-        nextAssets[page.page - 1] = result.page_asset;
-        updateProjectPageAssets(projectId, () => [...nextAssets]);
-      }
+      applyRenderedPageAsset(adopted, page.page);
     }
   }
 
@@ -908,16 +910,7 @@ export function App() {
           selected.revision
         )
       );
-      const projectId = selected.id;
-      const { applied, result } = await adoptMutationResponse(response);
-      if (applied) {
-        updateProjectPageAssets(projectId, (assets) => {
-          const next = [...assets];
-          next[selectedPage - 1] = result.page_asset;
-          return next;
-        });
-        setAssetVersion((value) => value + 1);
-      }
+      applyRenderedPageAsset(await adoptMutationResponse(response), selectedPage);
       setMessage("画像候補を採用し、ページを更新しました");
       await refreshProductionStatus(selected.id);
     });
@@ -942,15 +935,7 @@ export function App() {
           selectedRef.current?.revision ?? stubResponse.project.revision
         )
       );
-      const { applied, result } = await adoptMutationResponse(pageResponse);
-      if (applied) {
-        updateProjectPageAssets(projectId, (assets) => {
-          const next = [...assets];
-          next[selectedPage - 1] = result.page_asset;
-          return next;
-        });
-        setAssetVersion((value) => value + 1);
-      }
+      applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
       setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
       await refreshProductionStatus(projectId);
     });
@@ -967,15 +952,7 @@ export function App() {
           saved?.revision ?? selected.revision
         )
       );
-      const { applied, result } = await adoptMutationResponse(response);
-      if (applied) {
-        updateProjectPageAssets(projectId, (assets) => {
-          const next = [...assets];
-          next[selectedPage - 1] = result.page_asset;
-          return next;
-        });
-        setAssetVersion((value) => value + 1);
-      }
+      applyRenderedPageAsset(await adoptMutationResponse(response), selectedPage);
       setMessage(`${selectedPage}ページを更新しました`);
       await refreshProductionStatus(projectId);
     });
@@ -1514,19 +1491,15 @@ export function App() {
                       saved.project.revision
                     )
                   );
-                  const { applied, result } = await adoptMutationResponse(rendered);
-                  if (applied) {
-                    // 生成されたページPNGを制作タブのプレビューへ反映する。
-                    updateProjectPageAssets(projectId, (prev) => {
-                      const next = [...prev];
-                      next[pageNumber - 1] = result.page_asset;
-                      return next;
-                    });
-                    setAssetVersion((value) => value + 1);
-                  }
+                  // 生成されたページPNGを制作タブのプレビューへ反映する。
+                  applyRenderedPageAsset(await adoptMutationResponse(rendered), pageNumber);
                   setMessage("レイアウトを保存し、ページ画像を更新しました");
                 } catch (error) {
-                  setMessage(`保存に失敗しました: ${(error as Error).message}`);
+                  // typed 409(revision競合等)は最新project採用＋派生状態再同期へ寄せる。
+                  if (await handleProjectMutationError(error)) return;
+                  setMessage(
+                    `保存に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`
+                  );
                 } finally {
                   setBusy(false);
                 }
@@ -1553,7 +1526,10 @@ export function App() {
                   const { result } = await adoptMutationResponse(response);
                   setMessage(`レイアウトを再提案しました（${result.layout_family}）`);
                 } catch (error) {
-                  setMessage(`再提案に失敗しました: ${(error as Error).message}`);
+                  if (await handleProjectMutationError(error)) return;
+                  setMessage(
+                    `再提案に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`
+                  );
                 } finally {
                   setBusy(false);
                 }
@@ -1569,9 +1545,13 @@ export function App() {
             projectId={selected.id}
             revision={selected.revision}
             workName={selected.work_name}
-            onProjectMutation={(response) => {
-              applyMutationResponse(response);
-              return refreshProjectDerivedState(response.project);
+            onProjectMutation={async (response) => {
+              // App主要操作と同じく adoptMutationResponse を通し、stale snapshotは
+              // 再同期済み project から派生状態を作り直す。未採用なら派生状態は触らない。
+              const adopted = await adoptMutationResponse(response);
+              if (adopted.applied && adopted.project) {
+                await refreshProjectDerivedState(adopted.project);
+              }
             }}
             onProjectMutationError={handleProjectMutationError}
             onBusyChange={(working, label) => {
