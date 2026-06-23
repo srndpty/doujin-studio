@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,6 +22,7 @@ import backend.app.rendering as rendering_module
 import backend.app.routers.common as router_common
 import backend.app.routers.projects as projects_router
 from backend.app import assets as assets_module
+from backend.app import database as database_module
 from backend.app.config import Settings
 from backend.app.database import (
     GenerationJobRecord,
@@ -1947,6 +1949,472 @@ def test_generation_service_runs_without_fastapi_app(tmp_path: Path) -> None:
     with session_factory() as session:
         latest = MangaProject.model_validate_json(session.get(ProjectRecord, "p").manga_json)
     assert latest.pages[0].panels[0].generation.status == "skipped"
+
+
+def create_legacy_schema_without_migration_version(db_path: Path) -> None:
+    now = db_now_utc().isoformat()
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                work_name TEXT NOT NULL DEFAULT '',
+                manga_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE generation_jobs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                panel_id TEXT NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress INTEGER NOT NULL DEFAULT 0,
+                current INTEGER NOT NULL DEFAULT 0,
+                total INTEGER NOT NULL DEFAULT 0,
+                node TEXT,
+                message TEXT NOT NULL DEFAULT '生成待ちです',
+                candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE knowledge_sources (
+                id TEXT PRIMARY KEY,
+                work_name TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                doc_type TEXT NOT NULL DEFAULT 'txt',
+                usage TEXT NOT NULL DEFAULT 'reference',
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE knowledge_chunks (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                work_name TEXT NOT NULL,
+                usage TEXT NOT NULL DEFAULT 'reference',
+                kind TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                policy TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        manga = MangaProject(
+            title="旧DB",
+            pages=[
+                Page(
+                    page=1,
+                    theme="旧",
+                    layout_template="single",
+                    panels=[Panel(panel_id="p01_01", bbox=(0, 0, 1, 1), shot="")],
+                )
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO projects (id, title, work_name, manga_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy", "旧DB", "work", manga.model_dump_json(), now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO knowledge_sources (id, work_name, title, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("source", "work", "資料", now),
+        )
+        connection.execute(
+            """
+            INSERT INTO knowledge_chunks (
+                id, source_id, work_name, title, content, tags, position
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("chunk", "source", "work", "題名", "本文", "tag", 1),
+        )
+        for job_id in ["job-a", "job-b"]:
+            connection.execute(
+                """
+                INSERT INTO generation_jobs (
+                    id, project_id, panel_id, status, message, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, "legacy", "p01_01", "running", "旧ジョブ", now, now),
+            )
+
+
+def test_schema_migration_initializes_new_database(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'new.db'}")
+
+    with session_factory() as session:
+        rows = session.execute(
+            text("SELECT version, name, applied_at FROM schema_migrations")
+        ).all()
+        assert [(row[0], row[1]) for row in rows] == [(1, "baseline_schema")]
+        assert rows[0][2]
+        assert "revision" in {
+            row[1] for row in session.execute(text("PRAGMA table_info(projects)")).all()
+        }
+
+
+def test_schema_migration_updates_legacy_missing_columns_and_keeps_data(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "legacy.db"
+    create_legacy_schema_without_migration_version(db_path)
+
+    session_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with session_factory() as session:
+        project_columns = {
+            row[1] for row in session.execute(text("PRAGMA table_info(projects)")).all()
+        }
+        job_columns = {
+            row[1] for row in session.execute(text("PRAGMA table_info(generation_jobs)")).all()
+        }
+        chunk_columns = {
+            row[1] for row in session.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
+        }
+        assert {"revision", "generation_epoch"} <= project_columns
+        assert {"prompt_id", "epoch", "generation_input_hash"} <= job_columns
+        assert "meta" in chunk_columns
+        project = session.get(ProjectRecord, "legacy")
+        assert project is not None
+        assert project.title == "旧DB"
+        assert project.revision == 0
+        assert project.generation_epoch == 0
+        chunk_meta = session.execute(
+            text("SELECT meta FROM knowledge_chunks WHERE id = 'chunk'")
+        ).scalar_one()
+        assert chunk_meta == ""
+
+
+def test_schema_migration_terminates_duplicate_active_jobs_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    db_path = tmp_path / "duplicates.db"
+    create_legacy_schema_without_migration_version(db_path)
+
+    first_factory = create_session_factory(f"sqlite:///{db_path}")
+    # 再起動時に同じrunnerをもう一度通しても、履歴やindexが重複しない。
+    second_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with second_factory() as session:
+        rows = session.execute(
+            text("SELECT version, name FROM schema_migrations ORDER BY version")
+        ).all()
+        assert rows == [(1, "baseline_schema")]
+        active_jobs = session.execute(
+            text(
+                """
+                SELECT id, status
+                FROM generation_jobs
+                WHERE project_id = 'legacy' AND panel_id = 'p01_01'
+                ORDER BY id
+                """
+            )
+        ).all()
+        assert active_jobs == [("job-a", "running"), ("job-b", "error")]
+        indexes = session.execute(text("PRAGMA index_list(generation_jobs)")).all()
+        assert sum(row[1] == "ux_generation_jobs_active_panel" for row in indexes) == 1
+
+    with first_factory() as session:
+        session.add(
+            GenerationJobRecord(
+                id="job-c",
+                project_id="legacy",
+                panel_id="p01_01",
+                candidate_count=1,
+                status="queued",
+                candidate_ids_json="[]",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_schema_migration_failure_stops_startup_and_records_only_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "failure.db"
+
+    def fail_migration(connection) -> None:
+        connection.execute(text("CREATE TABLE should_rollback (id TEXT PRIMARY KEY)"))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "failing_migration", fail_migration),
+        ),
+    )
+
+    with pytest.raises(
+        database_module.SchemaMigrationError, match="失敗しました。起動を停止します"
+    ):
+        create_session_factory(f"sqlite:///{db_path}")
+
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
+        assert rows == [(1, "baseline_schema")]
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'should_rollback'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_schema_migration_rolls_back_alter_table_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "alter-failure.db"
+    create_session_factory(f"sqlite:///{db_path}")
+
+    def fail_after_alter(connection) -> None:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN should_rollback TEXT"))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "failing_alter", fail_after_alter),
+        ),
+    )
+    with pytest.raises(database_module.SchemaMigrationError, match="失敗しました"):
+        create_session_factory(f"sqlite:///{db_path}")
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
+        assert "should_rollback" not in columns
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema")]
+
+
+def test_schema_migration_concurrent_runners_apply_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from sqlalchemy import text
+
+    db_path = tmp_path / "concurrent-migration.db"
+    create_session_factory(f"sqlite:///{db_path}")
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def migrate_once(connection) -> None:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        connection.execute(text("CREATE TABLE concurrent_once (id TEXT PRIMARY KEY)"))
+        time.sleep(0.1)
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "concurrent_once", migrate_once),
+        ),
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        factories = list(
+            executor.map(lambda _index: create_session_factory(f"sqlite:///{db_path}"), range(2))
+        )
+    assert len(factories) == 2
+    assert calls == 1
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema"), (2, "concurrent_once")]
+
+
+def test_schema_migration_recreates_referenced_parent_with_foreign_keys_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "recreate-parent.db"
+    create_session_factory(f"sqlite:///{db_path}")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "CREATE TABLE migration_parent (id TEXT PRIMARY KEY, label TEXT NOT NULL)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE migration_child (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL REFERENCES migration_parent(id)
+            )
+            """
+        )
+        connection.execute("INSERT INTO migration_parent VALUES ('parent-1', 'before')")
+        connection.execute("INSERT INTO migration_child VALUES ('child-1', 'parent-1')")
+
+    def recreate_parent(connection) -> None:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE migration_parent_new (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    migrated INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO migration_parent_new (id, label)
+                SELECT id, label FROM migration_parent
+                """
+            )
+        )
+        connection.execute(text("DROP TABLE migration_parent"))
+        connection.execute(text("ALTER TABLE migration_parent_new RENAME TO migration_parent"))
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(
+                2,
+                "recreate_parent",
+                recreate_parent,
+                requires_foreign_keys_off=True,
+            ),
+        ),
+    )
+    migrated_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with migrated_factory() as session:
+        assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT id, label, migrated FROM migration_parent"
+        ).fetchall() == [("parent-1", "before", 1)]
+        assert connection.execute("SELECT id, parent_id FROM migration_child").fetchall() == [
+            ("child-1", "parent-1")
+        ]
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema"), (2, "recreate_parent")]
+
+
+def test_schema_migration_unknown_newer_version_stops_startup(tmp_path: Path) -> None:
+    db_path = tmp_path / "newer.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (999, "future", db_now_utc().isoformat()),
+        )
+
+    with pytest.raises(database_module.SchemaMigrationError, match="新しいDB schema version"):
+        create_session_factory(f"sqlite:///{db_path}")
+    with sqlite3.connect(db_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_schema_migration_name_mismatch_stops_startup(tmp_path: Path) -> None:
+    db_path = tmp_path / "name-mismatch.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "wrong_name", db_now_utc().isoformat()),
+        )
+
+    with pytest.raises(database_module.SchemaMigrationError, match="未知のmigration名"):
+        create_session_factory(f"sqlite:///{db_path}")
+
+
+def test_schema_migration_gap_stops_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def noop_migration(_connection) -> None:
+        return None
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "second", noop_migration),
+            database_module.SchemaMigration(3, "third", noop_migration),
+        ),
+    )
+    db_path = tmp_path / "gap.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "baseline_schema", db_now_utc().isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (3, "third", db_now_utc().isoformat()),
+        )
+
+    with pytest.raises(database_module.SchemaMigrationError, match="欠番があります"):
+        create_session_factory(f"sqlite:///{db_path}")
 
 
 def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> None:

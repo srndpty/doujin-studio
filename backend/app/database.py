@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, create_engine, event, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -133,24 +136,154 @@ def ensure_fts(engine) -> None:
         FTS5_AVAILABLE = False
 
 
-def ensure_columns(engine) -> None:
-    """create_allでは追加されない後付けカラムを既存SQLite DBへ補う。
+class SchemaMigrationError(RuntimeError):
+    """起動を止める必要があるSQLite schema migrationエラー。"""
 
-    注意: SQLiteは`ALTER TABLE`で既存テーブルへ外部キー制約を追加できない。
-    モデルに定義したForeignKey/ON DELETE CASCADEは`create_all`で新規作成される
-    テーブルにのみ適用され、既存DBには導入されない。既存DBへFK・cascadeを入れる
-    場合はテーブル再作成マイグレーションが別途必要（現状プロジェクト削除APIが
-    無いため即時の不整合は生じない）。
+
+@dataclass(frozen=True)
+class SchemaMigration:
+    version: int
+    name: str
+    upgrade: Callable[[Connection], None]
+    # 親テーブルをcreate-copy-drop-renameで再作成するmigrationだけで指定する。
+    # PRAGMA foreign_keysはトランザクション開始前に切り替える必要がある。
+    requires_foreign_keys_off: bool = False
+
+
+def _table_columns(connection: Connection, table_name: str) -> set[str]:
+    rows = connection.execute(text(f"PRAGMA table_info({table_name})")).all()
+    return {str(row[1]) for row in rows}
+
+
+def _table_exists(connection: Connection, table_name: str) -> bool:
+    row = connection.execute(
+        text(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type IN ('table', 'virtual table') AND name = :name
+            LIMIT 1
+            """
+        ),
+        {"name": table_name},
+    ).first()
+    return row is not None
+
+
+def _migration_001_baseline_schema(connection: Connection) -> None:
+    """version 1時点の固定DDLを作成し、migration導入前DBをbaselineへ揃える。
+
+    SQLiteは`ALTER TABLE`で既存テーブルへ外部キー制約を追加できない。
+    下記DDLのForeignKey/ON DELETE CASCADEは新規作成テーブルにのみ適用され、
+    既存DBには導入されない。既存DBへFK・cascadeを入れる
+    場合はテーブル再作成マイグレーションが別途必要。
+
+    将来のORM変更に影響されないようBase.metadataは使わない。
     """
-    with engine.begin() as connection:
-        rows = connection.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
-        columns = {row[1] for row in rows}
-        if "meta" not in columns:
+    baseline_ddl = (
+        """
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            work_name TEXT NOT NULL DEFAULT '',
+            manga_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 0,
+            generation_epoch INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS generation_jobs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            panel_id TEXT NOT NULL,
+            candidate_count INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress INTEGER NOT NULL DEFAULT 0,
+            current INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            node TEXT,
+            message TEXT NOT NULL DEFAULT '生成待ちです',
+            prompt_id TEXT,
+            epoch INTEGER NOT NULL DEFAULT 0,
+            generation_input_hash TEXT,
+            candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_sources (
+            id TEXT PRIMARY KEY,
+            work_name TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT 'txt',
+            usage TEXT NOT NULL DEFAULT 'reference',
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
+            work_name TEXT NOT NULL,
+            usage TEXT NOT NULL DEFAULT 'reference',
+            kind TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            policy TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            meta TEXT NOT NULL DEFAULT '',
+            position INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS story_generation_sessions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            work_name TEXT NOT NULL DEFAULT '',
+            target_pages INTEGER NOT NULL DEFAULT 4,
+            instruction TEXT NOT NULL DEFAULT '',
+            stages_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS project_revisions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            label TEXT NOT NULL DEFAULT '',
+            manga_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME NOT NULL
+        )
+        """,
+    )
+    for ddl in baseline_ddl:
+        connection.execute(text(ddl))
+
+    indexes = (
+        "CREATE INDEX IF NOT EXISTS ix_generation_jobs_project_id ON generation_jobs(project_id)",
+        "CREATE INDEX IF NOT EXISTS ix_knowledge_sources_work_name ON knowledge_sources(work_name)",
+        "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_source_id ON knowledge_chunks(source_id)",
+        "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_work_name ON knowledge_chunks(work_name)",
+        "CREATE INDEX IF NOT EXISTS ix_story_generation_sessions_project_id ON story_generation_sessions(project_id)",
+        "CREATE INDEX IF NOT EXISTS ix_project_revisions_project_id ON project_revisions(project_id)",
+    )
+    for ddl in indexes:
+        connection.execute(text(ddl))
+
+    if _table_exists(connection, "knowledge_chunks"):
+        knowledge_columns = _table_columns(connection, "knowledge_chunks")
+        if "meta" not in knowledge_columns:
             connection.execute(
                 text("ALTER TABLE knowledge_chunks ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
             )
-        project_rows = connection.execute(text("PRAGMA table_info(projects)")).all()
-        project_columns = {row[1] for row in project_rows}
+
+    if _table_exists(connection, "projects"):
+        project_columns = _table_columns(connection, "projects")
         if "revision" not in project_columns:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
@@ -159,8 +292,9 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN generation_epoch INTEGER NOT NULL DEFAULT 0")
             )
-        job_rows = connection.execute(text("PRAGMA table_info(generation_jobs)")).all()
-        job_columns = {row[1] for row in job_rows}
+
+    if _table_exists(connection, "generation_jobs"):
+        job_columns = _table_columns(connection, "generation_jobs")
         if "prompt_id" not in job_columns:
             connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN prompt_id TEXT"))
         if "epoch" not in job_columns:
@@ -171,15 +305,18 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE generation_jobs ADD COLUMN generation_input_hash TEXT")
             )
-        # 旧DBにactive重複があれば一意制約導入前に片方だけ残して終端化する。
+        # 旧DBにactive重複があれば、一意index導入前に片方だけ残して終端化する。
         connection.execute(
             text(
                 """
                 UPDATE generation_jobs
-                SET status = 'error', message = '重複ジョブをDB移行時に停止しました'
+                SET status = 'error',
+                    message = '重複ジョブをDB移行時に停止しました',
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE status IN ('queued', 'running')
                   AND id NOT IN (
-                    SELECT MIN(id) FROM generation_jobs
+                    SELECT MIN(id)
+                    FROM generation_jobs
                     WHERE status IN ('queued', 'running')
                     GROUP BY project_id, panel_id
                   )
@@ -197,8 +334,149 @@ def ensure_columns(engine) -> None:
         )
 
 
+MIGRATIONS: tuple[SchemaMigration, ...] = (
+    SchemaMigration(1, "baseline_schema", _migration_001_baseline_schema),
+)
+
+
+def _create_schema_migrations_table(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+    )
+
+
+def run_schema_migrations(engine) -> None:
+    """未適用のSQLite schema migrationをversion順に実行する。
+
+    新規DBとschema_migrationsを持たない既存DBのどちらも、同じrunnerでbaseline
+    migrationを通して最新化する。各migrationは成功した場合にのみ適用記録を追加する。
+    親テーブル再作成はrequires_foreign_keys_offを指定し、commit前にFK整合性を検査する。
+    """
+    known_versions = [migration.version for migration in MIGRATIONS]
+    if known_versions != list(range(1, len(known_versions) + 1)):
+        raise SchemaMigrationError("schema migration定義に欠番があります。起動を停止します。")
+    migrations_by_version = {migration.version: migration for migration in MIGRATIONS}
+    latest_known = known_versions[-1] if known_versions else 0
+
+    # FK無効化が必要なmigrationは、通常接続でpendingを確認した後、専用接続で
+    # PRAGMAを切り替えて再度lock・履歴確認する。並行runnerが先に適用した場合は、
+    # lock取得後に判明した次migrationの要件に合わせて接続を取り直す。
+    planned_migration: SchemaMigration | None = None
+    while True:
+        migration: SchemaMigration | None = None
+        connection = engine.connect()
+        foreign_keys_disabled = bool(
+            planned_migration and planned_migration.requires_foreign_keys_off
+        )
+        try:
+            if foreign_keys_disabled:
+                connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+                if foreign_keys != 0:
+                    raise SchemaMigrationError(
+                        "migration用connectionの外部キー制約を無効化できません。起動を停止します。"
+                    )
+            # sqlite3はDDLだけでは物理トランザクションを開始しないことがある。
+            # 書込lockを明示取得してから履歴を読み直し、DDLと履歴INSERTを同時に確定する。
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            _create_schema_migrations_table(connection)
+            rows = connection.execute(
+                text("SELECT version, name, applied_at FROM schema_migrations ORDER BY version")
+            ).all()
+            applied_versions = [int(row[0]) for row in rows]
+            if len(applied_versions) != len(set(applied_versions)):
+                raise SchemaMigrationError(
+                    "schema_migrationsに重複versionがあります。起動を停止します。"
+                )
+            if applied_versions:
+                unknown_versions = [
+                    version for version in applied_versions if version > latest_known
+                ]
+                if unknown_versions:
+                    raise SchemaMigrationError(
+                        "このアプリより新しいDB schema versionが適用済みです。"
+                        f"version={unknown_versions[0]} のため起動を停止します。"
+                    )
+                expected_applied = list(range(1, max(applied_versions) + 1))
+                if applied_versions != expected_applied:
+                    raise SchemaMigrationError(
+                        "schema_migrationsに欠番があります。起動を停止します。"
+                    )
+                unknown_names = [
+                    (version, name)
+                    for version, name, _applied_at in rows
+                    if migrations_by_version[int(version)].name != name
+                ]
+                if unknown_names:
+                    version, name = unknown_names[0]
+                    raise SchemaMigrationError(
+                        "schema_migrationsに未知のmigration名があります。"
+                        f"version={version}, name={name} のため起動を停止します。"
+                    )
+
+            applied = set(applied_versions)
+            migration = next((item for item in MIGRATIONS if item.version not in applied), None)
+            if migration is None:
+                connection.commit()
+                return
+            if migration.requires_foreign_keys_off != foreign_keys_disabled:
+                connection.rollback()
+                planned_migration = migration
+                continue
+            migration.upgrade(connection)
+            if foreign_keys_disabled:
+                violations = connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+                if violations:
+                    table, rowid, parent, foreign_key_id = violations[0]
+                    raise SchemaMigrationError(
+                        "schema migration後の外部キー整合性検査に失敗しました。"
+                        f"table={table}, rowid={rowid}, parent={parent}, fk_id={foreign_key_id}。"
+                        "起動を停止します。"
+                    )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO schema_migrations (version, name, applied_at)
+                    VALUES (:version, :name, :applied_at)
+                    """
+                ),
+                {
+                    "version": migration.version,
+                    "name": migration.name,
+                    "applied_at": now_utc().isoformat(),
+                },
+            )
+            connection.commit()
+            planned_migration = None
+        except Exception as exc:
+            connection.rollback()
+            if isinstance(exc, SchemaMigrationError):
+                raise
+            migration_label = (
+                f"{migration.version} ({migration.name})" if migration else "runner初期化"
+            )
+            raise SchemaMigrationError(
+                f"schema migration {migration_label} に失敗しました。起動を停止します。"
+            ) from exc
+        finally:
+            if foreign_keys_disabled:
+                # PRAGMA foreign_keysはtransaction終了後に必ず元へ戻す。
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.close()
+
+
 def create_session_factory(database_url: str) -> sessionmaker:
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+    connect_args = (
+        {"check_same_thread": False, "timeout": 30} if database_url.startswith("sqlite") else {}
+    )
     engine = create_engine(database_url, connect_args=connect_args)
     if database_url.startswith("sqlite"):
 
@@ -212,8 +490,9 @@ def create_session_factory(database_url: str) -> sessionmaker:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
-    Base.metadata.create_all(engine)
     if database_url.startswith("sqlite"):
-        ensure_columns(engine)
+        run_schema_migrations(engine)
+    else:
+        Base.metadata.create_all(engine)
     ensure_fts(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)

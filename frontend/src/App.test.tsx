@@ -56,6 +56,14 @@ function jsonResponse(value: unknown): Promise<Response> {
   );
 }
 
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 const statusResponses = (url: string): Promise<Response> | null => {
   if (url.endsWith("/production-status")) {
     return jsonResponse({
@@ -139,6 +147,18 @@ function mangaWithPanel(title: string, pageAsset: string | null = null): MangaPr
       }
     ]
   } as MangaProject;
+}
+
+function mangaWithTwoPages(title: string, firstAsset: string | null = null): MangaProject {
+  const first = mangaWithPanel(title, firstAsset).pages[0];
+  const second = {
+    ...first,
+    page: 2,
+    reading_order: ["p02_01"],
+    render_asset: null,
+    panels: [{ ...first.panels[0], panel_id: "p02_01" }]
+  };
+  return { ...mangaWithPanel(title, firstAsset), pages: [first, second] } as MangaProject;
 }
 
 describe("AppのManga JSON保存", () => {
@@ -555,8 +575,337 @@ describe("AppのManga JSON保存", () => {
     expect(renderUrls[0]).toContain("revision=5");
   });
 
+  it("render途中で再同期したら古いworklistの後続renderを実行しない", async () => {
+    let renderCount = 0;
+    let firstRenderDone = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithTwoPages("本")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderCount += 1;
+        firstRenderDone = true;
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 2,
+            manga_json: mangaWithTwoPages("本", "p1/pages/stale-first.png")
+          },
+          latest_revision: 3,
+          result: { panel_id: "p01_01", page_asset: "p1/pages/stale-first.png", warnings: [] }
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "本", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        return jsonResponse({
+          id: "p1",
+          title: "本",
+          work_name: "作品",
+          revision: firstRenderDone ? 3 : 0,
+          manga_json: mangaWithTwoPages("本", firstRenderDone ? "p1/pages/fresh-first.png" : null)
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("本"));
+    await screen.findByDisplayValue("本");
+    fireEvent.click(screen.getByTitle("全ページをレンダリング"));
+
+    await waitFor(() => expect(renderCount).toBe(1));
+    await waitFor(() =>
+      expect(
+        screen.getByText("構成が更新されたためレンダリングを中断しました。再実行してください。")
+      ).toBeInTheDocument()
+    );
+    expect(renderCount).toBe(1);
+  });
+
+  it("saveJsonDraftが未採用なら後続の生成APIを呼ばない", async () => {
+    const delayedPut = deferredResponse();
+    let putStarted = false;
+    let generationCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        putStarted = true;
+        return delayedPut.promise;
+      }
+      if (init?.method === "POST" && url.includes("/generation-jobs")) {
+        generationCalls += 1;
+        return jsonResponse({});
+      }
+      const status = statusResponses(url);
+      if (status) return status;
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "プロジェクト1", work_name: "作品1", revision: 0, updated_at: "2026-01-01" },
+          { id: "p2", title: "プロジェクト2", work_name: "作品2", revision: 4, updated_at: "2026-01-02" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        return jsonResponse({
+          id: "p1",
+          title: "プロジェクト1",
+          work_name: "作品1",
+          revision: 0,
+          manga_json: mangaWithPanel("プロジェクト1")
+        });
+      }
+      if (url === "/api/projects/p2") {
+        return jsonResponse({
+          id: "p2",
+          title: "プロジェクト2",
+          work_name: "作品2",
+          revision: 4,
+          manga_json: mangaWithPanel("プロジェクト2")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("プロジェクト1"));
+    await screen.findByDisplayValue("プロジェクト1");
+    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+    await waitFor(() => expect(putStarted).toBe(true));
+
+    fireEvent.click(screen.getByText("プロジェクト2"));
+    await screen.findByDisplayValue("プロジェクト2");
+    delayedPut.resolve(
+      new Response(
+        JSON.stringify({
+          project: {
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 1,
+            manga_json: mangaWithPanel("プロジェクト1")
+          },
+          latest_revision: 1,
+          result: {}
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByLabelText("本のタイトル")).toHaveValue("プロジェクト2");
+    expect(generationCalls).toBe(0);
+  });
+
+  it("p1再同期待ち中にp2へ切り替えたらp2の状態をp1応答で触らない", async () => {
+    const delayedReload = deferredResponse();
+    let p1GetCount = 0;
+    let renderCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 1,
+            manga_json: mangaWithPanel("プロジェクト1")
+          },
+          latest_revision: 2,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderCalls += 1;
+        return jsonResponse({});
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "プロジェクト1", work_name: "作品1", revision: 0, updated_at: "2026-01-01" },
+          { id: "p2", title: "プロジェクト2", work_name: "作品2", revision: 4, updated_at: "2026-01-02" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        p1GetCount += 1;
+        if (p1GetCount === 1) {
+          return jsonResponse({
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 0,
+            manga_json: mangaWithPanel("プロジェクト1")
+          });
+        }
+        return delayedReload.promise;
+      }
+      if (url === "/api/projects/p2") {
+        return jsonResponse({
+          id: "p2",
+          title: "プロジェクト2",
+          work_name: "作品2",
+          revision: 4,
+          manga_json: mangaWithPanel("プロジェクト2", "p2/pages/current.png")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("プロジェクト1"));
+    await screen.findByDisplayValue("プロジェクト1");
+    fireEvent.click(screen.getByTitle("全ページをレンダリング"));
+    await waitFor(() => expect(p1GetCount).toBe(2));
+
+    fireEvent.click(screen.getByText("プロジェクト2"));
+    await screen.findByDisplayValue("プロジェクト2");
+    delayedReload.resolve(
+      new Response(
+        JSON.stringify({
+          id: "p1",
+          title: "プロジェクト1の最新",
+          work_name: "作品1",
+          revision: 2,
+          manga_json: mangaWithPanel("プロジェクト1の最新", "p1/pages/latest.png")
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByLabelText("本のタイトル")).toHaveValue("プロジェクト2");
+    expect(renderCalls).toBe(0);
+    const textarea = container.querySelector<HTMLTextAreaElement>(".json-pane textarea");
+    expect(textarea?.value).toContain("プロジェクト2");
+    expect(textarea?.value).not.toContain("プロジェクト1の最新");
+  });
+
+  it("全ページ生成後のreload待機中にp2へ切り替えたらp2構成でp1をrenderしない", async () => {
+    const delayedReload = deferredResponse();
+    let p1GetCount = 0;
+    let renderCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 1,
+            manga_json: mangaWithPanel("プロジェクト1")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url === "/api/projects/p1/generation-jobs?revision=1") {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 2,
+            manga_json: mangaWithPanel("プロジェクト1")
+          },
+          latest_revision: 2,
+          result: { jobs: [] }
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderCalls += 1;
+        return jsonResponse({});
+      }
+      const status = statusResponses(url);
+      if (status) return status;
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "プロジェクト1", work_name: "作品1", revision: 0, updated_at: "2026-01-01" },
+          { id: "p2", title: "プロジェクト2", work_name: "作品2", revision: 4, updated_at: "2026-01-02" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        p1GetCount += 1;
+        if (p1GetCount === 1) {
+          return jsonResponse({
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 0,
+            manga_json: mangaWithPanel("プロジェクト1")
+          });
+        }
+        if (p1GetCount === 2) {
+          return jsonResponse({
+            id: "p1",
+            title: "プロジェクト1",
+            work_name: "作品1",
+            revision: 3,
+            manga_json: mangaWithPanel("プロジェクト1")
+          });
+        }
+        return delayedReload.promise;
+      }
+      if (url === "/api/projects/p2") {
+        return jsonResponse({
+          id: "p2",
+          title: "プロジェクト2",
+          work_name: "作品2",
+          revision: 4,
+          manga_json: mangaWithPanel("プロジェクト2", "p2/pages/current.png")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("プロジェクト1"));
+    await screen.findByDisplayValue("プロジェクト1");
+    fireEvent.click(screen.getByTitle("全ページを生成"));
+    await waitFor(() => expect(p1GetCount).toBe(3));
+
+    fireEvent.click(screen.getByText("プロジェクト2"));
+    await screen.findByDisplayValue("プロジェクト2");
+    delayedReload.resolve(
+      new Response(
+        JSON.stringify({
+          id: "p1",
+          title: "プロジェクト1の最新",
+          work_name: "作品1",
+          revision: 3,
+          manga_json: mangaWithPanel("プロジェクト1の最新")
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByLabelText("本のタイトル")).toHaveValue("プロジェクト2");
+    expect(renderCalls).toBe(0);
+  });
+
   it("古いrevisionのrender応答はselected・JSON・pageAssetsを巻き戻さない", async () => {
     let generationStarted = false;
+    let renderCalls = 0;
     const job = {
       id: "job-1",
       project_id: "p1",
@@ -617,6 +966,7 @@ describe("AppのManga JSON保存", () => {
         });
       }
       if (init?.method === "POST" && url.includes("/render-page")) {
+        renderCalls += 1;
         // 遅延した古いrevision 10のsnapshot（現在は11）。巻き戻してはいけない。
         return jsonResponse({
           project: {
@@ -654,7 +1004,7 @@ describe("AppのManga JSON保存", () => {
     fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
 
     // 古いrevision 10のrender応答が来ても、JSON・タイトルはrevision 11のまま。
-    await waitFor(() => expect(screen.getByText(/候補を/)).toBeInTheDocument());
+    await waitFor(() => expect(renderCalls).toBe(1));
     const textarea = container.querySelector<HTMLTextAreaElement>(".json-pane textarea");
     expect(textarea?.value).toContain("rev11");
     expect(textarea?.value).not.toContain("rev10-stale");
@@ -766,7 +1116,11 @@ describe("AppのManga JSON保存", () => {
     await screen.findByDisplayValue("本");
     fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
 
-    await waitFor(() => expect(screen.getByText(/候補を/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        screen.getByText("構成が更新されたためページ更新を中断しました。再実行してください。")
+      ).toBeInTheDocument()
+    );
     // 再同期後のプレビューは最新asset(fresh-B)で、古いrender結果(stale-A)では上書きしない。
     await waitFor(() => {
       const imgs = Array.from(container.querySelectorAll("img")).map((img) => img.getAttribute("src") ?? "");
@@ -776,6 +1130,75 @@ describe("AppのManga JSON保存", () => {
       img.getAttribute("src")?.includes("stale-A")
     );
     expect(staleImg).toBeUndefined();
+  });
+
+  it("空ページ構成へ再同期したら以前のpage assetを消す", async () => {
+    let renderDone = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithPanel("本", "p1/pages/old.png")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderDone = true;
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 2,
+            manga_json: mangaWithPanel("本", "p1/pages/stale.png")
+          },
+          latest_revision: 3,
+          result: { panel_id: "p01_01", page_asset: "p1/pages/stale.png", warnings: [] }
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "本", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        return jsonResponse({
+          id: "p1",
+          title: "本",
+          work_name: "作品",
+          revision: renderDone ? 3 : 0,
+          manga_json: renderDone
+            ? { ...manga, title: "本", pages: [] }
+            : mangaWithPanel("本", "p1/pages/old.png")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("本"));
+    await screen.findByDisplayValue("本");
+    expect(Array.from(container.querySelectorAll("img")).some((img) => img.src.includes("old.png"))).toBe(
+      true
+    );
+    fireEvent.click(screen.getByTitle("全ページをレンダリング"));
+    await waitFor(() =>
+      expect(
+        screen.getByText("構成が更新されたためレンダリングを中断しました。再実行してください。")
+      ).toBeInTheDocument()
+    );
+    expect(Array.from(container.querySelectorAll("img")).some((img) => img.src.includes("old.png"))).toBe(
+      false
+    );
   });
 
   it("PageEditor保存後renderがtyped 409を返したら最新projectを採用する", async () => {
