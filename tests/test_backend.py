@@ -15,7 +15,12 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
-import backend.app.main as main_module
+import backend.app.generation_service as generation_module
+import backend.app.project_render_service as project_render_module
+import backend.app.rendering as rendering_module
+import backend.app.routers.common as router_common
+import backend.app.routers.projects as projects_router
+from backend.app import assets as assets_module
 from backend.app.config import Settings
 from backend.app.database import (
     GenerationJobRecord,
@@ -33,8 +38,10 @@ from backend.app.image_backends import (
 )
 from backend.app.jobs import GenerationJob, JobManager
 from backend.app.main import create_app
+from backend.app.mutation import EpochMismatchError, ProjectConflictError
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
+from backend.app.rendering import RenderInputChangedError
 from backend.app.schemas import (
     Dialogue,
     GenerationInfo,
@@ -43,6 +50,33 @@ from backend.app.schemas import (
     Page,
     Panel,
 )
+
+
+def update_panel_in_latest(app, project_id: str, panel_id: str, mutate):
+    return app.state.generation.update_panel_in_latest(
+        project_id,
+        panel_id,
+        mutate,
+        expected_epoch=app.state.mutation.current_epoch(project_id),
+    )
+
+
+def mark_panel_job_stopped(app, job: GenerationJob, message: str, error: bool = False) -> None:
+    app.state.generation.mark_panel_job_stopped(job, message, error=error)
+
+
+def commit_rendered_pages(
+    app, project_id: str, snapshot: MangaProject, assets: list[Path], **kwargs
+):
+    try:
+        committed = app.state.rendering.commit_rendered_pages(
+            project_id, snapshot, assets, **kwargs
+        )
+    except RenderInputChangedError as exc:
+        raise HTTPException(status_code=409, detail="描画入力競合") from exc
+    except (ProjectConflictError, EpochMismatchError) as exc:
+        raise HTTPException(status_code=409, detail="描画結果の確定中に競合しました") from exc
+    return committed.manga, committed.revision
 
 
 def make_client(
@@ -148,7 +182,7 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
 
 def test_open_export_folder_selects_cbz(tmp_path: Path, monkeypatch) -> None:
     opened: list[Path] = []
-    monkeypatch.setattr(main_module, "open_in_file_manager", lambda path: opened.append(path))
+    monkeypatch.setattr(projects_router, "open_in_file_manager", lambda path: opened.append(path))
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         client.post(f"/api/projects/{project_id}/export/cbz")
@@ -274,7 +308,7 @@ def test_generation_merge_preserves_concurrent_panel_edit(tmp_path: Path) -> Non
         assert put_manga(client, project_id, manga).status_code == 200
 
         # 生成完了が開始時点の古いスナップショットではなく最新へp01_01だけマージする。
-        main_module.update_panel_in_latest(
+        update_panel_in_latest(
             app,
             project_id,
             "p01_01",
@@ -365,7 +399,7 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
                 # 生成中にユーザーが別の既存候補を選び直した状況を再現する。
                 if not self.done:
                     self.done = True
-                    main_module.update_panel_in_latest(
+                    update_panel_in_latest(
                         app,
                         project_id_,
                         "p01_01",
@@ -377,7 +411,9 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
                 Image.new("RGB", (8, 8), (9, 9, 9)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: SelectingBackend()
+        )
 
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
@@ -419,12 +455,14 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
                         target_panel.prompt = "NEW_PROMPT"
                         target_panel.generation.prompt = "NEW_PROMPT"
 
-                    main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                    update_panel_in_latest(app, project_id_, "p01_01", change_input)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "old input result")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: EditingBackend()
+        )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 2},
@@ -479,22 +517,22 @@ def test_candidate_selection_does_not_change_generation_input_hash(tmp_path: Pat
         ],
     )
     panel = manga.pages[0].panels[0]
-    before = main_module.generation_input_hash(manga, panel, export_dir)
+    before = generation_module.generation_input_hash(manga, panel, export_dir)
     # 既存候補を採用してもseedは基準seedのまま（candidate.seedで表示する）。
-    main_module.apply_candidate_selection(panel, candidate)
+    generation_module.apply_candidate_selection(panel, candidate)
     assert panel.generation.seed == 1, "候補採用は基準seedを書き換えない"
     assert panel.selected_candidate_id == "cand-a"
     assert panel.generation.backend == "comfyui"  # backendは表示用に同期するがhash対象外
-    after = main_module.generation_input_hash(manga, panel, export_dir)
+    after = generation_module.generation_input_hash(manga, panel, export_dir)
     assert before == after, "候補採用は生成入力の変更として扱わない"
 
     # ユーザーがseedを編集すると入力変更として検出される（古い候補の混入を防ぐ）。
     panel.generation.seed = 4242
-    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+    assert generation_module.generation_input_hash(manga, panel, export_dir) != after
 
     # 実プロンプトの変更もhashへ反映される。
     panel.generation.prompt = "changed"
-    assert main_module.generation_input_hash(manga, panel, export_dir) != after
+    assert generation_module.generation_input_hash(manga, panel, export_dir) != after
 
 
 def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch) -> None:
@@ -509,7 +547,9 @@ def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch
         async def generate_panel(self, *args, **kwargs):
             await asyncio.Event().wait()  # cancelされるまで永久にブロックする
 
-    monkeypatch.setattr(main_module, "build_image_backend", lambda settings: BlockingBackend())
+    monkeypatch.setattr(
+        generation_module, "build_image_backend", lambda settings: BlockingBackend()
+    )
 
     db_path = tmp_path / "test.db"
     with make_client(tmp_path) as client:
@@ -582,14 +622,16 @@ def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeyp
                         candidate = next(
                             item for item in target_panel.image_candidates if item.id == other["id"]
                         )
-                        main_module.apply_candidate_selection(target_panel, candidate)
+                        generation_module.apply_candidate_selection(target_panel, candidate)
 
-                    main_module.update_panel_in_latest(app, project_id_, "p01_01", reselect)
+                    update_panel_in_latest(app, project_id_, "p01_01", reselect)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (1, 2, 3)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: SelectingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: SelectingBackend()
+        )
         second = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 2},
@@ -629,9 +671,9 @@ def test_stop_comfyui_removes_queued_without_global_interrupt(monkeypatch) -> No
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
+        generation_module.httpx, "Client", lambda *a, **k: _queue_client([], ["pid"], posted)
     )
-    assert main_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "queued_removed"
     assert any(url.endswith("/queue") and json == {"delete": ["pid"]} for url, json in posted)
     assert not any(url.endswith("/interrupt") for url, _ in posted)
 
@@ -640,9 +682,9 @@ def test_stop_comfyui_interrupts_only_when_running(monkeypatch) -> None:
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
+        generation_module.httpx, "Client", lambda *a, **k: _queue_client(["pid"], [], posted)
     )
-    assert main_module.stop_comfyui_generation(settings, "pid") == "interrupted"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "interrupted"
     assert any(url.endswith("/interrupt") for url, _ in posted)
 
 
@@ -650,10 +692,12 @@ def test_stop_comfyui_skips_unrelated_generation(monkeypatch) -> None:
     settings = Settings(image_backend="comfyui")
     posted: list[tuple[str, dict | None]] = []
     monkeypatch.setattr(
-        main_module.httpx, "Client", lambda *a, **k: _queue_client(["other"], ["another"], posted)
+        generation_module.httpx,
+        "Client",
+        lambda *a, **k: _queue_client(["other"], ["another"], posted),
     )
     # 対象prompt_idがキューに無ければグローバルinterruptもqueue削除もしない。
-    assert main_module.stop_comfyui_generation(settings, "pid") == "not_requested"
+    assert generation_module.stop_comfyui_generation(settings, "pid") == "not_requested"
     assert posted == []
 
 
@@ -978,7 +1022,7 @@ def test_cancel_before_task_start_releases_panel_and_allows_regeneration(
         revision_after_cancel = detail["revision"]
         cancelled_job = manager.get(created.json()["id"])
         assert cancelled_job is not None
-        main_module.mark_panel_job_stopped(client.app, cancelled_job, "生成をキャンセルしました")
+        mark_panel_job_stopped(client.app, cancelled_job, "生成をキャンセルしました")
         assert client.get(f"/api/projects/{project_id}").json()["revision"] == revision_after_cancel
 
         retried = client.post(
@@ -997,7 +1041,7 @@ def test_delayed_old_job_stop_does_not_overwrite_new_job_panel(tmp_path: Path) -
         old_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧ジョブ")[0]
         manager.register_in_memory(old_job)
         assert manager.cancel(old_job)
-        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+        mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
 
         new_job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "新ジョブ")[0]
         manager.register_in_memory(new_job)
@@ -1007,7 +1051,7 @@ def test_delayed_old_job_stop_does_not_overwrite_new_job_panel(tmp_path: Path) -
         assert panel_before["generation"]["active_job_id"] == new_job.id
 
         # 旧TaskのCancelledError処理が後着しても、新jobの所有状態は変更しない。
-        main_module.mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
+        mark_panel_job_stopped(app, old_job, "生成をキャンセルしました")
         after = client.get(f"/api/projects/{project_id}").json()
         panel_after = after["manga_json"]["pages"][0]["panels"][0]
         assert after["revision"] == before["revision"]
@@ -1031,7 +1075,7 @@ def test_cancelled_job_stays_cancelled_when_backend_raises_late(
                     raise RuntimeError("キャンセル後の遅延例外") from exc
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: LateFailingBackend()
+            generation_module, "build_image_backend", lambda settings: LateFailingBackend()
         )
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
@@ -1131,9 +1175,9 @@ def test_failed_staged_render_does_not_replace_canonical_page(tmp_path: Path, mo
         (output_dir / "page_001.png").write_bytes(b"incomplete-page")
         raise RuntimeError("描画失敗")
 
-    monkeypatch.setattr(main_module, "render_project_page", fail_after_staging)
+    monkeypatch.setattr(rendering_module, "render_project_page", fail_after_staging)
     with pytest.raises(RuntimeError, match="描画失敗"):
-        main_module.render_snapshot_page(
+        rendering_module.render_snapshot_page(
             "project", MangaProject(title="test"), 1, export_dir, revision=3
         )
     assert canonical.read_bytes() == b"old-page"
@@ -1144,10 +1188,10 @@ def test_page_render_conflict_cleans_its_unreferenced_png(tmp_path: Path, monkey
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         monkeypatch.setattr(
-            main_module,
+            rendering_module.RenderingService,
             "commit_rendered_pages",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                HTTPException(status_code=409, detail="描画競合")
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(
+                rendering_module.RenderInputChangedError()
             ),
         )
         response = client.post(f"/api/projects/{project_id}/pages/1/render")
@@ -1162,7 +1206,7 @@ def test_render_cleanup_preserves_asset_referenced_by_revision(tmp_path: Path) -
         detail = client.get(f"/api/projects/{project_id}").json()
         snapshot = MangaProject.model_validate(detail["manga_json"])
         ownership: dict[Path, bool] = {}
-        asset, _warnings = main_module.render_snapshot_page(
+        asset, _warnings = rendering_module.render_snapshot_page(
             project_id,
             snapshot,
             1,
@@ -1171,8 +1215,10 @@ def test_render_cleanup_preserves_asset_referenced_by_revision(tmp_path: Path) -
             ownership=ownership,
         )
         snapshot.pages[0].render_status = "done"
-        snapshot.pages[0].render_hash = main_module.page_render_hash(snapshot, snapshot.pages[0])
-        snapshot.pages[0].render_asset = main_module.asset_to_id(
+        snapshot.pages[0].render_hash = rendering_module.page_render_hash(
+            snapshot, snapshot.pages[0]
+        )
+        snapshot.pages[0].render_asset = rendering_module.asset_to_id(
             asset, app.state.settings.export_dir
         )
         with app.state.SessionLocal() as session:
@@ -1186,7 +1232,7 @@ def test_render_cleanup_preserves_asset_referenced_by_revision(tmp_path: Path) -
                 )
             )
             session.commit()
-        main_module.cleanup_published_assets(app, project_id, ownership)
+        app.state.rendering.cleanup_published_assets(project_id, ownership)
         assert asset.is_file()
 
 
@@ -1194,7 +1240,7 @@ def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> Non
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         monkeypatch.setattr(
-            main_module,
+            rendering_module,
             "render_project_page",
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("描画失敗")),
         )
@@ -1211,7 +1257,7 @@ def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
         app = client.app
         detail_a = client.get(f"/api/projects/{project_id}").json()
         snapshot_a = MangaProject.model_validate(detail_a["manga_json"])
-        asset_a, _ = main_module.render_snapshot_page(
+        asset_a, _ = rendering_module.render_snapshot_page(
             project_id, snapshot_a, 1, app.state.settings.export_dir, detail_a["revision"]
         )
 
@@ -1219,17 +1265,17 @@ def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
         changed["pages"][0]["panels"][0]["bbox"][0] += 0.001
         saved = put_manga(client, project_id, changed).json()
         snapshot_b = MangaProject.model_validate(saved["manga_json"])
-        asset_b, _ = main_module.render_snapshot_page(
+        asset_b, _ = rendering_module.render_snapshot_page(
             project_id, snapshot_b, 1, app.state.settings.export_dir, saved["revision"]
         )
-        manga_b, _revision = main_module.commit_rendered_pages(
+        manga_b, _revision = commit_rendered_pages(
             app,
             project_id,
             snapshot_b.model_copy(update={"pages": [snapshot_b.pages[0]]}),
             [asset_b],
         )
         with pytest.raises(HTTPException) as conflict:
-            main_module.commit_rendered_pages(
+            commit_rendered_pages(
                 app,
                 project_id,
                 snapshot_a.model_copy(update={"pages": [snapshot_a.pages[0]]}),
@@ -1267,14 +1313,14 @@ def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
 
         red = upload("red").json()
         old_snapshot = MangaProject.model_validate(red["manga_json"])
-        old_asset, _ = main_module.render_snapshot_page(
+        old_asset, _ = rendering_module.render_snapshot_page(
             project_id, old_snapshot, 1, app.state.settings.export_dir, red["revision"]
         )
         green = upload("green").json()
         assert red["asset"] != green["asset"]
 
         with pytest.raises(HTTPException) as conflict:
-            main_module.commit_rendered_pages(
+            commit_rendered_pages(
                 app,
                 project_id,
                 old_snapshot.model_copy(update={"pages": [old_snapshot.pages[0]]}),
@@ -1297,7 +1343,7 @@ def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
         project_dir = tmp_path / "exports" / project_id
         pngs_before = set(project_dir.rglob("*.png")) if project_dir.exists() else set()
         monkeypatch.setattr(
-            main_module,
+            project_render_module,
             "export_confirmed_cbz",
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CBZ失敗")),
         )
@@ -1314,10 +1360,10 @@ def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeyp
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         monkeypatch.setattr(
-            main_module,
+            rendering_module.RenderingService,
             "commit_rendered_pages",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                HTTPException(status_code=409, detail="描画入力競合")
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(
+                rendering_module.RenderInputChangedError()
             ),
         )
         response = client.post(f"/api/projects/{project_id}/export/cbz")
@@ -1329,16 +1375,16 @@ def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkey
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         app = client.app
-        original_export = main_module.export_confirmed_cbz
+        original_export = project_render_module.export_confirmed_cbz
 
         def update_then_export(*args, **kwargs):
             def break_reading_order(manga: MangaProject) -> None:
                 manga.pages[0].reading_order = ["missing-panel"]
 
-            app.state.mutation.mutate(project_id, break_reading_order)
+            app.state.mutation.mutate_local(project_id, break_reading_order)
             return original_export(*args, **kwargs)
 
-        monkeypatch.setattr(main_module, "export_confirmed_cbz", update_then_export)
+        monkeypatch.setattr(project_render_module, "export_confirmed_cbz", update_then_export)
         response = client.post(f"/api/projects/{project_id}/export/cbz")
         assert response.status_code == 409
         latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
@@ -1350,14 +1396,14 @@ def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, mon
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         barrier = threading.Barrier(2)
-        original_export = main_module.export_confirmed_cbz
+        original_export = project_render_module.export_confirmed_cbz
 
         def synchronized_export(*args, **kwargs):
             path = original_export(*args, **kwargs)
             barrier.wait(timeout=10)
             return path
 
-        monkeypatch.setattr(main_module, "export_confirmed_cbz", synchronized_export)
+        monkeypatch.setattr(project_render_module, "export_confirmed_cbz", synchronized_export)
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = list(
                 executor.map(
@@ -1408,13 +1454,13 @@ def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
 
     # 期待revision不一致は409相当(ProjectConflictError)。
     with pytest.raises(ProjectConflictError):
-        service.mutate("p", lambda manga: None, expected_revision=99)
+        service.mutate_user("p", expected_revision=99, mutate=lambda manga: None)
 
     # 正しい期待revisionなら適用し、revisionを進める。
-    _result, _manga, revision = service.mutate(
-        "p", lambda manga: setattr(manga, "premise", "x"), expected_revision=0
+    mutation_result = service.mutate_user(
+        "p", expected_revision=0, mutate=lambda manga: setattr(manga, "premise", "x")
     )
-    assert revision == 1
+    assert mutation_result.project.revision == 1
 
 
 def test_mutation_service_epoch_mismatch(tmp_path: Path) -> None:
@@ -1436,7 +1482,7 @@ def test_mutation_service_epoch_mismatch(tmp_path: Path) -> None:
     service = ProjectMutationService(session_factory, tmp_path / "exports")
     # 世代不一致(構成全置換後の古いジョブ相当)はEpochMismatchError。
     with pytest.raises(EpochMismatchError):
-        service.mutate("p", lambda manga: None, expected_epoch=5)
+        service.mutate_worker("p", expected_epoch=5, mutate=lambda manga: None)
 
 
 def test_structural_replace_saves_history_and_epoch_atomically(tmp_path: Path) -> None:
@@ -1468,20 +1514,260 @@ def test_structural_replace_saves_history_and_epoch_atomically(tmp_path: Path) -
     with session_factory() as session:
         assert session.query(ProjectRevisionRecord).count() == 0
 
-    replacement, revision = service.replace_with_history(
+    mutation_result = service.replace_with_history(
         "p",
         lambda _session, manga: manga.model_copy(update={"title": "変更後", "premise": "新構成"}),
         expected_revision=0,
         history_label="変更前",
     )
+    replacement = mutation_result.project.manga
     assert replacement.title == "変更後"
-    assert revision == 1
+    assert mutation_result.project.revision == 1
     with session_factory() as session:
         project = session.get(ProjectRecord, "p")
         history = session.query(ProjectRevisionRecord).one()
         assert project.revision == 1
         assert project.generation_epoch == 1
         assert MangaProject.model_validate_json(history.manga_json).premise == "旧構成"
+
+
+def test_mutate_user_conflict_does_not_retry_and_returns_snapshot(tmp_path: Path) -> None:
+    from sqlalchemy.orm import Session
+
+    from backend.app.mutation import ProjectConflictError, ProjectMutationService
+    from backend.app.repository import ProjectRepository
+
+    class FailingCasRepository(ProjectRepository):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def cas_set_manga(
+            self,
+            session: Session,
+            project_id: str,
+            base_revision: int,
+            manga: MangaProject,
+            **kwargs,
+        ) -> int:
+            self.calls += 1
+            return 0
+
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'user-no-retry.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title="t",
+                work_name="",
+                manga_json=MangaProject(title="t").model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+
+    repository = FailingCasRepository()
+    service = ProjectMutationService(session_factory, tmp_path / "exports", repository)
+    with pytest.raises(ProjectConflictError):
+        service.mutate_user(
+            "p", expected_revision=0, mutate=lambda manga: setattr(manga, "premise", "x")
+        )
+    assert repository.calls == 1
+
+    normal = ProjectMutationService(session_factory, tmp_path / "exports")
+    result = normal.mutate_user(
+        "p", expected_revision=0, mutate=lambda manga: setattr(manga, "premise", "ok")
+    )
+    assert result.project.project_id == "p"
+    assert result.project.revision == 1
+    assert result.project.generation_epoch == 0
+    assert result.project.manga.premise == "ok"
+
+
+def test_worker_panel_mutation_cannot_change_other_panel(tmp_path: Path) -> None:
+    from backend.app.mutation import (
+        ProjectMutationService,
+        WorkerScopeViolationError,
+        mark_page_dirty,
+    )
+
+    manga = MangaProject(
+        title="scope",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="two",
+                reading_order=["p1", "p2"],
+                panels=[
+                    Panel(panel_id="p1", bbox=(0.0, 0.0, 0.5, 1.0), shot="a"),
+                    Panel(panel_id="p2", bbox=(0.5, 0.0, 0.5, 1.0), shot="b"),
+                ],
+            )
+        ],
+    )
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'worker-scope.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=manga.title,
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    def break_scope(_manga: MangaProject, _panel: Panel, page: Page) -> None:
+        page.panels[1].prompt = "対象外変更"
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=break_scope)
+
+    # ページ構造・overlay等への変更も拒否する。
+    def break_page_scope(_manga: MangaProject, _panel: Panel, page: Page) -> None:
+        page.theme = "別テーマ"
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=break_page_scope)
+
+    # 対象panel自身とページのrender状態(render_status系)の変更は許可する。
+    def in_scope(_manga: MangaProject, panel: Panel, page: Page) -> str:
+        panel.prompt = "対象内変更"
+        mark_page_dirty(page)
+        return "ok"
+
+    result = service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=in_scope)
+    assert result.result == "ok"
+
+
+def test_worker_panel_mutation_cannot_touch_other_pages(tmp_path: Path) -> None:
+    """対象panelの所属ページ以外（別ページのrender状態偽装・panel移動）も拒否する。"""
+    from backend.app.mutation import (
+        ProjectMutationService,
+        WorkerScopeViolationError,
+        mark_page_dirty,
+    )
+
+    manga = MangaProject(
+        title="scope",
+        pages=[
+            Page(
+                page=1,
+                theme="t1",
+                layout_template="single",
+                reading_order=["p1"],
+                panels=[Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="a")],
+            ),
+            Page(
+                page=2,
+                theme="t2",
+                layout_template="single",
+                reading_order=["p2"],
+                panels=[Panel(panel_id="p2", bbox=(0.0, 0.0, 1.0, 1.0), shot="b")],
+            ),
+        ],
+    )
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'worker-scope2.db'}")
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=manga.title,
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    service = ProjectMutationService(session_factory, tmp_path / "exports")
+
+    # 別ページのrender状態をdoneへ偽装する変更は拒否する。
+    def forge_other_page_done(manga: MangaProject, _panel: Panel, _page: Page) -> None:
+        manga.pages[1].render_status = "done"
+        manga.pages[1].render_asset = "assets/forged.png"
+        manga.pages[1].render_hash = "deadbeef"
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel(
+            "p", panel_id="p1", expected_epoch=0, mutate=forge_other_page_done
+        )
+
+    # 対象panelを別ページへ移動する変更も拒否する。
+    def move_target_panel(_manga: MangaProject, panel: Panel, page: Page) -> None:
+        page.panels.remove(panel)
+        _manga.pages[1].panels.append(panel)
+
+    with pytest.raises(WorkerScopeViolationError):
+        service.mutate_worker_panel("p", panel_id="p1", expected_epoch=0, mutate=move_target_panel)
+
+    # 所属ページ(page=1)自身のrender状態変更は許可する。
+    def dirty_owner_page(_manga: MangaProject, _panel: Panel, page: Page) -> str:
+        mark_page_dirty(page)
+        return "ok"
+
+    result = service.mutate_worker_panel(
+        "p", panel_id="p1", expected_epoch=0, mutate=dirty_owner_page
+    )
+    assert result.result == "ok"
+
+
+def test_generation_service_runs_without_fastapi_app(tmp_path: Path) -> None:
+    from backend.app.generation_service import GenerationRuntime, GenerationService
+    from backend.app.mutation import ProjectMutationService
+    from backend.app.rendering import RenderingService
+    from backend.app.repository import ProjectRepository
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'generation-runtime.db'}",
+        export_dir=tmp_path / "exports",
+        image_backend="stub",
+    )
+    session_factory = create_session_factory(settings.database_url)
+    manga = MangaProject(
+        title="runtime",
+        pages=[
+            Page(
+                page=1,
+                theme="t",
+                layout_template="one",
+                reading_order=["p1"],
+                panels=[Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="a")],
+            )
+        ],
+    )
+    with session_factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p",
+                title=manga.title,
+                work_name="",
+                manga_json=manga.model_dump_json(),
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    repository = ProjectRepository()
+    mutation = ProjectMutationService(session_factory, settings.export_dir, repository)
+    jobs = JobManager(session_factory)
+    rendering = RenderingService(session_factory, settings.export_dir, mutation, repository)
+    service = GenerationService(
+        session_factory,
+        settings.export_dir,
+        GenerationRuntime(settings, jobs, mutation, rendering, repository),
+    )
+
+    job = service.enqueue("p", ["p1"], 1, "登録")[0]
+    jobs.register_in_memory(job)
+    service.mark_panel_job_stopped(job, "停止")
+    with session_factory() as session:
+        latest = MangaProject.model_validate_json(session.get(ProjectRecord, "p").manga_json)
+    assert latest.pages[0].panels[0].generation.status == "skipped"
 
 
 def test_generation_service_rejects_duplicate_active_panel(tmp_path: Path) -> None:
@@ -1617,7 +1903,7 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "旧構成ジョブ")[0]
         app.state.job_manager.register_in_memory(job)
         app.state.job_manager.update(job, status="running", prompt_id="old-prompt")
-        main_module.update_panel_in_latest(
+        update_panel_in_latest(
             app,
             project_id,
             "p01_01",
@@ -1625,7 +1911,7 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         )
         stopped: list[str | None] = []
         monkeypatch.setattr(
-            main_module,
+            generation_module,
             "stop_comfyui_generation",
             lambda settings, prompt_id: stopped.append(prompt_id) or "interrupted",
         )
@@ -1715,7 +2001,7 @@ def test_structure_change_clears_stale_active_job_id_on_done_panel(tmp_path: Pat
             panel.generation.active_job_id = "ghost-job"
             panel.generation.prompt_id = "ghost-prompt"
 
-        main_module.update_panel_in_latest(app, project_id, "p01_01", set_done_with_stale_owner)
+        update_panel_in_latest(app, project_id, "p01_01", set_done_with_stale_owner)
 
         detail = client.get(f"/api/projects/{project_id}").json()
         manga = detail["manga_json"]
@@ -1787,7 +2073,7 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
                 return ImageResult("stub", "done", target_path, "ok")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+            generation_module, "build_image_backend", lambda settings: EpochBumpingBackend()
         )
 
         response = client.post(
@@ -1840,7 +2126,7 @@ def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) ->
                 return ImageResult("stub", "done", target_path, "ok")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: EpochBumpingBackend()
+            generation_module, "build_image_backend", lambda settings: EpochBumpingBackend()
         )
 
         # 開始時epochで固定された/renderは、途中で世代が変わると409で止まる。
@@ -1883,7 +2169,7 @@ def test_completed_job_not_reverted_by_stale_job_stop(tmp_path: Path) -> None:
         stale_job = GenerationJob(
             project_id=project_id, panel_id="p01_01", candidate_count=1, epoch=epoch
         )
-        main_module.mark_panel_job_stopped(app, stale_job, "生成をキャンセルしました")
+        mark_panel_job_stopped(app, stale_job, "生成をキャンセルしました")
 
         after = next(
             p
@@ -1981,12 +2267,14 @@ def test_long_prompt_does_not_break_stale_candidate_cleanup(tmp_path: Path, monk
                         target_panel.prompt = "DIFFERENT"
                         target_panel.generation.prompt = "DIFFERENT"
 
-                    main_module.update_panel_in_latest(app, project_id_, "p01_01", change_input)
+                    update_panel_in_latest(app, project_id_, "p01_01", change_input)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 Image.new("RGB", (8, 8), (4, 5, 6)).save(target_path)
                 return ImageResult("stub", "done", target_path, "ok")
 
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: EditingBackend())
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: EditingBackend()
+        )
         # 長promptでも、入力不一致の破棄が502ではなく本来の409で完結する。
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
@@ -2021,7 +2309,7 @@ def test_relative_export_dir_cleanup_keeps_referenced_asset(tmp_path: Path, monk
         assert put_manga(client, project_id, manga).status_code == 200
 
         # ownershipへ相対パスで参照中assetを入れてcleanupしても、参照中なので削除されない。
-        main_module.cleanup_published_assets(app, project_id, {Path("exports") / keep_rel: True})
+        app.state.rendering.cleanup_published_assets(project_id, {Path("exports") / keep_rel: True})
         assert keep_path.is_file()
 
 
@@ -2061,7 +2349,9 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
                 return ImageResult("stub", "done", target_path, "ok")
 
         shared_backend = CancelledThenReturnBackend()
-        monkeypatch.setattr(main_module, "build_image_backend", lambda settings: shared_backend)
+        monkeypatch.setattr(
+            generation_module, "build_image_backend", lambda settings: shared_backend
+        )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
             json={"candidate_count": 1},
@@ -2107,7 +2397,7 @@ def test_backend_exception_after_png_write_cleans_up_orphan(tmp_path: Path, monk
                 raise RuntimeError("backend爆発")
 
         monkeypatch.setattr(
-            main_module, "build_image_backend", lambda settings: WriteThenFailBackend()
+            generation_module, "build_image_backend", lambda settings: WriteThenFailBackend()
         )
         response = client.post(
             f"/api/projects/{project_id}/panels/p01_01/generate-image",
@@ -2382,8 +2672,6 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
     """同じ参照先への並行アップロードで一時ファイルが衝突せず、両方成功することを確認する。"""
     import threading
 
-    from backend.app import main as main_module
-
     target = tmp_path / "refs" / "char_a.png"
 
     def make_png(color: str) -> bytes:
@@ -2415,7 +2703,7 @@ def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) ->
 
     def worker(content: bytes) -> None:
         try:
-            asyncio.run(main_module.save_request_image(FakeRequest(content), target))
+            asyncio.run(router_common.save_request_image(FakeRequest(content), target))
         except Exception as exc:  # noqa: BLE001 - テストで全例外を収集する
             errors.append(exc)
 
@@ -2450,7 +2738,7 @@ def test_reference_upload_conflict_keeps_content_addressed_asset(
         stale_revision = current_revision(client, project_id)
 
         captured: dict[str, Path] = {}
-        original = main_module.save_content_addressed_request_image
+        original = router_common.save_content_addressed_request_image
 
         async def inject_conflict(request, asset_dir, asset_kind, *, preserve_alpha=False):
             target, created = await original(
@@ -2462,10 +2750,12 @@ def test_reference_upload_conflict_keeps_content_addressed_asset(
             def bump(manga: MangaProject) -> None:
                 manga.premise = (manga.premise or "") + "x"
 
-            app.state.mutation.mutate(project_id, bump)
+            app.state.mutation.mutate_local(project_id, bump)
             return target, created
 
-        monkeypatch.setattr(main_module, "save_content_addressed_request_image", inject_conflict)
+        monkeypatch.setattr(
+            projects_router, "save_content_addressed_request_image", inject_conflict
+        )
 
         buffer = io.BytesIO()
         Image.new("RGB", (12, 12), "red").save(buffer, format="PNG")
@@ -2481,7 +2771,7 @@ def test_reference_upload_conflict_keeps_content_addressed_asset(
         assert captured["target"].exists()
         # 失敗リクエスト自身のJSONはassetを参照しないこと。
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
-        asset_id = main_module.path_to_asset_id(captured["target"], app.state.settings.export_dir)
+        asset_id = assets_module.path_to_asset_id(captured["target"], app.state.settings.export_dir)
         assert manga["characters"][0]["reference_image_asset"] != asset_id
         # 一時ファイルも残らないこと。
         assert list((tmp_path / "exports").rglob("*.tmp")) == []
@@ -2507,7 +2797,7 @@ def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, mon
         async def body(self) -> bytes:
             return self._content
 
-    original_save = main_module.save_request_image
+    original_save = router_common.save_request_image
     barrier = threading.Barrier(2)
 
     async def synced_save(request, target, preserve_alpha=False):
@@ -2515,14 +2805,14 @@ def test_same_content_concurrent_publish_exactly_one_created(tmp_path: Path, mon
         # 両スレッドがtemp書き込みを終え、publish直前で揃える。
         barrier.wait(timeout=5)
 
-    monkeypatch.setattr(main_module, "save_request_image", synced_save)
+    monkeypatch.setattr(router_common, "save_request_image", synced_save)
 
     results: list[tuple[Path, bool]] = []
     lock = threading.Lock()
 
     def worker() -> None:
         target, created = asyncio.run(
-            main_module.save_content_addressed_request_image(
+            router_common.save_content_addressed_request_image(
                 FakeRequest(png), asset_dir, "character"
             )
         )

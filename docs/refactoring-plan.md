@@ -2,25 +2,22 @@
 
 レビューで指摘された長期保守性の改善は、機能の正しさに直結する不具合修正
 （楽観ロック契約の統一・キャンセル回帰・候補/ページ整合）を優先して対応済み。
-ここでは、まだ着手していない構造的リファクタリングの方針と順序を記録する。
+ここでは、構造的リファクタリングの進捗と残作業を記録する。
 いずれもリグレッションリスクが大きいため、段階的に進める。
 
-## 1. バックエンドの責務分割（最優先）
+## 1. バックエンドの責務分割（PR1完了）
 
-現在 `backend/app/main.py` がルーティング・HTTPエラー変換・JSON永続化・CAS・
-画像アップロード検証・生成ジョブ調停・ComfyUI停止・レンダリング・知識DB操作までを
-抱えている。今回の「更新APIごとのrevision漏れ」もこの集中構造が一因。
+`backend/app/main.py` に集中していたルーティング・永続化・生成・描画・asset処理を
+責務別moduleへ分離した。`main.py` はlifespan、依存構築、middleware、Router登録だけを
+担当する。
 
 抽出順序（依存の少ない順）:
 
-1. `ProjectRepository` — `ProjectRecord` の取得と CAS 更新（`UPDATE ... WHERE id AND revision`）。
-   現状の `save_manga_json()` / `update_panel_in_latest()` の DB アクセスをここへ集約する。
-2. `ProjectMutationService` — revision採番・JSON parse/save・ページ dirty 化・
-   `invalidate_changed_pages()` / `page_render_signature()` を持つ。全更新APIはこの
-   サービス経由にし、応答へ revision を含める契約を一箇所で保証する。
-3. `GenerationService` — ジョブ作成・候補保存・選択状態（開始時選択の保護）・
-   キャンセル（`JobManager.cancel()` を唯一の状態遷移窓口とする）・ComfyUI停止。
-4. `routers/*` — HTTP入出力だけを担当（Pydanticモデル↔サービス呼び出し）。
+1. `ProjectRepository` — `ProjectRecord` の取得、一覧、CAS更新、revision履歴、epoch終端化。
+2. `ProjectMutationService` — revision採番、JSON parse/save、構造置換、ページdirty化。
+3. `GenerationService` — ジョブ登録・実行、候補保存、キャンセル、ComfyUI停止。
+4. `RenderingService` / `asset_storage` — 描画確定、不変asset公開、競合cleanup、画像検証。
+5. `routers/*` — system、projects、generation、knowledge、storyのHTTP入出力。
 
 ねらい: 「全文保存はCAS / 個別操作はread-modify-write / 応答revisionの有無が経路依存」
 という三種類混在を、サービス層の単一契約へ寄せる。理想形は次の共通応答:

@@ -65,7 +65,6 @@ sqlite_cache = false
 module = [
     "backend.app.generator",
     "backend.app.llm",
-    "backend.app.main",
     "backend.app.story",
 ]
 ignore_errors = true
