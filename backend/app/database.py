@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, create_engine, event, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -133,24 +136,57 @@ def ensure_fts(engine) -> None:
         FTS5_AVAILABLE = False
 
 
-def ensure_columns(engine) -> None:
-    """create_allでは追加されない後付けカラムを既存SQLite DBへ補う。
+class SchemaMigrationError(RuntimeError):
+    """起動を止める必要があるSQLite schema migrationエラー。"""
 
-    注意: SQLiteは`ALTER TABLE`で既存テーブルへ外部キー制約を追加できない。
+
+@dataclass(frozen=True)
+class SchemaMigration:
+    version: int
+    name: str
+    upgrade: Callable[[Connection], None]
+
+
+def _table_columns(connection: Connection, table_name: str) -> set[str]:
+    rows = connection.execute(text(f"PRAGMA table_info({table_name})")).all()
+    return {str(row[1]) for row in rows}
+
+
+def _table_exists(connection: Connection, table_name: str) -> bool:
+    row = connection.execute(
+        text(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type IN ('table', 'virtual table') AND name = :name
+            LIMIT 1
+            """
+        ),
+        {"name": table_name},
+    ).first()
+    return row is not None
+
+
+def _migration_001_baseline_schema(connection: Connection) -> None:
+    """現行schemaのbaseline。
+
+    SQLiteは`ALTER TABLE`で既存テーブルへ外部キー制約を追加できない。
     モデルに定義したForeignKey/ON DELETE CASCADEは`create_all`で新規作成される
     テーブルにのみ適用され、既存DBには導入されない。既存DBへFK・cascadeを入れる
-    場合はテーブル再作成マイグレーションが別途必要（現状プロジェクト削除APIが
-    無いため即時の不整合は生じない）。
+    場合はテーブル再作成マイグレーションが別途必要。
+
+    runnerは将来のcreate-copy-drop-rename方式を許容するが、このbaselineでは既存
+    テーブルのFK再構築は行わない。
     """
-    with engine.begin() as connection:
-        rows = connection.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
-        columns = {row[1] for row in rows}
-        if "meta" not in columns:
+    if _table_exists(connection, "knowledge_chunks"):
+        knowledge_columns = _table_columns(connection, "knowledge_chunks")
+        if "meta" not in knowledge_columns:
             connection.execute(
                 text("ALTER TABLE knowledge_chunks ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
             )
-        project_rows = connection.execute(text("PRAGMA table_info(projects)")).all()
-        project_columns = {row[1] for row in project_rows}
+
+    if _table_exists(connection, "projects"):
+        project_columns = _table_columns(connection, "projects")
         if "revision" not in project_columns:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
@@ -159,8 +195,9 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN generation_epoch INTEGER NOT NULL DEFAULT 0")
             )
-        job_rows = connection.execute(text("PRAGMA table_info(generation_jobs)")).all()
-        job_columns = {row[1] for row in job_rows}
+
+    if _table_exists(connection, "generation_jobs"):
+        job_columns = _table_columns(connection, "generation_jobs")
         if "prompt_id" not in job_columns:
             connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN prompt_id TEXT"))
         if "epoch" not in job_columns:
@@ -171,15 +208,18 @@ def ensure_columns(engine) -> None:
             connection.execute(
                 text("ALTER TABLE generation_jobs ADD COLUMN generation_input_hash TEXT")
             )
-        # 旧DBにactive重複があれば一意制約導入前に片方だけ残して終端化する。
+        # 旧DBにactive重複があれば、一意index導入前に片方だけ残して終端化する。
         connection.execute(
             text(
                 """
                 UPDATE generation_jobs
-                SET status = 'error', message = '重複ジョブをDB移行時に停止しました'
+                SET status = 'error',
+                    message = '重複ジョブをDB移行時に停止しました',
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE status IN ('queued', 'running')
                   AND id NOT IN (
-                    SELECT MIN(id) FROM generation_jobs
+                    SELECT MIN(id)
+                    FROM generation_jobs
                     WHERE status IN ('queued', 'running')
                     GROUP BY project_id, panel_id
                   )
@@ -195,6 +235,97 @@ def ensure_columns(engine) -> None:
                 """
             )
         )
+
+
+MIGRATIONS: tuple[SchemaMigration, ...] = (
+    SchemaMigration(1, "baseline_schema", _migration_001_baseline_schema),
+)
+
+
+def _create_schema_migrations_table(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+    )
+
+
+def run_schema_migrations(engine) -> None:
+    """未適用のSQLite schema migrationをversion順に実行する。
+
+    新規DBとschema_migrationsを持たない既存DBのどちらも、同じrunnerでbaseline
+    migrationを通して最新化する。各migrationは成功した場合にのみ適用記録を追加する。
+    """
+    known_versions = [migration.version for migration in MIGRATIONS]
+    if known_versions != list(range(1, len(known_versions) + 1)):
+        raise SchemaMigrationError("schema migration定義に欠番があります。起動を停止します。")
+    migrations_by_version = {migration.version: migration for migration in MIGRATIONS}
+    latest_known = known_versions[-1] if known_versions else 0
+
+    with engine.begin() as connection:
+        _create_schema_migrations_table(connection)
+        rows = connection.execute(
+            text("SELECT version, name, applied_at FROM schema_migrations ORDER BY version")
+        ).all()
+
+    applied_versions = [int(row[0]) for row in rows]
+    if len(applied_versions) != len(set(applied_versions)):
+        raise SchemaMigrationError("schema_migrationsに重複versionがあります。起動を停止します。")
+    if applied_versions:
+        unknown_versions = [version for version in applied_versions if version > latest_known]
+        if unknown_versions:
+            raise SchemaMigrationError(
+                "このアプリより新しいDB schema versionが適用済みです。"
+                f"version={unknown_versions[0]} のため起動を停止します。"
+            )
+        expected_applied = list(range(1, max(applied_versions) + 1))
+        if applied_versions != expected_applied:
+            raise SchemaMigrationError("schema_migrationsに欠番があります。起動を停止します。")
+        unknown_names = [
+            (version, name)
+            for version, name, _applied_at in rows
+            if migrations_by_version[int(version)].name != name
+        ]
+        if unknown_names:
+            version, name = unknown_names[0]
+            raise SchemaMigrationError(
+                "schema_migrationsに未知のmigration名があります。"
+                f"version={version}, name={name} のため起動を停止します。"
+            )
+
+    pending = [
+        migration for migration in MIGRATIONS if migration.version not in set(applied_versions)
+    ]
+    for migration in pending:
+        try:
+            with engine.begin() as connection:
+                migration.upgrade(connection)
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO schema_migrations (version, name, applied_at)
+                        VALUES (:version, :name, :applied_at)
+                        """
+                    ),
+                    {
+                        "version": migration.version,
+                        "name": migration.name,
+                        "applied_at": now_utc().isoformat(),
+                    },
+                )
+        except Exception as exc:
+            if isinstance(exc, SchemaMigrationError):
+                raise
+            raise SchemaMigrationError(
+                f"schema migration {migration.version} ({migration.name}) に失敗しました。"
+                "起動を停止します。"
+            ) from exc
 
 
 def create_session_factory(database_url: str) -> sessionmaker:
@@ -214,6 +345,6 @@ def create_session_factory(database_url: str) -> sessionmaker:
 
     Base.metadata.create_all(engine)
     if database_url.startswith("sqlite"):
-        ensure_columns(engine)
+        run_schema_migrations(engine)
     ensure_fts(engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)

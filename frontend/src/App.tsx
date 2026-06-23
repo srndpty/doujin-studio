@@ -460,7 +460,8 @@ export function App() {
   async function saveProjectTitle() {
     if (!selected) return;
     await runTask(async () => {
-      await saveJsonDraft("タイトルとManga JSONを保存しました");
+      const saved = await saveJsonDraft("タイトルとManga JSONを保存しました");
+      if (!saved) return;
       await refreshProjects();
     });
   }
@@ -524,8 +525,12 @@ export function App() {
   // 巻き戻せてしまうため、必ずmanga_jsonごと取り込む。反映後の最新projectを返す。
   async function reloadSelectedProject(projectId: string): Promise<Project | null> {
     const latest = await api.get<Project>(`/api/projects/${projectId}`);
-    if (!applyProjectDetail(latest)) return selectedRef.current;
-    return selectedRef.current;
+    if (selectedProjectIdRef.current !== projectId) return null;
+    if (!applyProjectDetail(latest)) {
+      const current = selectedRef.current;
+      return current?.id === projectId ? current : null;
+    }
+    return selectedRef.current?.id === projectId ? selectedRef.current : null;
   }
 
   // ProjectMutationResponse を反映し、latest_revisionが応答snapshotより新しければ最新へ
@@ -534,28 +539,28 @@ export function App() {
   // resynced=true のとき、応答固有のresult（古いpage_asset等）はもう最新ではないので、
   // callerは結果固有assetではなく project.manga_json から派生状態を作り直す。
   async function adoptMutationResponse<R>(response: ProjectMutationResponse<R>): Promise<Adopted<R>> {
-    const applied = applyProjectDetail(response.project);
+    let applied = applyProjectDetail(response.project);
     let project: Project | null = applied ? selectedRef.current : null;
     let resynced = false;
     if (applied && response.latest_revision > response.project.revision) {
       project = await reloadSelectedProject(response.project.id);
       resynced = true;
+      if (!project || project.id !== response.project.id) {
+        applied = false;
+        project = null;
+      }
     }
     return { applied, resynced, project, result: response.result };
   }
 
   // render系応答のpage_assetをプレビューへ反映する共通処理。再同期済みなら結果固有の
-  // 古いpage_assetは使わず、最新manga_jsonのrender_assetからプレビューを作り直す。
-  function applyRenderedPageAsset(adopted: Adopted<{ page_asset: string }>, pageNumber: number): void {
+  // 古いpage_assetは使わず、常に最新manga_jsonのrender_assetからプレビューを作り直す。
+  function applyRenderedPageAsset(adopted: Adopted<{ page_asset: string }>, _pageNumber?: number): void {
     if (!adopted.applied || !adopted.project) return;
     const project = adopted.project;
     updateProjectPageAssets(project.id, (assets) => {
-      if (adopted.resynced) {
-        return project.manga_json.pages.map((page) => page.render_asset ?? "");
-      }
-      const next = [...assets];
-      next[pageNumber - 1] = adopted.result.page_asset;
-      return next;
+      const latestAssets = project.manga_json.pages.map((page) => page.render_asset ?? "");
+      return latestAssets.length > 0 ? latestAssets : assets;
     });
     setAssetVersion((value) => value + 1);
   }
@@ -577,9 +582,10 @@ export function App() {
     if (!selected) return;
     await runTask(async () => {
       const saved = await saveJsonDraft("レンダリング前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
-      const manga = saved?.manga_json ?? selected.manga_json;
-      let latestRevision = saved?.revision ?? selected.revision;
+      if (!saved) return;
+      const projectId = saved.id;
+      const manga = saved.manga_json;
+      let latestRevision = saved.revision;
       for (const page of manga.pages) {
         const firstPanel = page.panels[0];
         if (!firstPanel) continue;
@@ -593,8 +599,13 @@ export function App() {
         );
         const adopted = await adoptMutationResponse(response);
         // 次のrender-pageへは反映済みの最新revisionを渡す（再同期で進んだ場合も追従）。
-        latestRevision = selectedRef.current?.revision ?? latestRevision;
+        latestRevision = adopted.project?.revision ?? latestRevision;
         applyRenderedPageAsset(adopted, page.page);
+        if (adopted.resynced) {
+          setMessage("構成が更新されたためレンダリングを中断しました。再実行してください。");
+          await refreshProductionStatus(projectId);
+          return;
+        }
       }
       setMessage("ページをレンダリングしました");
       await refreshProductionStatus(projectId);
@@ -606,15 +617,13 @@ export function App() {
     await runTask(async () => {
       setProgress({ label: "Manga JSONを保存中", current: 1, total: 4 });
       const saved = await saveJsonDraft("生成前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
-      const job = await createAndWaitForGenerationJob(
-        projectId,
-        currentPanel.panel_id,
-        saved?.revision ?? selected.revision
-      );
+      if (!saved) return;
+      const projectId = saved.id;
+      const job = await createAndWaitForGenerationJob(projectId, currentPanel.panel_id, saved.revision);
+      if (selectedProjectIdRef.current !== projectId) return;
       if (job.status !== "done") throw new Error(job.message);
       const fresh = await api.get<Project>(`/api/projects/${projectId}`);
-      applyProjectDetail(fresh);
+      if (selectedProjectIdRef.current !== projectId || !applyProjectDetail(fresh)) return;
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
       const pageResponse = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
         withRevision(
@@ -633,16 +642,21 @@ export function App() {
     if (!selected || !currentPage) return;
     await runTask(async () => {
       const saved = await saveJsonDraft("一括生成前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
-      const panelIds = currentPage.panels.map((panel) => panel.panel_id);
+      if (!saved) return;
+      const projectId = saved.id;
+      const savedPage = saved.manga_json.pages.find((page) => page.page === selectedPage);
+      if (!savedPage) return;
+      const panelIds = savedPage.panels.map((panel) => panel.panel_id);
       const batchResponse = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
-        withRevision(`/api/projects/${projectId}/generation-jobs`, saved?.revision ?? selected.revision),
+        withRevision(`/api/projects/${projectId}/generation-jobs`, saved.revision),
         {
           page: selectedPage,
           candidate_count: candidateCount
         }
       );
-      const batch = (await adoptMutationResponse(batchResponse)).result;
+      const batchAdopted = await adoptMutationResponse(batchResponse);
+      if (!batchAdopted.applied || !batchAdopted.project) return;
+      const batch = batchAdopted.result;
       setActiveJobIds(batch.jobs.map((job) => job.id));
       try {
         for (const job of batch.jobs) {
@@ -654,6 +668,7 @@ export function App() {
         await refreshJobHistory(projectId);
         await reloadSelectedProject(projectId);
       }
+      if (selectedProjectIdRef.current !== projectId) return;
       const firstPanelId = panelIds[0];
       if (firstPanelId) {
         setProgress({
@@ -680,12 +695,15 @@ export function App() {
     void requestNotificationPermission();
     await runTask(async () => {
       const saved = await saveJsonDraft("全ページ生成前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
+      if (!saved) return;
+      const projectId = saved.id;
       const batchResponse = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
-        withRevision(`/api/projects/${projectId}/generation-jobs`, saved?.revision ?? selected.revision),
+        withRevision(`/api/projects/${projectId}/generation-jobs`, saved.revision),
         { candidate_count: candidateCount }
       );
-      const batch = (await adoptMutationResponse(batchResponse)).result;
+      const batchAdopted = await adoptMutationResponse(batchResponse);
+      if (!batchAdopted.applied || !batchAdopted.project) return;
+      const batch = batchAdopted.result;
       setActiveJobIds(batch.jobs.map((job) => job.id));
       try {
         await waitForBatchJobs(batch.jobs, "全ページの画像を生成中");
@@ -694,8 +712,12 @@ export function App() {
         await refreshJobHistory(projectId);
         await reloadSelectedProject(projectId);
       }
+      if (selectedProjectIdRef.current !== projectId) return;
       const latest = (await reloadSelectedProject(projectId)) ?? selectedRef.current;
-      if (latest) await renderAllPages(projectId, latest);
+      if (latest) {
+        const completed = await renderAllPages(projectId, latest);
+        if (!completed) return;
+      }
       // page_*.pngを書き換えた後にキャッシュバスターを進める（同一URLの古い画像が残らないように）。
       setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
@@ -722,7 +744,7 @@ export function App() {
     if (failed) throw new Error(failed.message);
   }
 
-  async function renderAllPages(projectId: string, project: Project): Promise<void> {
+  async function renderAllPages(projectId: string, project: Project): Promise<boolean> {
     let latestRevision = project.revision;
     for (let index = 0; index < project.manga_json.pages.length; index += 1) {
       const page = project.manga_json.pages[index];
@@ -737,9 +759,15 @@ export function App() {
         withRevision(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`, latestRevision)
       );
       const adopted = await adoptMutationResponse(response);
-      latestRevision = selectedRef.current?.revision ?? latestRevision;
+      latestRevision = adopted.project?.revision ?? latestRevision;
       applyRenderedPageAsset(adopted, page.page);
+      if (adopted.resynced) {
+        setMessage("構成が更新されたためレンダリングを中断しました。再実行してください。");
+        await refreshProductionStatus(projectId);
+        return false;
+      }
     }
+    return true;
   }
 
   async function requestNotificationPermission(): Promise<void> {
@@ -763,7 +791,11 @@ export function App() {
       withRevision(`/api/projects/${projectId}/panels/${panelId}/generation-jobs`, revision),
       { candidate_count: candidateCount }
     );
-    const job = (await adoptMutationResponse(response)).result;
+    const adopted = await adoptMutationResponse(response);
+    if (!adopted.applied || !adopted.project) {
+      throw new Error("プロジェクトが切り替わったため処理を中断しました。");
+    }
+    const job = adopted.result;
     setActiveJobIds([job.id]);
     try {
       return await watchGenerationJob(job);
@@ -920,19 +952,18 @@ export function App() {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
       const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
+      if (!saved) return;
+      const projectId = saved.id;
       // use-stubの応答を先に反映する。renderが失敗してもrevisionが古いまま残らない。
       const stubResponse = await api.post<ProjectMutationResponse<PanelImageGenerationResult>>(
-        withRevision(
-          `/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`,
-          saved?.revision ?? selected.revision
-        )
+        withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`, saved.revision)
       );
-      await adoptMutationResponse(stubResponse);
+      const stubAdopted = await adoptMutationResponse(stubResponse);
+      if (!stubAdopted.applied || !stubAdopted.project) return;
       const pageResponse = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
         withRevision(
           `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`,
-          selectedRef.current?.revision ?? stubResponse.project.revision
+          stubAdopted.project.revision
         )
       );
       applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
@@ -945,12 +976,10 @@ export function App() {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
       const saved = await saveJsonDraft("写植更新前にManga JSONを保存しました");
-      const projectId = saved?.id ?? selected.id;
+      if (!saved) return;
+      const projectId = saved.id;
       const response = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
-        withRevision(
-          `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`,
-          saved?.revision ?? selected.revision
-        )
+        withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`, saved.revision)
       );
       applyRenderedPageAsset(await adoptMutationResponse(response), selectedPage);
       setMessage(`${selectedPage}ページを更新しました`);
