@@ -29,6 +29,91 @@ function jsonResponse(value: unknown): Promise<Response> {
   );
 }
 
+const statusResponses = (url: string): Promise<Response> | null => {
+  if (url.endsWith("/production-status")) {
+    return jsonResponse({
+      project_id: "p1",
+      status: "incomplete",
+      adopted_panels: 0,
+      total_panels: 1,
+      rendered_pages: 0,
+      total_pages: 1,
+      pages: [],
+      blockers: []
+    });
+  }
+  if (url.endsWith("/generation-jobs")) return jsonResponse([]);
+  if (url === "/api/comfyui/status") {
+    return jsonResponse({
+      backend: "stub",
+      base_url: "",
+      workflow_path: "",
+      connected: false,
+      workflow_exists: false,
+      workflow_valid: false,
+      missing_nodes: [],
+      message: "stub"
+    });
+  }
+  return null;
+};
+
+function mangaWithPanel(title: string, pageAsset: string | null = null): MangaProject {
+  return {
+    ...manga,
+    title,
+    pages: [
+      {
+        page: 1,
+        theme: "導入",
+        layout_template: "one",
+        reading_order: ["p01_01"],
+        overlay_elements: [],
+        render_status: pageAsset ? "rendered" : "pending",
+        rendered_at: null,
+        render_asset: pageAsset,
+        panels: [
+          {
+            panel_id: "p01_01",
+            bbox: [0.05, 0.05, 0.9, 0.9],
+            shot: "wide",
+            camera: "",
+            location_id: "",
+            characters: [],
+            prompt: "",
+            image_asset: null,
+            image_candidates: [],
+            selected_candidate_id: null,
+            control_references: [],
+            dialogue: [],
+            sfx: [],
+            generation: {
+              backend: "stub",
+              prompt: "",
+              negative_prompt: "",
+              seed: 1,
+              workflow_id: null,
+              prompt_id: null,
+              width: 768,
+              height: 1024,
+              fit_mode: "cover",
+              crop_anchor: "center",
+              text_policy: "no_text",
+              model_notes: "",
+              status: "pending",
+              message: "",
+              loras: [],
+              reference_images: [],
+              workflow_preset_id: null,
+              workflow_preset: null
+            }
+          }
+        ]
+      }
+    ]
+  } as MangaProject;
+}
+
 describe("AppのManga JSON保存", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -377,6 +462,181 @@ describe("AppのManga JSON保存", () => {
     expect(textarea?.value).toContain("最新本");
     expect(textarea?.value).not.toContain("巻き戻し版");
     expect(screen.getByLabelText("本のタイトル")).toHaveValue("最新本");
+  });
+
+  it("latest_revisionが新しい保存応答の後は、reload後のrevisionで後続renderを呼ぶ", async () => {
+    let putDone = false;
+    const renderUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        putDone = true;
+        // 保存snapshotはrevision 1だが、DBは既にrevision 5まで進んでいる。
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithPanel("本")
+          },
+          latest_revision: 5,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        renderUrls.push(url);
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "本",
+            work_name: "作品",
+            revision: 6,
+            manga_json: mangaWithPanel("本")
+          },
+          latest_revision: 6,
+          result: { panel_id: "p01_01", page_asset: "p1/pages/page_001.png", warnings: [] }
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "本", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // reload(保存後)では最新revision 5を返す。
+        return jsonResponse({
+          id: "p1",
+          title: "本",
+          work_name: "作品",
+          revision: putDone ? 5 : 0,
+          manga_json: mangaWithPanel("本")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("本"));
+    await screen.findByDisplayValue("本");
+    fireEvent.click(screen.getByTitle("全ページをレンダリング"));
+
+    // 保存応答のlatest_revision(5)で再同期した後、render-pageには5を送る（1ではない）。
+    await waitFor(() => expect(renderUrls).toHaveLength(1));
+    expect(renderUrls[0]).toContain("revision=5");
+  });
+
+  it("古いrevisionのrender応答はselected・JSON・pageAssetsを巻き戻さない", async () => {
+    let generationStarted = false;
+    const job = {
+      id: "job-1",
+      project_id: "p1",
+      panel_id: "p01_01",
+      candidate_count: 1,
+      status: "queued",
+      progress: 0,
+      message: "生成中",
+      node: null,
+      prompt_id: null,
+      candidate_ids: [],
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01"
+    };
+    class ImmediateWebSocket {
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor() {
+        window.setTimeout(() => {
+          this.onmessage?.({
+            data: JSON.stringify({ ...job, status: "done", progress: 100, message: "完了" })
+          });
+        }, 0);
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", ImmediateWebSocket);
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const status = statusResponses(url);
+      if (status) return status;
+      if (init?.method === "PUT" && url.includes("/manga-json")) {
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "rev11",
+            work_name: "作品",
+            revision: 1,
+            manga_json: mangaWithPanel("rev11")
+          },
+          latest_revision: 1,
+          result: {}
+        });
+      }
+      if (init?.method === "POST" && url.includes("/generation-jobs")) {
+        generationStarted = true;
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "rev11",
+            work_name: "作品",
+            revision: 2,
+            manga_json: mangaWithPanel("rev11")
+          },
+          latest_revision: 2,
+          result: job
+        });
+      }
+      if (init?.method === "POST" && url.includes("/render-page")) {
+        // 遅延した古いrevision 10のsnapshot（現在は11）。巻き戻してはいけない。
+        return jsonResponse({
+          project: {
+            id: "p1",
+            title: "rev10-stale",
+            work_name: "作品",
+            revision: 10,
+            manga_json: mangaWithPanel("rev10-stale", "p1/pages/stale-10.png")
+          },
+          latest_revision: 10,
+          result: { panel_id: "p01_01", page_asset: "p1/pages/stale-10.png", warnings: [] }
+        });
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "rev11", work_name: "作品", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // 生成完了後の最新はrevision 11。
+        return jsonResponse({
+          id: "p1",
+          title: "rev11",
+          work_name: "作品",
+          revision: generationStarted ? 11 : 0,
+          manga_json: mangaWithPanel("rev11")
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("rev11"));
+    await screen.findByDisplayValue("rev11");
+    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+
+    // 古いrevision 10のrender応答が来ても、JSON・タイトルはrevision 11のまま。
+    await waitFor(() => expect(screen.getByText(/候補を/)).toBeInTheDocument());
+    const textarea = container.querySelector<HTMLTextAreaElement>(".json-pane textarea");
+    expect(textarea?.value).toContain("rev11");
+    expect(textarea?.value).not.toContain("rev10-stale");
+    expect(screen.getByLabelText("本のタイトル")).toHaveValue("rev11");
+    // pageAssetsも古いsnapshotのasset(stale-10)で更新されない。
+    const staleImg = Array.from(container.querySelectorAll("img")).find((img) =>
+      img.getAttribute("src")?.includes("stale-10")
+    );
+    expect(staleImg).toBeUndefined();
   });
 
   it.each(["画像生成", "ページ内全コマ生成", "全ページ生成"])(

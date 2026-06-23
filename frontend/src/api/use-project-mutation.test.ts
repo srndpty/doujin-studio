@@ -62,6 +62,7 @@ describe("useProjectMutation", () => {
       code: "project_mutation_partially_applied",
       completed_operation: "candidate_selection",
       failed_operation: "render_page",
+      latest_revision: 7,
       project
     });
     let handled = false;
@@ -73,6 +74,41 @@ describe("useProjectMutation", () => {
     expect(onPartialSuccess).toHaveBeenCalledWith(project, "candidate_selection", "render_page");
     // 通常のrevision競合扱いにはしない。
     expect(onConflict).not.toHaveBeenCalled();
+  });
+
+  it("部分成功でlatest_revisionが新しければ最新へ再同期する", async () => {
+    const { hook, onStale } = setup();
+    const project = { id: "p1", revision: 7, title: "採用済み" };
+    const error = new ApiError(409, "partial", {
+      code: "project_mutation_partially_applied",
+      completed_operation: "candidate_selection",
+      failed_operation: "render_page",
+      latest_revision: 9,
+      project
+    });
+    await act(async () => {
+      await hook.result.current.handleProjectMutationError(error);
+    });
+    expect(onStale).toHaveBeenCalledWith("p1");
+  });
+
+  it("applyProjectがfalse(巻き戻し)なら部分成功でも派生処理を呼ばない", async () => {
+    const { hook, onPartialSuccess, onStale } = setup({ applyProject: vi.fn(() => false) });
+    const error = new ApiError(409, "partial", {
+      code: "project_mutation_partially_applied",
+      completed_operation: "candidate_selection",
+      failed_operation: "render_page",
+      latest_revision: 9,
+      project: { id: "p1", revision: 7, title: "採用済み" }
+    });
+    let handled = false;
+    await act(async () => {
+      handled = await hook.result.current.handleProjectMutationError(error);
+    });
+    // 409としては処理済み(true)だが、派生状態は旧snapshotで作り直さない。
+    expect(handled).toBe(true);
+    expect(onPartialSuccess).not.toHaveBeenCalled();
+    expect(onStale).not.toHaveBeenCalled();
   });
 
   it("revision競合はonConflictで最新を採用する", async () => {
@@ -92,5 +128,22 @@ describe("useProjectMutation", () => {
     expect(applyProject).toHaveBeenCalledWith(project);
     expect(onConflict).toHaveBeenCalledWith(project);
     expect(onPartialSuccess).not.toHaveBeenCalled();
+  });
+
+  it("applyProjectがfalse(巻き戻し)ならrevision競合でもonConflictを呼ばない", async () => {
+    const { hook, onConflict } = setup({ applyProject: vi.fn(() => false) });
+    const error = new ApiError(409, "conflict", {
+      code: "project_revision_conflict",
+      expected_revision: 5,
+      actual_revision: 9,
+      project: { id: "p1", revision: 9, title: "最新" }
+    });
+    let handled = false;
+    await act(async () => {
+      handled = await hook.result.current.handleProjectMutationError(error);
+    });
+    expect(handled).toBe(true);
+    // 派生状態を旧snapshotで再構築しない。
+    expect(onConflict).not.toHaveBeenCalled();
   });
 });

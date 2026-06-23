@@ -486,14 +486,18 @@ class ProjectRevisionConflictResponse(ApiErrorResponse):
 class ProjectMutationPartialSuccessResponse(ApiErrorResponse):
     """複合操作の前段だけが確定した部分成功の専用409応答。
 
-    通常のrevision競合と違い、projectは「前段が適用済みの最新state」。フロントは
-    この状態を採用しつつ、後段が失敗したことだけをユーザーへ示せばよい。
+    部分成功は同時更新で起きるため通常成功よりstaleになりやすい。``completed_project`` は
+    前段(候補採用など)を確定した時点のsnapshot、``project`` は応答整形時点のDB最新stateで、
+    両者を分けて返す。フロントは``project``を採用し、``latest_revision``が更にそれを上回る場合は
+    最新stateへ再同期する。``completed_project``は「前段が何を確定したか」を示すための参考値。
     """
 
     code: Literal["project_mutation_partially_applied"] = "project_mutation_partially_applied"
     completed_operation: str
     failed_operation: str
+    completed_project: ProjectDetail
     project: ProjectDetail
+    latest_revision: int
 
 
 class ProjectRenderResult(BaseModel):

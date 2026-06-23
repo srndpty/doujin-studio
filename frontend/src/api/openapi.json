@@ -277,7 +277,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -287,9 +287,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Generate Name Api Projects  Project Id  Generate Name Post"
@@ -356,7 +353,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -366,9 +363,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Update Manga Json Api Projects  Project Id  Manga Json Put"
@@ -434,7 +428,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -444,9 +438,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Upload Character Reference Api Projects  Project Id  Characters  Character Id  Reference Image Post"
@@ -512,7 +503,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -522,9 +513,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Upload Location Reference Api Projects  Project Id  Locations  Location Id  Reference Image Post"
@@ -608,7 +596,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -618,9 +606,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Upload Panel Control Reference Api Projects  Project Id  Panels  Panel Id  Controls  Kind  Reference Image Post"
@@ -704,7 +689,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -714,9 +699,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Upload Overlay Asset Api Projects  Project Id  Pages  Page Number  Overlays  Overlay Id   Asset Kind  Post"
@@ -799,7 +781,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -809,9 +791,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Suggest Page Layout Api Projects  Project Id  Pages  Page Number  Layout Suggest Post"
@@ -981,7 +960,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -991,9 +970,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Render Page Endpoint Api Projects  Project Id  Pages  Page Number  Render Post"
@@ -1059,7 +1035,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -1069,9 +1045,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Render Panel Page Api Projects  Project Id  Panels  Panel Id  Render Page Post"
@@ -1128,7 +1101,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -1138,9 +1111,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Export Project Cbz Api Projects  Project Id  Export Cbz Post"
@@ -1544,7 +1514,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -1554,9 +1524,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Create Generation Job Api Projects  Project Id  Panels  Panel Id  Generation Jobs Post"
@@ -1630,7 +1597,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -1640,9 +1607,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Create Batch Generation Jobs Api Projects  Project Id  Generation Jobs Post"
@@ -1836,7 +1800,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、通常の更新競合、または候補採用後render競合の部分成功",
             "content": {
               "application/json": {
                 "schema": {
@@ -1914,7 +1878,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -1924,9 +1888,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Use Stub Panel Image Api Projects  Project Id  Panels  Panel Id  Use Stub Post"
@@ -2261,7 +2222,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -2271,9 +2232,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Create Story Session Api Projects  Project Id  Story Sessions Post"
@@ -2581,7 +2539,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -2591,9 +2549,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Apply Story Session Api Story Sessions  Session Id  Apply Post"
@@ -2702,7 +2657,7 @@
             }
           },
           "409": {
-            "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
@@ -2712,9 +2667,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
                     }
                   ],
                   "title": "Response 409 Restore Project Revision Api Projects  Project Id  Revisions  Revision Id  Restore Post"
@@ -5062,8 +5014,15 @@
             "type": "string",
             "title": "Failed Operation"
           },
+          "completed_project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
           "project": {
             "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
           }
         },
         "type": "object",
@@ -5071,10 +5030,12 @@
           "detail",
           "completed_operation",
           "failed_operation",
-          "project"
+          "completed_project",
+          "project",
+          "latest_revision"
         ],
         "title": "ProjectMutationPartialSuccessResponse",
-        "description": "複合操作の前段だけが確定した部分成功の専用409応答。\n\n通常のrevision競合と違い、projectは「前段が適用済みの最新state」。フロントは\nこの状態を採用しつつ、後段が失敗したことだけをユーザーへ示せばよい。"
+        "description": "複合操作の前段だけが確定した部分成功の専用409応答。\n\n部分成功は同時更新で起きるため通常成功よりstaleになりやすい。``completed_project`` は\n前段(候補採用など)を確定した時点のsnapshot、``project`` は応答整形時点のDB最新stateで、\n両者を分けて返す。フロントは``project``を採用し、``latest_revision``が更にそれを上回る場合は\n最新stateへ再同期する。``completed_project``は「前段が何を確定したか」を示すための参考値。"
       },
       "ProjectMutationResponse_BatchGenerationJobResult_": {
         "properties": {

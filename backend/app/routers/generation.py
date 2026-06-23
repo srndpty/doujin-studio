@@ -35,6 +35,7 @@ from ..schemas import (
     RenderRequest,
 )
 from .common import (
+    CANDIDATE_SELECT_ERROR_RESPONSES,
     GENERATION_ERROR_RESPONSES,
     PROJECT_MUTATION_ERROR_RESPONSES,
     find_panel,
@@ -246,7 +247,7 @@ async def generation_job_websocket(websocket: WebSocket, job_id: str) -> None:
 @router.post(
     "/api/projects/{project_id}/panels/{panel_id}/candidates/{candidate_id}/select",
     response_model=ProjectMutationResponse[PanelPageRenderResult],
-    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+    responses=CANDIDATE_SELECT_ERROR_RESPONSES,
 )
 def select_panel_candidate(
     project_id: str,

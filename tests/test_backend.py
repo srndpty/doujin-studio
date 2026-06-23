@@ -1060,14 +1060,68 @@ def test_select_candidate_render_conflict_returns_partial_success(
         assert body["code"] == "project_mutation_partially_applied"
         assert body["completed_operation"] == "candidate_selection"
         assert body["failed_operation"] == "render_page"
-        # 返すprojectは採用済みstate（selected_candidate_idが確定している）。
+        # completed_projectは候補採用を確定したsnapshot。
+        completed_panel = body["completed_project"]["manga_json"]["pages"][0]["panels"][0]
+        assert completed_panel["selected_candidate_id"] == candidate_id
+        # projectは応答時点の最新DB state、latest_revisionも同梱する。
         returned_panel = body["project"]["manga_json"]["pages"][0]["panels"][0]
         assert returned_panel["selected_candidate_id"] == candidate_id
-        # 実DBにも採用が確定している（revisionが進んでいる）。
+        assert body["latest_revision"] == body["project"]["revision"]
+        # 同時更新がない通常ケースでは、completedとprojectのrevisionは一致する。
+        assert body["completed_project"]["revision"] == body["project"]["revision"]
+        # 実DBにも採用が確定している。
         persisted = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
             "panels"
         ][0]
         assert persisted["selected_candidate_id"] == candidate_id
+
+
+def test_select_candidate_partial_success_reports_latest_after_concurrent_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """候補採用→別更新→render競合で、partial-successが最新stateとlatest_revisionを返す。
+
+    部分成功は同時更新が原因なので、projectはcompleted_projectより新しいrevisionになり、
+    フロントは最新へ再同期できる。
+    """
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        job = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        ).json()["result"]
+        with client.websocket_connect(f"/api/generation-jobs/{job['id']}/ws") as websocket:
+            while websocket.receive_json()["status"] not in {"done", "error", "cancelled"}:
+                pass
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        candidate_id = panel["image_candidates"][0]["id"]
+
+        def advance_then_fail(self, *args, **kwargs):
+            # 候補採用確定後・render前に別操作がrevisionを進める。
+            app.state.mutation.mutate_local(
+                project_id, lambda manga: setattr(manga, "premise", "別タブ更新")
+            )
+            raise rendering_module.RenderInputChangedError()
+
+        monkeypatch.setattr(
+            rendering_module.RenderingService, "render_and_commit_page", advance_then_fail
+        )
+        response = client.post(
+            mutation_url(client, project_id, f"panels/p01_01/candidates/{candidate_id}/select")
+        )
+        assert response.status_code == 409
+        body = response.json()
+        assert body["code"] == "project_mutation_partially_applied"
+        # projectは最新(別更新後)で、completed_projectより新しい。latest_revisionも最新。
+        assert body["project"]["revision"] > body["completed_project"]["revision"]
+        assert body["latest_revision"] == body["project"]["revision"]
+        assert body["project"]["manga_json"]["premise"] == "別タブ更新"
+        # 候補採用自体は最新stateにも残っている。
+        latest_panel = body["project"]["manga_json"]["pages"][0]["panels"][0]
+        assert latest_panel["selected_candidate_id"] == candidate_id
 
 
 def test_job_manager_cancels_running_task() -> None:

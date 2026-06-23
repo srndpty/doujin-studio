@@ -94,10 +94,19 @@ GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
 
 PROJECT_MUTATION_ERROR_RESPONSES: dict[int | str, dict] = {
     409: {
+        "model": ApiErrorResponse | ProjectRevisionConflictResponse,
+        "description": "revision競合、または通常の更新競合",
+    }
+}
+
+# 部分成功(project_mutation_partially_applied)を実際に返すのは候補採用だけなので、
+# その契約はこの専用定数に閉じてOpenAPIを正確に保つ。
+CANDIDATE_SELECT_ERROR_RESPONSES: dict[int | str, dict] = {
+    409: {
         "model": ApiErrorResponse
         | ProjectRevisionConflictResponse
         | ProjectMutationPartialSuccessResponse,
-        "description": "revision競合、通常の更新競合、または複合操作の部分成功",
+        "description": "revision競合、通常の更新競合、または候補採用後render競合の部分成功",
     }
 }
 
@@ -162,12 +171,20 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _partial_success(
         request: Request, exc: ProjectMutationPartiallyAppliedError
     ) -> JSONResponse:
-        project, _latest = _detail_from_snapshot(request, exc.snapshot)
+        # completed_projectは前段(候補採用など)を確定したsnapshot。projectは応答時点の
+        # 最新DB stateで、partial-successは同時更新が原因のため両者が乖離しやすい。
+        completed_project, latest_revision = _detail_from_snapshot(request, exc.snapshot)
+        latest_project = to_detail(
+            load_project_record(request, exc.snapshot.project_id),
+            request.app.state.settings.export_dir,
+        )
         payload = ProjectMutationPartialSuccessResponse(
             detail="前段の操作は適用されましたが、後続の操作が競合しました。最新を確認してください。",
             completed_operation=exc.completed_operation,
             failed_operation=exc.failed_operation,
-            project=project,
+            completed_project=completed_project,
+            project=latest_project,
+            latest_revision=latest_revision,
         )
         return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
 
