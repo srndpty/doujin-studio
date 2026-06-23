@@ -61,8 +61,10 @@ def create_project(
     record = request.app.state.mutation.create(
         title=payload.title, work_name=payload.work_name, target_pages=payload.target_pages
     )
+    project = to_detail(record, request.app.state.settings.export_dir)
     return ProjectMutationResponse(
-        project=to_detail(record, request.app.state.settings.export_dir),
+        project=project,
+        latest_revision=project.revision,
         result=EmptyMutationResult(),
     )
 

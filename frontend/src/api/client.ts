@@ -3,6 +3,9 @@ export type ApiErrorBody = {
   code?: string;
   expected_revision?: number;
   actual_revision?: number;
+  // 部分成功(project_mutation_partially_applied)で確定/失敗した操作名。
+  completed_operation?: string;
+  failed_operation?: string;
   project?: unknown;
 };
 

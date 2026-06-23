@@ -13,7 +13,12 @@ from ..generation_service import (
 )
 from ..image_backends import StubImageBackend
 from ..jobs import TERMINAL_JOB_STATUSES, JobManager
-from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
+from ..mutation import (
+    ProjectMutationPartiallyAppliedError,
+    ProjectRevisionConflictError,
+    RenderCommitConflictError,
+    mark_page_dirty,
+)
 from ..prompt_composer import compose_panel_prompts
 from ..rendering import RenderInputChangedError, asset_to_id
 from ..schemas import (
@@ -272,7 +277,14 @@ def select_panel_candidate(
             project_id, mutation_result.project.manga, mutation_result.project.revision, page_number
         )
     except (RenderCommitConflictError, RenderInputChangedError) as exc:
-        raise ProjectRevisionConflictError(project_id, mutation_result.project.revision) from exc
+        # 候補採用は既にCAS確定済み。通常のrevision競合として返すと「未保存編集は適用
+        # されませんでした」と誤認されるため、採用済みstateを持つ部分成功として返す。
+        raise ProjectMutationPartiallyAppliedError(
+            project_id,
+            completed_operation="candidate_selection",
+            failed_operation="render_page",
+            snapshot=mutation_result.project,
+        ) from exc
     return to_project_mutation_response(
         request,
         project_id,

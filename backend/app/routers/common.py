@@ -45,6 +45,7 @@ from ..mutation import (
     InvalidProjectJsonError,
     PanelNotFoundError,
     ProjectConflictError,
+    ProjectMutationPartiallyAppliedError,
     ProjectNotFoundError,
     ProjectReplaceConflictError,
     ProjectRevisionConflictError,
@@ -72,6 +73,7 @@ from ..schemas import (
     PreflightIssue,
     PreflightResponse,
     ProjectDetail,
+    ProjectMutationPartialSuccessResponse,
     ProjectMutationResponse,
     ProjectRevisionConflictResponse,
     ProjectSummary,
@@ -92,8 +94,10 @@ GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
 
 PROJECT_MUTATION_ERROR_RESPONSES: dict[int | str, dict] = {
     409: {
-        "model": ApiErrorResponse | ProjectRevisionConflictResponse,
-        "description": "revision競合、または通常の更新競合",
+        "model": ApiErrorResponse
+        | ProjectRevisionConflictResponse
+        | ProjectMutationPartialSuccessResponse,
+        "description": "revision競合、通常の更新競合、または複合操作の部分成功",
     }
 }
 
@@ -153,6 +157,19 @@ def register_exception_handlers(app: FastAPI) -> None:
             "他の操作（生成完了や別タブの保存）で更新されています。最新を読み込み直してください。",
             exc.expected_revision,
         )
+
+    @app.exception_handler(ProjectMutationPartiallyAppliedError)
+    async def _partial_success(
+        request: Request, exc: ProjectMutationPartiallyAppliedError
+    ) -> JSONResponse:
+        project, _latest = _detail_from_snapshot(request, exc.snapshot)
+        payload = ProjectMutationPartialSuccessResponse(
+            detail="前段の操作は適用されましたが、後続の操作が競合しました。最新を確認してください。",
+            completed_operation=exc.completed_operation,
+            failed_operation=exc.failed_operation,
+            project=project,
+        )
+        return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
 
     @app.exception_handler(ProjectConflictError)
     async def _project_conflict(_request: Request, _exc: ProjectConflictError) -> JSONResponse:
@@ -429,6 +446,29 @@ def to_detail(record: ProjectRecord, export_dir: Path | None = None) -> ProjectD
     return ProjectDetail(**to_summary(record).model_dump(), manga_json=manga)
 
 
+def _detail_from_snapshot(request: Request, snapshot: ProjectSnapshot) -> tuple[ProjectDetail, int]:
+    """snapshotからProjectDetailと、整形時点のDB最新revisionを返す。
+
+    created_at/updated_atはsnapshot時点では保持しないため現在のrecordから読む。返す
+    latest_revisionがsnapshot.revisionを上回るときは、メタデータも別revisionの値であり得る。
+    その場合フロントは最新stateへ再同期するので、最終的な整合はそこで回復する。
+    """
+    with request.app.state.SessionLocal() as session:
+        record = request.app.state.repository.get(session, snapshot.project_id)
+        if record is None:
+            raise ProjectNotFoundError()
+    detail = ProjectDetail(
+        id=snapshot.project_id,
+        title=snapshot.manga.title,
+        work_name=snapshot.manga.work_name,
+        revision=snapshot.revision,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        manga_json=snapshot.manga,
+    )
+    return detail, record.revision
+
+
 def to_project_mutation_response(
     request: Request,
     project_id: str,
@@ -436,28 +476,21 @@ def to_project_mutation_response(
     *,
     snapshot: ProjectSnapshot | None = None,
 ) -> ProjectMutationResponse[MutationResultT]:
-    """mutation成功応答を、その操作が確定したsnapshotと対応させる。"""
+    """mutation成功応答を、その操作が確定したsnapshotと対応させる。
+
+    snapshot指定時はそのstateを返しつつ、整形時点のDB最新revisionを``latest_revision``で
+    併記する。snapshot未指定（最新を読み直す経路）ではproject.revisionが最新と一致する。
+    """
 
     if snapshot is None:
         project = to_detail(
             load_project_record(request, project_id), request.app.state.settings.export_dir
         )
+        latest_revision = project.revision
     else:
-        with request.app.state.SessionLocal() as session:
-            record = request.app.state.repository.get(session, project_id)
-            if record is None:
-                raise ProjectNotFoundError()
-        project = ProjectDetail(
-            id=project_id,
-            title=snapshot.manga.title,
-            work_name=snapshot.manga.work_name,
-            revision=snapshot.revision,
-            created_at=record.created_at,
-            updated_at=record.updated_at,
-            manga_json=snapshot.manga,
-        )
+        project, latest_revision = _detail_from_snapshot(request, snapshot)
 
-    return ProjectMutationResponse(project=project, result=result)
+    return ProjectMutationResponse(project=project, latest_revision=latest_revision, result=result)
 
 
 def open_in_file_manager(path: Path) -> None:

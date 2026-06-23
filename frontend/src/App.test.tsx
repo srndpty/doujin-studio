@@ -295,6 +295,90 @@ describe("AppのManga JSON保存", () => {
     expect(textarea?.value).not.toContain("遅延したプロジェクト1");
   });
 
+  it("同一projectの古いrevision応答が遅れて到着しても巻き戻さない", async () => {
+    let resolveCbz!: (response: Response) => void;
+    const delayedCbz = new Promise<Response>((resolve) => {
+      resolveCbz = resolve;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/export/cbz")) {
+        return delayedCbz;
+      }
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "最新本", work_name: "作品", revision: 5, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        // 現在のUIはrevision 5を表示している。
+        return jsonResponse({
+          id: "p1",
+          title: "最新本",
+          work_name: "作品",
+          revision: 5,
+          manga_json: { ...manga, title: "最新本" }
+        });
+      }
+      if (url.endsWith("/production-status")) {
+        return jsonResponse({
+          project_id: "p1",
+          status: "incomplete",
+          adopted_panels: 0,
+          total_panels: 0,
+          rendered_pages: 0,
+          total_pages: 0,
+          pages: [],
+          blockers: []
+        });
+      }
+      if (url.endsWith("/generation-jobs")) return jsonResponse([]);
+      if (url === "/api/comfyui/status") {
+        return jsonResponse({
+          backend: "stub",
+          base_url: "",
+          workflow_path: "",
+          connected: false,
+          workflow_exists: false,
+          workflow_valid: false,
+          missing_nodes: [],
+          message: "stub"
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByText("最新本"));
+    await screen.findByDisplayValue("最新本");
+    fireEvent.click(screen.getByTitle("CBZを書き出す"));
+
+    // 遅延CBZ応答は古いrevision 3のsnapshotを返す。
+    resolveCbz(
+      new Response(
+        JSON.stringify({
+          project: {
+            id: "p1",
+            title: "巻き戻し版",
+            work_name: "作品",
+            revision: 3,
+            manga_json: { ...manga, title: "巻き戻し版" }
+          },
+          latest_revision: 5,
+          result: { cbz_asset: "p1/old.cbz", absolute_path: "old.cbz", warnings: [] }
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    // しばらく待っても、UIは新しいrevision 5のままで巻き戻らない。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const textarea = container.querySelector<HTMLTextAreaElement>(".json-pane textarea");
+    expect(textarea?.value).toContain("最新本");
+    expect(textarea?.value).not.toContain("巻き戻し版");
+    expect(screen.getByLabelText("本のタイトル")).toHaveValue("最新本");
+  });
+
   it.each(["画像生成", "ページ内全コマ生成", "全ページ生成"])(
     "%s完了後のrender-pageには最新revisionを送る",
     async (buttonName) => {

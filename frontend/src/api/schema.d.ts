@@ -1831,64 +1831,110 @@ export interface components {
             updated_at: string;
             manga_json: components["schemas"]["MangaProject"];
         };
+        /**
+         * ProjectMutationPartialSuccessResponse
+         * @description 複合操作の前段だけが確定した部分成功の専用409応答。
+         *
+         *     通常のrevision競合と違い、projectは「前段が適用済みの最新state」。フロントは
+         *     この状態を採用しつつ、後段が失敗したことだけをユーザーへ示せばよい。
+         */
+        ProjectMutationPartialSuccessResponse: {
+            /** Detail */
+            detail: string;
+            /**
+             * Code
+             * @default project_mutation_partially_applied
+             * @constant
+             */
+            code: "project_mutation_partially_applied";
+            /** Completed Operation */
+            completed_operation: string;
+            /** Failed Operation */
+            failed_operation: string;
+            project: components["schemas"]["ProjectDetail"];
+        };
         /** ProjectMutationResponse[BatchGenerationJobResult] */
         ProjectMutationResponse_BatchGenerationJobResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["BatchGenerationJobResult"];
         };
         /** ProjectMutationResponse[CharacterReferenceResult] */
         ProjectMutationResponse_CharacterReferenceResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["CharacterReferenceResult"];
         };
         /** ProjectMutationResponse[EmptyMutationResult] */
         ProjectMutationResponse_EmptyMutationResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["EmptyMutationResult"];
         };
         /** ProjectMutationResponse[ExportResult] */
         ProjectMutationResponse_ExportResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["ExportResult"];
         };
         /** ProjectMutationResponse[GenerationJobResponse] */
         ProjectMutationResponse_GenerationJobResponse_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["GenerationJobResponse"];
         };
         /** ProjectMutationResponse[LayoutSuggestResult] */
         ProjectMutationResponse_LayoutSuggestResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["LayoutSuggestResult"];
         };
         /** ProjectMutationResponse[PageRenderResult] */
         ProjectMutationResponse_PageRenderResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["PageRenderResult"];
         };
         /** ProjectMutationResponse[PanelImageGenerationResult] */
         ProjectMutationResponse_PanelImageGenerationResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["PanelImageGenerationResult"];
         };
         /** ProjectMutationResponse[PanelPageRenderResult] */
         ProjectMutationResponse_PanelPageRenderResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["PanelPageRenderResult"];
         };
         /** ProjectMutationResponse[ProjectRenderResult] */
         ProjectMutationResponse_ProjectRenderResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["ProjectRenderResult"];
         };
         /** ProjectMutationResponse[ReferenceAssetResult] */
         ProjectMutationResponse_ReferenceAssetResult_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["ReferenceAssetResult"];
         };
         /** ProjectMutationResponse[StorySessionResponse] */
         ProjectMutationResponse_StorySessionResponse_: {
             project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
             result: components["schemas"]["StorySessionResponse"];
         };
         /** ProjectProductionStatus */
@@ -2525,13 +2571,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2571,13 +2617,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2614,13 +2660,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_CharacterReferenceResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2657,13 +2703,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2702,13 +2748,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2747,13 +2793,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2794,13 +2840,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_LayoutSuggestResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2904,13 +2950,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_PageRenderResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2947,13 +2993,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_PanelPageRenderResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2989,13 +3035,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_ExportResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3241,13 +3287,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_GenerationJobResponse_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3318,13 +3364,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_BatchGenerationJobResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3424,13 +3470,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_PanelPageRenderResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3467,13 +3513,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_PanelImageGenerationResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3758,13 +3804,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_StorySessionResponse_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3935,13 +3981,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4009,13 +4055,13 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
                 };
             };
-            /** @description revision競合、または通常の更新競合 */
+            /** @description revision競合、通常の更新競合、または複合操作の部分成功 */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"] | components["schemas"]["ProjectMutationPartialSuccessResponse"];
                 };
             };
             /** @description Validation Error */

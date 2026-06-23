@@ -746,6 +746,32 @@ def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
         assert panel["selected_candidate_id"]
 
 
+def test_generate_image_and_cancel_return_latest_state(tmp_path: Path) -> None:
+    """generate-image完了時・cancel時は「最新DB状態」を返し、latest_revisionが一致する。
+
+    これらは完了後にcurrent_snapshotを読むため、返すprojectは操作時点ではなく最新state。
+    latest_revisionで契約を固定し、UIが古いrevisionへ後退しないことを保証する。
+    """
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        generated = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
+            json={"candidate_count": 1},
+        )
+        assert generated.status_code == 200
+        body = generated.json()
+        # 完了時点の最新stateを返すので、latest_revision == project.revision。
+        assert body["latest_revision"] == body["project"]["revision"]
+        assert body["project"]["revision"] == current_revision(client, project_id)
+
+        job = client.get(f"/api/projects/{project_id}/generation-jobs").json()[0]
+        cancelled = client.post(f"/api/generation-jobs/{job['id']}/cancel")
+        assert cancelled.status_code == 200
+        cancelled_body = cancelled.json()
+        assert cancelled_body["latest_revision"] == cancelled_body["project"]["revision"]
+        assert cancelled_body["project"]["revision"] == current_revision(client, project_id)
+
+
 def test_use_stub_creates_unique_candidate_files(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
@@ -995,6 +1021,53 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
         selected_panel = response.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert selected_panel["selected_candidate_id"] == first_candidate_id
         assert response.json()["result"]["page_asset"].startswith(f"{project_id}/pages/page_001.")
+
+
+def test_select_candidate_render_conflict_returns_partial_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """候補採用後のページrender競合は、採用済みstateを持つ部分成功契約で返す。
+
+    通常のrevision競合に偽装せず、候補採用が確定済みであることをフロントへ伝える。
+    """
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        job = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        ).json()["result"]
+        with client.websocket_connect(f"/api/generation-jobs/{job['id']}/ws") as websocket:
+            while websocket.receive_json()["status"] not in {"done", "error", "cancelled"}:
+                pass
+        panel = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        candidate_id = panel["image_candidates"][0]["id"]
+
+        # 候補採用は成功させ、その後のページrenderだけ競合させる。
+        monkeypatch.setattr(
+            rendering_module.RenderingService,
+            "render_and_commit_page",
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(
+                rendering_module.RenderInputChangedError()
+            ),
+        )
+        response = client.post(
+            mutation_url(client, project_id, f"panels/p01_01/candidates/{candidate_id}/select")
+        )
+        assert response.status_code == 409
+        body = response.json()
+        assert body["code"] == "project_mutation_partially_applied"
+        assert body["completed_operation"] == "candidate_selection"
+        assert body["failed_operation"] == "render_page"
+        # 返すprojectは採用済みstate（selected_candidate_idが確定している）。
+        returned_panel = body["project"]["manga_json"]["pages"][0]["panels"][0]
+        assert returned_panel["selected_candidate_id"] == candidate_id
+        # 実DBにも採用が確定している（revisionが進んでいる）。
+        persisted = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
+            "panels"
+        ][0]
+        assert persisted["selected_candidate_id"] == candidate_id
 
 
 def test_job_manager_cancels_running_task() -> None:

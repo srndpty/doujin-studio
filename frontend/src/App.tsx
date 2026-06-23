@@ -220,6 +220,9 @@ export function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
   const selectedProjectIdRef = useRef<string | null>(null);
+  // 単調性ガードを同期的に判定するためのselectedミラー。setStateの更新関数内で状態を
+  // 読むと反映タイミングが保証されないため、commit済みrevisionをrefで参照する。
+  const selectedRef = useRef<Project | null>(null);
   const projectLoadSequenceRef = useRef(0);
   const dragState = useRef<{
     mode: "move" | "resize";
@@ -229,6 +232,10 @@ export function App() {
   } | null>(null);
   // 進行中の生成ウォッチャ（WebSocket/polling）の中断関数。unmount時に必ず止める。
   const jobWatchersRef = useRef<Set<() => void>>(new Set());
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
   }, [selected, selectedPage]);
@@ -309,10 +316,14 @@ export function App() {
 
   const applyProjectDetail = useCallback((project: Project): boolean => {
     if (selectedProjectIdRef.current !== project.id) return false;
-    setSelected((current) =>
-      current && current.id === project.id
+    // 遅延到着した古い成功応答(snapshot)でrevisionを巻き戻さない（単調性ガード）。
+    // 同一projectで応答が前後しても、UIは常に新しいrevisionだけを採用する。
+    const current = selectedRef.current;
+    if (current && current.id === project.id && current.revision > project.revision) return false;
+    setSelected((prev) =>
+      prev && prev.id === project.id && prev.revision <= project.revision
         ? {
-            ...current,
+            ...prev,
             // ProjectRecord.title/work_nameもmanga_jsonと同時に更新される。トップレベル値も
             // 揃えないと、StoryPanel/KnowledgePanelが旧work_nameで知識同期やセッション作成をしてしまう。
             title: project.title,
@@ -320,7 +331,7 @@ export function App() {
             manga_json: project.manga_json,
             revision: project.revision
           }
-        : current
+        : prev
     );
     setJsonText(JSON.stringify(project.manga_json, null, 2));
     return true;
@@ -345,16 +356,21 @@ export function App() {
 
   function applyProjectMutation(projectId: string, mangaJson: MangaProject, revision?: number): boolean {
     if (selectedProjectIdRef.current !== projectId) return false;
-    setSelected((current) =>
-      current && current.id === projectId
+    // revision付きの反映では単調性ガードを効かせ、古い応答での巻き戻しを防ぐ。
+    const current = selectedRef.current;
+    if (revision !== undefined && current && current.id === projectId && current.revision > revision) {
+      return false;
+    }
+    setSelected((prev) =>
+      prev && prev.id === projectId && (revision === undefined || prev.revision <= revision)
         ? {
-            ...current,
+            ...prev,
             title: mangaJson.title,
             work_name: mangaJson.work_name,
             manga_json: mangaJson,
-            revision: revision ?? current.revision
+            revision: revision ?? prev.revision
           }
-        : current
+        : prev
     );
     setJsonText(JSON.stringify(mangaJson, null, 2));
     return true;
@@ -369,7 +385,15 @@ export function App() {
   );
   const { applyMutationResponse, handleProjectMutationError } = useProjectMutation<Project>({
     applyProject: applyProjectDetail,
-    onConflict: onProjectConflict
+    onConflict: onProjectConflict,
+    onStale: (projectId) => reloadSelectedProject(projectId),
+    onPartialSuccess: async (project, _completed, _failed) => {
+      // 候補採用などの前段は適用済み。最新stateを採用しつつ、後段失敗のみ通知する。
+      await refreshProjectDerivedState(project);
+      setMessage(
+        "候補を採用しましたが、ページの再描画が競合しました。最新状態で再度レンダリングしてください。"
+      );
+    }
   });
 
   function updateProjectPageAssets(projectId: string, update: (assets: string[]) => string[]) {
@@ -850,10 +874,10 @@ export function App() {
         )
       );
       const projectId = selected.id;
-      applyProjectDetail(response.project);
+      const result = applyMutationResponse(response);
       updateProjectPageAssets(projectId, (assets) => {
         const next = [...assets];
-        next[selectedPage - 1] = response.result.page_asset;
+        next[selectedPage - 1] = result.page_asset;
         return next;
       });
       setAssetVersion((value) => value + 1);

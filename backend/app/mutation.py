@@ -53,6 +53,28 @@ class RenderCommitConflictError(ProjectConflictError):
     """描画結果のdone確定時のrevision競合（CBZ/ページrender確定）。"""
 
 
+class ProjectMutationPartiallyAppliedError(ProjectConflictError):
+    """複合操作の前段は確定済みだが後段が競合した状態。
+
+    例: 候補採用(確定済み)→ページrender(競合)。通常のrevision競合として返すと、
+    フロントは「未保存編集は適用されませんでした」と誤認するが、前段は実際に適用済み。
+    確定済みのsnapshotと、完了/失敗した操作名を持ち、専用契約で返す。
+    """
+
+    def __init__(
+        self,
+        project_id: str,
+        *,
+        completed_operation: str,
+        failed_operation: str,
+        snapshot: "ProjectSnapshot",
+    ) -> None:
+        super().__init__(project_id)
+        self.completed_operation = completed_operation
+        self.failed_operation = failed_operation
+        self.snapshot = snapshot
+
+
 class PanelNotFoundError(Exception):
     """対象panel_idがmanga内に存在しない。"""
 
@@ -279,9 +301,18 @@ class ProjectMutationService:
             result = mutate(session, manga)
             normalize_manga_assets(manga, self.export_dir)
             changed = manga.model_dump_json() != before
-            if changed and self.repository.cas_set_manga(session, project_id, base, manga) != 1:
-                session.rollback()
-                raise ProjectRevisionConflictError(project_id, expected_revision)
+            if changed:
+                if self.repository.cas_set_manga(session, project_id, base, manga) != 1:
+                    session.rollback()
+                    raise ProjectRevisionConflictError(project_id, expected_revision)
+            else:
+                # manga_jsonを変えない経路でも、関連レコード(story session等)をflushしてから
+                # revisionを消費しないCASで期待revisionとの一致を保証する。これがないと、
+                # 確認後・commit前に別操作がrevisionを進めても競合を返さずcommitし得る。
+                session.flush()
+                if self.repository.assert_revision(session, project_id, base) != 1:
+                    session.rollback()
+                    raise ProjectRevisionConflictError(project_id, expected_revision)
             session.commit()
             return MutationResult(
                 result,

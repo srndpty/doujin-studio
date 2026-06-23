@@ -79,6 +79,24 @@ class ProjectRepository:
         outcome = session.execute(sqlalchemy_update(ProjectRecord).where(*where).values(**values))
         return cast(CursorResult, outcome).rowcount
 
+    def assert_revision(self, session: Session, project_id: str, expected_revision: int) -> int:
+        """revisionを消費せず、一致をCASで保証して影響行数を返す(1で成功)。
+
+        manga_jsonを変えないトランザクション（story session作成など）でも、commit前に
+        ``UPDATE projects SET revision = revision WHERE id AND revision = :expected`` で
+        対象行の書き込みロックを取り、期待revisionとの一致を保証する。rowcountが0なら、
+        確認後に別操作がrevisionを進めており、楽観ロック契約上の競合として扱う。
+        """
+        outcome = session.execute(
+            sqlalchemy_update(ProjectRecord)
+            .where(
+                ProjectRecord.id == project_id,
+                ProjectRecord.revision == expected_revision,
+            )
+            .values(revision=ProjectRecord.revision)
+        )
+        return cast(CursorResult, outcome).rowcount
+
     def cancel_jobs_before_epoch(self, session: Session, project_id: str, new_epoch: int) -> None:
         """旧世代の進行中ジョブを終端化する（構成全置換に伴う停止）。"""
         session.execute(

@@ -439,10 +439,16 @@ MutationResultT = TypeVar("MutationResultT")
 class ProjectMutationResponse(BaseModel, Generic[MutationResultT]):
     """ProjectRecordを変更するAPIの共通成功応答。
 
-    projectは常に最新のmanga_json/revisionを含み、resultは操作固有情報だけを持つ。
+    projectは「その操作が確定した時点のsnapshot」で、page assetとmanga_jsonの整合を守る。
+    応答整形より前に別更新が入ると、projectのrevisionはDB最新より古くなり得る。その場合
+    ``latest_revision`` が ``project.revision`` を上回るので、フロントは操作結果を反映した後に
+    最新stateへ再同期できる。resultは操作固有情報だけを持つ。
     """
 
     project: ProjectDetail
+    # 応答整形時点でのDB上の最新revision。project.revisionと等しければ追従不要、
+    # 上回っていればフロントはreloadで最新へ再同期する。
+    latest_revision: int
     result: MutationResultT
 
 
@@ -474,6 +480,19 @@ class ProjectRevisionConflictResponse(ApiErrorResponse):
     code: Literal["project_revision_conflict"] = "project_revision_conflict"
     expected_revision: int
     actual_revision: int
+    project: ProjectDetail
+
+
+class ProjectMutationPartialSuccessResponse(ApiErrorResponse):
+    """複合操作の前段だけが確定した部分成功の専用409応答。
+
+    通常のrevision競合と違い、projectは「前段が適用済みの最新state」。フロントは
+    この状態を採用しつつ、後段が失敗したことだけをユーザーへ示せばよい。
+    """
+
+    code: Literal["project_mutation_partially_applied"] = "project_mutation_partially_applied"
+    completed_operation: str
+    failed_operation: str
     project: ProjectDetail
 
 
