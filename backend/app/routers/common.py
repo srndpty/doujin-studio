@@ -13,6 +13,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import TypeVar
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -46,6 +47,7 @@ from ..mutation import (
     ProjectConflictError,
     ProjectNotFoundError,
     ProjectReplaceConflictError,
+    ProjectRevisionConflictError,
     RenderCommitConflictError,
     WorkerScopeViolationError,
 )
@@ -69,23 +71,59 @@ from ..schemas import (
     PreflightIssue,
     PreflightResponse,
     ProjectDetail,
+    ProjectMutationResponse,
+    ProjectRevisionConflictResponse,
     ProjectSummary,
     StorySessionSummary,
 )
+
+MutationResultT = TypeVar("MutationResultT")
 
 # 同期生成API(generate-image / render)の追加エラー契約をOpenAPIへ明示する。
 # 実行時にキャンセルは409、生成バックエンド失敗は502を返す。
 GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
     409: {
-        "model": ApiErrorResponse,
-        "description": "生成がキャンセルされた（入力変更・構成置換など）",
+        "model": ApiErrorResponse | ProjectRevisionConflictResponse,
+        "description": "revision競合、または生成キャンセル（入力変更・構成置換など）",
     },
     502: {"model": ApiErrorResponse, "description": "画像生成バックエンドが失敗した"},
+}
+
+PROJECT_MUTATION_ERROR_RESPONSES: dict[int | str, dict] = {
+    409: {
+        "model": ProjectRevisionConflictResponse,
+        "description": "revision競合。最新のprojectを同梱する",
+    }
 }
 
 
 def _error_response(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+def _revision_conflict_response(
+    request: Request, detail: str, expected_revision: int
+) -> JSONResponse:
+    project_id = request.path_params.get("project_id")
+    if project_id is None:
+        # story-session applyなど、path上にproject_idがないAPIは例外へproject_idを持たせる。
+        exc = getattr(request.state, "revision_conflict_project_id", None)
+        project_id = exc if isinstance(exc, str) else None
+    if project_id is not None:
+        try:
+            project = to_detail(
+                load_project_record(request, project_id), request.app.state.settings.export_dir
+            )
+            payload = ProjectRevisionConflictResponse(
+                detail=detail,
+                expected_revision=expected_revision,
+                actual_revision=project.revision,
+                project=project,
+            )
+            return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
+        except Exception:
+            pass
+    return _error_response(409, detail)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -106,18 +144,31 @@ def register_exception_handlers(app: FastAPI) -> None:
     # ProjectConflictErrorのサブクラスは、操作文脈ごとに従来の409文言を維持する。
     # Starletteはtype(exc).__mro__を辿って最初に一致したhandlerを使うため、サブクラスを
     # 個別に登録すれば汎用handlerより優先される。
-    @app.exception_handler(ProjectConflictError)
-    async def _project_conflict(_request: Request, _exc: ProjectConflictError) -> JSONResponse:
-        return _error_response(
-            409,
+    @app.exception_handler(ProjectRevisionConflictError)
+    async def _revision_conflict(
+        request: Request, exc: ProjectRevisionConflictError
+    ) -> JSONResponse:
+        if exc.project_id is not None:
+            request.state.revision_conflict_project_id = exc.project_id
+        return _revision_conflict_response(
+            request,
             "他の操作（生成完了や別タブの保存）で更新されています。最新を読み込み直してください。",
+            exc.expected_revision,
         )
 
+    @app.exception_handler(ProjectConflictError)
+    async def _project_conflict(_request: Request, _exc: ProjectConflictError) -> JSONResponse:
+        return _error_response(409, "更新が競合しました。再実行してください。")
+
     @app.exception_handler(ProjectReplaceConflictError)
-    async def _replace_conflict(
-        _request: Request, _exc: ProjectReplaceConflictError
-    ) -> JSONResponse:
-        return _error_response(409, "他の操作で更新されています。最新を読み込み直してください。")
+    async def _replace_conflict(request: Request, exc: ProjectReplaceConflictError) -> JSONResponse:
+        if exc.project_id is not None:
+            request.state.revision_conflict_project_id = exc.project_id
+        return _revision_conflict_response(
+            request,
+            "他の操作で更新されています。最新を読み込み直してください。",
+            exc.expected_revision,
+        )
 
     @app.exception_handler(RenderCommitConflictError)
     async def _render_commit_conflict(
@@ -378,6 +429,19 @@ def to_detail(record: ProjectRecord, export_dir: Path | None = None) -> ProjectD
     if export_dir is not None:
         normalize_manga_assets(manga, export_dir)
     return ProjectDetail(**to_summary(record).model_dump(), manga_json=manga)
+
+
+def to_project_mutation_response(
+    request: Request, project_id: str, result: MutationResultT
+) -> ProjectMutationResponse[MutationResultT]:
+    """mutation成功応答を共通形へ整形する。"""
+
+    return ProjectMutationResponse(
+        project=to_detail(
+            load_project_record(request, project_id), request.app.state.settings.export_dir
+        ),
+        result=result,
+    )
 
 
 def open_in_file_manager(path: Path) -> None:

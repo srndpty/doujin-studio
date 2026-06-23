@@ -23,12 +23,11 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def create_generated_project(client: TestClient) -> str:
     project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
-        "id"
-    ]
+        "project"
+    ]["id"]
     client.post(
-        f"/api/projects/{project_id}/generate-name",
+        f"/api/projects/{project_id}/generate-name?revision=0",
         json={
-            "revision": 0,
             "work_name": "作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -122,13 +121,14 @@ def test_layout_suggest_api_repropose_keeps_content(tmp_path: Path) -> None:
         original_bbox = page1["panels"][0]["bbox"]
 
         response = client.post(
-            f"/api/projects/{project_id}/pages/1/layout/suggest",
+            f"/api/projects/{project_id}/pages/1/layout/suggest?revision="
+            f"{client.get(f'/api/projects/{project_id}').json()['revision']}",
             json={"family": "montage"},
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["layout_family"] == "montage"
-        new_page = payload["manga_json"]["pages"][0]
+        assert payload["result"]["layout_family"] == "montage"
+        new_page = payload["project"]["manga_json"]["pages"][0]
         # コマ・台詞は維持され、座標と読み順だけ更新される。
         assert [p["panel_id"] for p in new_page["panels"]] == original_ids
         assert new_page["panels"][0]["dialogue"] == original_dialogue
@@ -146,4 +146,4 @@ def test_layout_locked_survives_manga_json_save(tmp_path: Path) -> None:
         saved = client.put(
             f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
         ).json()
-        assert saved["manga_json"]["pages"][0]["layout_locked"] is True
+        assert saved["project"]["manga_json"]["pages"][0]["layout_locked"] is True

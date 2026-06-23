@@ -9,8 +9,9 @@ from .. import story as story_module
 from ..database import ProjectRevisionRecord, StoryGenerationSessionRecord, now_utc
 from ..llm import build_llm_client
 from ..schemas import (
+    EmptyMutationResult,
     MangaProject,
-    ProjectDetail,
+    ProjectMutationResponse,
     ProjectRevisionResponse,
     StageGenerateRequest,
     StageUpdateRequest,
@@ -20,18 +21,23 @@ from ..schemas import (
 )
 from ..story import StoryError
 from .common import (
+    PROJECT_MUTATION_ERROR_RESPONSES,
     load_project_record,
-    to_detail,
+    to_project_mutation_response,
     to_story_summary,
 )
 
 router = APIRouter()
 
 
-@router.post("/api/projects/{project_id}/story-sessions", response_model=StorySessionResponse)
+@router.post(
+    "/api/projects/{project_id}/story-sessions",
+    response_model=ProjectMutationResponse[StorySessionResponse],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
 def create_story_session(
-    project_id: str, payload: StorySessionCreate, request: Request
-) -> StorySessionResponse:
+    project_id: str, payload: StorySessionCreate, request: Request, revision: int
+) -> ProjectMutationResponse[StorySessionResponse]:
     record = load_project_record(request, project_id)
     work_name = payload.work_name or record.work_name
     if payload.knowledge_work_id:
@@ -48,7 +54,13 @@ def create_story_session(
         def update_work_name(manga: MangaProject) -> None:
             manga.work_name = work_name
 
-        request.app.state.mutation.mutate_local(project_id, update_work_name)
+        request.app.state.mutation.mutate_user(
+            project_id, expected_revision=revision, mutate=update_work_name
+        )
+    else:
+        request.app.state.mutation.mutate_user(
+            project_id, expected_revision=revision, mutate=lambda _manga: None
+        )
     with request.app.state.SessionLocal() as session:
         story_record = story_module.create_session(
             session,
@@ -57,7 +69,8 @@ def create_story_session(
             target_pages=payload.target_pages,
             instruction=payload.instruction,
         )
-        return story_module.session_to_response(story_record)
+        story_response = story_module.session_to_response(story_record)
+    return to_project_mutation_response(request, project_id, story_response)
 
 
 @router.get("/api/projects/{project_id}/story-sessions", response_model=list[StorySessionSummary])
@@ -137,8 +150,14 @@ def approve_story_stage(session_id: str, stage: str, request: Request) -> StoryS
         return story_module.session_to_response(record)
 
 
-@router.post("/api/story-sessions/{session_id}/apply", response_model=ProjectDetail)
-async def apply_story_session(session_id: str, request: Request, revision: int) -> ProjectDetail:
+@router.post(
+    "/api/story-sessions/{session_id}/apply",
+    response_model=ProjectMutationResponse[EmptyMutationResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+async def apply_story_session(
+    session_id: str, request: Request, revision: int
+) -> ProjectMutationResponse[EmptyMutationResult]:
     with request.app.state.SessionLocal() as session:
         record = session.get(StoryGenerationSessionRecord, session_id)
         if record is None:
@@ -163,9 +182,7 @@ async def apply_story_session(session_id: str, request: Request, revision: int) 
     await request.app.state.generation.cancel_before_epoch(
         project_id, mutation_result.project.generation_epoch
     )
-    return to_detail(
-        load_project_record(request, project_id), request.app.state.settings.export_dir
-    )
+    return to_project_mutation_response(request, project_id, EmptyMutationResult())
 
 
 @router.get("/api/projects/{project_id}/revisions", response_model=list[ProjectRevisionResponse])
@@ -191,11 +208,12 @@ def list_project_revisions(project_id: str, request: Request) -> list[ProjectRev
 
 @router.post(
     "/api/projects/{project_id}/revisions/{revision_id}/restore",
-    response_model=ProjectDetail,
+    response_model=ProjectMutationResponse[EmptyMutationResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
 )
 async def restore_project_revision(
     project_id: str, revision_id: str, request: Request, revision: int
-) -> ProjectDetail:
+) -> ProjectMutationResponse[EmptyMutationResult]:
     load_project_record(request, project_id)
 
     def build_restored(session, _base: MangaProject) -> MangaProject:
@@ -213,6 +231,4 @@ async def restore_project_revision(
     await request.app.state.generation.cancel_before_epoch(
         project_id, mutation_result.project.generation_epoch
     )
-    return to_detail(
-        load_project_record(request, project_id), request.app.state.settings.export_dir
-    )
+    return to_project_mutation_response(request, project_id, EmptyMutationResult())

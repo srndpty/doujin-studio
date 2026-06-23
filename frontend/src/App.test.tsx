@@ -38,11 +38,14 @@ describe("AppのManga JSON保存", () => {
       if (init?.method === "PUT" && url.includes("/manga-json")) {
         const body = JSON.parse(String(init.body)) as MangaProject;
         return jsonResponse({
-          id: "p1",
-          title: body.title,
-          work_name: body.work_name,
-          revision: 1,
-          manga_json: body
+          project: {
+            id: "p1",
+            title: body.title,
+            work_name: body.work_name,
+            revision: 1,
+            manga_json: body
+          },
+          result: {}
         });
       }
       if (url === "/api/projects") {
@@ -111,7 +114,24 @@ describe("AppのManga JSON保存", () => {
       const url = String(input);
       if (init?.method === "PUT" && url.includes("/manga-json")) {
         // 競合: サーバはCASで409を返す。
-        return Promise.resolve(new Response("conflict", { status: 409 }));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              detail: "競合",
+              code: "project_revision_conflict",
+              expected_revision: 5,
+              actual_revision: 7,
+              project: {
+                id: "p1",
+                title: "他タブが保存した最新",
+                work_name: "テスト作品",
+                revision: 7,
+                manga_json: latestManga
+              }
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } }
+          )
+        );
       }
       if (url === "/api/projects") {
         return jsonResponse([
@@ -181,7 +201,9 @@ describe("AppのManga JSON保存", () => {
     });
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (init?.method === "POST" && url === "/api/projects/p1/export/cbz") return delayedCbz;
+      if (init?.method === "POST" && url === "/api/projects/p1/export/cbz?revision=0") {
+        return delayedCbz;
+      }
       if (url === "/api/projects") {
         return jsonResponse([
           { id: "p1", title: "テスト本", work_name: "作品1", revision: 0, updated_at: "2026-01-01" },
@@ -244,11 +266,14 @@ describe("AppのManga JSON保存", () => {
     resolveCbz(
       new Response(
         JSON.stringify({
-          cbz_asset: "p1/old.cbz",
-          absolute_path: "old.cbz",
-          revision: 9,
-          manga_json: { ...manga, title: "遅延したプロジェクト1" },
-          warnings: []
+          project: {
+            id: "p1",
+            title: "遅延したプロジェクト1",
+            work_name: "作品1",
+            revision: 9,
+            manga_json: { ...manga, title: "遅延したプロジェクト1" }
+          },
+          result: { cbz_asset: "p1/old.cbz", absolute_path: "old.cbz", warnings: [] }
         }),
         { headers: { "Content-Type": "application/json" } }
       )

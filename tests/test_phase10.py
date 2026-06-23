@@ -33,12 +33,11 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def create_generated_project(client: TestClient) -> str:
     project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
-        "id"
-    ]
+        "project"
+    ]["id"]
     client.post(
-        f"/api/projects/{project_id}/generate-name",
+        f"/api/projects/{project_id}/generate-name?revision=0",
         json={
-            "revision": 0,
             "work_name": "作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -238,9 +237,12 @@ def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
         assert payload["ok"] is True  # 既定の短い台詞はエラーにならない
         assert "errors" in payload and "warnings" in payload
 
-        render_response = client.post(f"/api/projects/{project_id}/pages/1/render")
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        render_response = client.post(
+            f"/api/projects/{project_id}/pages/1/render?revision={revision}"
+        )
         assert render_response.status_code == 200
-        body = render_response.json()
+        body = render_response.json()["result"]
         assert "/page_001." in body["page_asset"]
         assert body["page_asset"].endswith(".png")
         assert (tmp_path / "exports" / body["page_asset"]).exists()
@@ -283,7 +285,7 @@ def test_overlay_asset_upload_preserves_alpha(tmp_path: Path) -> None:
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
-        asset = response.json()["asset"]
+        asset = response.json()["result"]["asset"]
         saved = Image.open(tmp_path / "exports" / asset)
         # アルファチャンネルが保持され、透明部分が潰れていないこと。
         assert saved.mode == "RGBA"
@@ -294,7 +296,13 @@ def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) 
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         # ページ1をレンダリングしてrender_status=doneにする。
-        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/pages/1/render?revision={revision}"
+            ).status_code
+            == 200
+        )
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         # 本文側にだけ収まらない長文を仕込む（DBは変更しない）。
         dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
@@ -327,7 +335,8 @@ def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:
             f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
         )
         assert saved.status_code == 200
-        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        export = client.post(f"/api/projects/{project_id}/export/cbz?revision={revision}")
         assert export.status_code == 200
         # 窮屈さはプリフライト警告として確認できる。
         preflight_result = client.post(f"/api/projects/{project_id}/pages/1/preflight").json()

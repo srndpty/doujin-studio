@@ -29,10 +29,20 @@ class ProjectNotFoundError(Exception):
 
 
 class ProjectConflictError(Exception):
-    pass
+    def __init__(self, project_id: str | None = None) -> None:
+        super().__init__(project_id)
+        self.project_id = project_id
 
 
-class ProjectReplaceConflictError(ProjectConflictError):
+class ProjectRevisionConflictError(ProjectConflictError):
+    """ユーザーが送った期待revisionと最新revisionが一致しない。"""
+
+    def __init__(self, project_id: str, expected_revision: int) -> None:
+        super().__init__(project_id)
+        self.expected_revision = expected_revision
+
+
+class ProjectReplaceConflictError(ProjectRevisionConflictError):
     """全文置換(replace / replace_with_history)でのrevision競合。
 
     汎用のProjectConflictErrorとは別メッセージを維持するためのサブクラス。
@@ -213,7 +223,7 @@ class ProjectMutationService:
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
-                raise ProjectConflictError()
+                raise ProjectRevisionConflictError(project_id, expected_revision)
             base = record.revision
             epoch = record.generation_epoch
             manga = parse_manga(record.manga_json)
@@ -226,7 +236,7 @@ class ProjectMutationService:
                 session.commit()
                 return MutationResult(result, ProjectSnapshot(project_id, manga, base + 1, epoch))
             session.rollback()
-            raise ProjectConflictError()
+            raise ProjectRevisionConflictError(project_id, expected_revision)
 
     def mutate_local(
         self,
@@ -255,7 +265,7 @@ class ProjectMutationService:
                         result, ProjectSnapshot(project_id, manga, base + 1, epoch)
                     )
                 session.rollback()
-        raise ProjectConflictError()
+        raise ProjectConflictError(project_id)
 
     def mutate_worker(
         self,
@@ -293,7 +303,7 @@ class ProjectMutationService:
                         result, ProjectSnapshot(project_id, manga, base + 1, expected_epoch)
                     )
                 session.rollback()
-        raise ProjectConflictError()
+        raise ProjectConflictError(project_id)
 
     def mutate_worker_panel(
         self,
@@ -351,7 +361,7 @@ class ProjectMutationService:
                         result, ProjectSnapshot(project_id, manga, base + 1, expected_epoch)
                     )
                 session.rollback()
-        raise ProjectConflictError()
+        raise ProjectConflictError(project_id)
 
     def replace(
         self,
@@ -375,7 +385,7 @@ class ProjectMutationService:
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
-                raise ProjectReplaceConflictError()
+                raise ProjectReplaceConflictError(project_id, expected_revision)
             new_epoch = record.generation_epoch + 1 if increment_epoch else record.generation_epoch
             if (
                 self.repository.cas_set_manga(
@@ -388,7 +398,7 @@ class ProjectMutationService:
                 != 1
             ):
                 session.rollback()
-                raise ProjectReplaceConflictError()
+                raise ProjectReplaceConflictError(project_id, expected_revision)
             if increment_epoch:
                 self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             session.commit()
@@ -410,7 +420,7 @@ class ProjectMutationService:
             if record is None:
                 raise ProjectNotFoundError()
             if record.revision != expected_revision:
-                raise ProjectReplaceConflictError()
+                raise ProjectReplaceConflictError(project_id, expected_revision)
             new_epoch = record.generation_epoch + 1
             previous_json = record.manga_json
             replacement = build_replacement(session, parse_manga(previous_json))
@@ -427,7 +437,7 @@ class ProjectMutationService:
                 != 1
             ):
                 session.rollback()
-                raise ProjectReplaceConflictError()
+                raise ProjectReplaceConflictError(project_id, expected_revision)
             self.repository.cancel_jobs_before_epoch(session, project_id, new_epoch)
             self.repository.add_revision_history(session, project_id, history_label, previous_json)
             session.commit()

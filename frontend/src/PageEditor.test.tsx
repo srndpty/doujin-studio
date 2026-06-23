@@ -132,6 +132,7 @@ describe("PageEditor", () => {
         onChange={onChange}
         onSave={onSave}
         onSuggest={vi.fn()}
+        onOverlayUpload={vi.fn()}
         setMessage={vi.fn()}
       />
     );
@@ -158,6 +159,7 @@ describe("PageEditor", () => {
         onChange={vi.fn()}
         onSave={vi.fn()}
         onSuggest={vi.fn()}
+        onOverlayUpload={vi.fn()}
         setMessage={vi.fn()}
       />
     );

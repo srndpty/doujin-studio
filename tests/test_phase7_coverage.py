@@ -37,11 +37,10 @@ def make_client(tmp_path: Path):
 def create_project(client) -> str:
     project_id = client.post(
         "/api/projects", json={"title": "本", "work_name": "作品", "target_pages": 4}
-    ).json()["id"]
+    ).json()["project"]["id"]
     client.post(
-        f"/api/projects/{project_id}/generate-name",
+        f"/api/projects/{project_id}/generate-name?revision=0",
         json={
-            "revision": 0,
             "work_name": "作品",
             "character_a": "春香",
             "character_b": "千早",

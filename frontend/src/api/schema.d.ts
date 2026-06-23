@@ -845,8 +845,8 @@ export interface components {
              */
             candidate_count: number;
         };
-        /** BatchGenerationJobResponse */
-        BatchGenerationJobResponse: {
+        /** BatchGenerationJobResult */
+        BatchGenerationJobResult: {
             /** Jobs */
             jobs: components["schemas"]["GenerationJobResponse"][];
         };
@@ -921,18 +921,12 @@ export interface components {
              */
             reference_load_node_id: string;
         };
-        /** CharacterReferenceResponse */
-        CharacterReferenceResponse: {
+        /** CharacterReferenceResult */
+        CharacterReferenceResult: {
             /** Character Id */
             character_id: string;
             /** Asset */
             asset: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
         };
         /** ComfyUIStatusResponse */
         ComfyUIStatusResponse: {
@@ -994,20 +988,17 @@ export interface components {
             max_lines: number;
             tail?: components["schemas"]["BalloonTail"] | null;
         };
-        /** ExportResponse */
-        ExportResponse: {
-            /** Project Id */
-            project_id: string;
+        /**
+         * EmptyMutationResult
+         * @description 操作固有情報がないmutation用の空result。
+         */
+        EmptyMutationResult: Record<string, never>;
+        /** ExportResult */
+        ExportResult: {
             /** Cbz Asset */
             cbz_asset: string;
             /** Absolute Path */
             absolute_path: string;
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
-            manga_json: components["schemas"]["MangaProject"];
             /** Warnings */
             warnings?: string[];
         };
@@ -1038,8 +1029,6 @@ export interface components {
         };
         /** GenerateNameRequest */
         GenerateNameRequest: {
-            /** Revision */
-            revision: number;
             /** Work Name */
             work_name: string;
             /** Character A */
@@ -1416,20 +1405,12 @@ export interface components {
             /** Family */
             family?: string | null;
         };
-        /** LayoutSuggestResponse */
-        LayoutSuggestResponse: {
-            /** Project Id */
-            project_id: string;
+        /** LayoutSuggestResult */
+        LayoutSuggestResult: {
             /** Page */
             page: number;
             /** Layout Family */
             layout_family: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
         };
         /** LoRABinding */
         LoRABinding: {
@@ -1681,20 +1662,12 @@ export interface components {
             /** Blockers */
             blockers?: string[];
         };
-        /** PageRenderResponse */
-        PageRenderResponse: {
-            /** Project Id */
-            project_id: string;
+        /** PageRenderResult */
+        PageRenderResult: {
             /** Page */
             page: number;
             /** Page Asset */
             page_asset: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
             /** Warnings */
             warnings?: string[];
             preflight: components["schemas"]["PreflightResponse"];
@@ -1774,33 +1747,17 @@ export interface components {
             /** Load Node Id */
             load_node_id: string;
         };
-        /** PanelImageGenerationResponse */
-        PanelImageGenerationResponse: {
-            /** Project Id */
-            project_id: string;
+        /** PanelImageGenerationResult */
+        PanelImageGenerationResult: {
             /** Panel Id */
             panel_id: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
         };
-        /** PanelPageRenderResponse */
-        PanelPageRenderResponse: {
-            /** Project Id */
-            project_id: string;
+        /** PanelPageRenderResult */
+        PanelPageRenderResult: {
             /** Panel Id */
             panel_id: string;
             /** Page Asset */
             page_asset: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -1874,6 +1831,66 @@ export interface components {
             updated_at: string;
             manga_json: components["schemas"]["MangaProject"];
         };
+        /** ProjectMutationResponse[BatchGenerationJobResult] */
+        ProjectMutationResponse_BatchGenerationJobResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["BatchGenerationJobResult"];
+        };
+        /** ProjectMutationResponse[CharacterReferenceResult] */
+        ProjectMutationResponse_CharacterReferenceResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["CharacterReferenceResult"];
+        };
+        /** ProjectMutationResponse[EmptyMutationResult] */
+        ProjectMutationResponse_EmptyMutationResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["EmptyMutationResult"];
+        };
+        /** ProjectMutationResponse[ExportResult] */
+        ProjectMutationResponse_ExportResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["ExportResult"];
+        };
+        /** ProjectMutationResponse[GenerationJobResponse] */
+        ProjectMutationResponse_GenerationJobResponse_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["GenerationJobResponse"];
+        };
+        /** ProjectMutationResponse[LayoutSuggestResult] */
+        ProjectMutationResponse_LayoutSuggestResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["LayoutSuggestResult"];
+        };
+        /** ProjectMutationResponse[PageRenderResult] */
+        ProjectMutationResponse_PageRenderResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["PageRenderResult"];
+        };
+        /** ProjectMutationResponse[PanelImageGenerationResult] */
+        ProjectMutationResponse_PanelImageGenerationResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["PanelImageGenerationResult"];
+        };
+        /** ProjectMutationResponse[PanelPageRenderResult] */
+        ProjectMutationResponse_PanelPageRenderResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["PanelPageRenderResult"];
+        };
+        /** ProjectMutationResponse[ProjectRenderResult] */
+        ProjectMutationResponse_ProjectRenderResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["ProjectRenderResult"];
+        };
+        /** ProjectMutationResponse[ReferenceAssetResult] */
+        ProjectMutationResponse_ReferenceAssetResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["ReferenceAssetResult"];
+        };
+        /** ProjectMutationResponse[StorySessionResponse] */
+        ProjectMutationResponse_StorySessionResponse_: {
+            project: components["schemas"]["ProjectDetail"];
+            result: components["schemas"]["StorySessionResponse"];
+        };
         /** ProjectProductionStatus */
         ProjectProductionStatus: {
             /** Project Id */
@@ -1895,6 +1912,32 @@ export interface components {
             pages: components["schemas"]["PageProductionStatus"][];
             /** Blockers */
             blockers?: string[];
+        };
+        /** ProjectRenderResult */
+        ProjectRenderResult: {
+            /** Page Assets */
+            page_assets: string[];
+            /** Warnings */
+            warnings?: string[];
+        };
+        /**
+         * ProjectRevisionConflictResponse
+         * @description revision競合時の専用409応答。最新projectを同梱する。
+         */
+        ProjectRevisionConflictResponse: {
+            /** Detail */
+            detail: string;
+            /**
+             * Code
+             * @default project_revision_conflict
+             * @constant
+             */
+            code: "project_revision_conflict";
+            /** Expected Revision */
+            expected_revision: number;
+            /** Actual Revision */
+            actual_revision: number;
+            project: components["schemas"]["ProjectDetail"];
         };
         /** ProjectRevisionResponse */
         ProjectRevisionResponse: {
@@ -1945,18 +1988,12 @@ export interface components {
             /** Character Ids */
             character_ids?: string[];
         };
-        /** ReferenceAssetResponse */
-        ReferenceAssetResponse: {
+        /** ReferenceAssetResult */
+        ReferenceAssetResult: {
             /** Target Id */
             target_id: string;
             /** Asset */
             asset: string;
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
         };
         /** ReferenceImageBinding */
         ReferenceImageBinding: {
@@ -1983,21 +2020,6 @@ export interface components {
              * @default false
              */
             force: boolean;
-        };
-        /** RenderResponse */
-        RenderResponse: {
-            /** Project Id */
-            project_id: string;
-            /** Page Assets */
-            page_assets: string[];
-            manga_json: components["schemas"]["MangaProject"];
-            /**
-             * Revision
-             * @default 0
-             */
-            revision: number;
-            /** Warnings */
-            warnings?: string[];
         };
         /** Sfx */
         Sfx: {
@@ -2432,7 +2454,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectDetail"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
                 };
             };
             /** @description Validation Error */
@@ -2479,7 +2501,9 @@ export interface operations {
     };
     generate_name_api_projects__project_id__generate_name_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2498,7 +2522,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectDetail"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2535,7 +2568,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectDetail"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2569,7 +2611,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CharacterReferenceResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_CharacterReferenceResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2603,7 +2654,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReferenceAssetResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2639,7 +2699,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReferenceAssetResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2675,7 +2744,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReferenceAssetResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_ReferenceAssetResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2691,7 +2769,9 @@ export interface operations {
     };
     suggest_page_layout_api_projects__project_id__pages__page_number__layout_suggest_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2711,7 +2791,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LayoutSuggestResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_LayoutSuggestResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2794,7 +2883,9 @@ export interface operations {
     };
     render_page_endpoint_api_projects__project_id__pages__page_number__render_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2810,7 +2901,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PageRenderResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_PageRenderResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2826,7 +2926,9 @@ export interface operations {
     };
     render_panel_page_api_projects__project_id__panels__panel_id__render_page_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2842,7 +2944,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PanelPageRenderResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_PanelPageRenderResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2858,7 +2969,9 @@ export interface operations {
     };
     export_project_cbz_api_projects__project_id__export_cbz_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2873,7 +2986,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExportResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_ExportResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2951,7 +3073,9 @@ export interface operations {
     };
     render_project_api_projects__project_id__render_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -2970,16 +3094,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RenderResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_ProjectRenderResult_"];
                 };
             };
-            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            /** @description revision競合、または生成キャンセル（入力変更・構成置換など） */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3004,7 +3128,9 @@ export interface operations {
     };
     generate_panel_image_api_projects__project_id__panels__panel_id__generate_image_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3024,16 +3150,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PanelImageGenerationResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_PanelImageGenerationResult_"];
                 };
             };
-            /** @description 生成がキャンセルされた（入力変更・構成置換など） */
+            /** @description revision競合、または生成キャンセル（入力変更・構成置換など） */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiErrorResponse"];
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3090,7 +3216,9 @@ export interface operations {
     };
     create_generation_job_api_projects__project_id__panels__panel_id__generation_jobs_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3110,7 +3238,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GenerationJobResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_GenerationJobResponse_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3157,7 +3294,9 @@ export interface operations {
     };
     create_batch_generation_jobs_api_projects__project_id__generation_jobs_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3176,7 +3315,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BatchGenerationJobResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_BatchGenerationJobResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3238,7 +3386,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GenerationJobResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_GenerationJobResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -3254,7 +3402,9 @@ export interface operations {
     };
     select_panel_candidate_api_projects__project_id__panels__panel_id__candidates__candidate_id__select_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3271,7 +3421,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PanelPageRenderResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_PanelPageRenderResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3287,7 +3446,9 @@ export interface operations {
     };
     use_stub_panel_image_api_projects__project_id__panels__panel_id__use_stub_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3303,7 +3464,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PanelImageGenerationResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_PanelImageGenerationResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3564,7 +3734,9 @@ export interface operations {
     };
     create_story_session_api_projects__project_id__story_sessions_post: {
         parameters: {
-            query?: never;
+            query: {
+                revision: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -3583,7 +3755,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StorySessionResponse"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_StorySessionResponse_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3751,7 +3932,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectDetail"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3816,7 +4006,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectDetail"];
+                    "application/json": components["schemas"]["ProjectMutationResponse_EmptyMutationResult_"];
+                };
+            };
+            /** @description revision競合。最新のprojectを同梱する */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */

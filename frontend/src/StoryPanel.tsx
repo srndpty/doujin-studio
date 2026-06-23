@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ProjectMutationResponse } from "./App";
+import { api, withRevision } from "./api/client";
 
 type StageName = "brief" | "plot" | "pages" | "script";
 type StageStatus = "empty" | "draft" | "approved";
@@ -49,33 +51,17 @@ const STAGES: { name: StageName; label: string; hint: string }[] = [
 
 const STATUS_LABEL: Record<StageStatus, string> = { empty: "未生成", draft: "未承認", approved: "承認済み" };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
 export function StoryPanel({
   projectId,
   revision,
   workName,
-  onApplied,
+  onProjectMutation,
   onBusyChange
 }: {
   projectId: string;
   revision: number;
   workName: string;
-  onApplied: () => void;
+  onProjectMutation: (response: ProjectMutationResponse<unknown>) => void;
   onBusyChange?: (busy: boolean, label: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -109,18 +95,20 @@ export function StoryPanel({
   }
 
   async function refreshSessions() {
-    setSessions(await getJson<SessionSummary[]>(`/api/projects/${projectId}/story-sessions`));
+    setSessions(await api.get<SessionSummary[]>(`/api/projects/${projectId}/story-sessions`));
   }
 
   async function refreshRevisions() {
-    setRevisions(await getJson<Revision[]>(`/api/projects/${projectId}/revisions`));
+    setRevisions(await api.get<Revision[]>(`/api/projects/${projectId}/revisions`));
   }
 
   useEffect(() => {
-    void getJson<LlmStatus>("/api/llm/status")
+    void api
+      .get<LlmStatus>("/api/llm/status")
       .then(setLlm)
       .catch(() => setLlm(null));
-    void getJson<LocalKnowledgeWork[]>("/api/knowledge/local-works")
+    void api
+      .get<LocalKnowledgeWork[]>("/api/knowledge/local-works")
       .then((works) => {
         setLocalWorks(works);
       })
@@ -152,26 +140,29 @@ export function StoryPanel({
 
   async function createSession() {
     await run(async () => {
-      const created = await sendJson<StorySession>(`/api/projects/${projectId}/story-sessions`, "POST", {
-        work_name: selectedLocalWork?.work_name ?? workName,
-        knowledge_work_id: knowledgeWorkId,
-        target_pages: targetPages,
-        instruction
-      });
-      syncDrafts(created);
+      const response = await api.post<ProjectMutationResponse<StorySession>>(
+        withRevision(`/api/projects/${projectId}/story-sessions`, revision),
+        {
+          work_name: selectedLocalWork?.work_name ?? workName,
+          knowledge_work_id: knowledgeWorkId,
+          target_pages: targetPages,
+          instruction
+        }
+      );
+      onProjectMutation(response);
+      syncDrafts(response.result);
       setMessage(
         knowledgeWorkId
-          ? `「${created.work_name}」のローカル知識を同期してセッションを作成しました`
+          ? `「${response.result.work_name}」のローカル知識を同期してセッションを作成しました`
           : "セッションを作成しました。企画から生成してください"
       );
       await refreshSessions();
-      if (knowledgeWorkId) onApplied();
     });
   }
 
   async function loadSession(id: string) {
     await run(async () => {
-      syncDrafts(await getJson<StorySession>(`/api/story-sessions/${id}`));
+      syncDrafts(await api.get<StorySession>(`/api/story-sessions/${id}`));
       setMessage("セッションを読み込みました");
     });
   }
@@ -180,9 +171,8 @@ export function StoryPanel({
     if (!session) return;
     await run(async () => {
       setMessage(`${stage}を生成中…`);
-      const next = await sendJson<StorySession>(
+      const next = await api.post<StorySession>(
         `/api/story-sessions/${session.id}/stages/${stage}/generate`,
-        "POST",
         { instruction: "" }
       );
       syncDrafts(next);
@@ -201,7 +191,7 @@ export function StoryPanel({
       } catch {
         throw new Error("JSONの形式が不正です");
       }
-      const next = await sendJson<StorySession>(`/api/story-sessions/${session.id}/stages/${stage}`, "PUT", {
+      const next = await api.put<StorySession>(`/api/story-sessions/${session.id}/stages/${stage}`, {
         data: parsed
       });
       syncDrafts(next);
@@ -212,10 +202,7 @@ export function StoryPanel({
   async function approveStage(stage: StageName) {
     if (!session) return;
     await run(async () => {
-      const next = await sendJson<StorySession>(
-        `/api/story-sessions/${session.id}/stages/${stage}/approve`,
-        "POST"
-      );
+      const next = await api.post<StorySession>(`/api/story-sessions/${session.id}/stages/${stage}/approve`);
       syncDrafts(next);
       setMessage(`${stage}を承認しました`);
     });
@@ -224,19 +211,23 @@ export function StoryPanel({
   async function applySession() {
     if (!session) return;
     await run(async () => {
-      await sendJson(`/api/story-sessions/${session.id}/apply?revision=${revision}`, "POST");
+      const response = await api.post<ProjectMutationResponse<unknown>>(
+        withRevision(`/api/story-sessions/${session.id}/apply`, revision)
+      );
+      onProjectMutation(response);
       setMessage("プロジェクトへ適用しました。適用前の状態はリビジョンに保存されています");
       await refreshRevisions();
-      onApplied();
     });
   }
 
   async function restoreRevision(id: string) {
     await run(async () => {
-      await sendJson(`/api/projects/${projectId}/revisions/${id}/restore?revision=${revision}`, "POST");
+      const response = await api.post<ProjectMutationResponse<unknown>>(
+        withRevision(`/api/projects/${projectId}/revisions/${id}/restore`, revision)
+      );
+      onProjectMutation(response);
       setMessage("リビジョンを復元しました");
       await refreshRevisions();
-      onApplied();
     });
   }
 

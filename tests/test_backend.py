@@ -102,14 +102,21 @@ def current_revision(client: TestClient, project_id: str) -> int:
     return client.get(f"/api/projects/{project_id}").json()["revision"]
 
 
+def mutation_url(client: TestClient, project_id: str, suffix: str) -> str:
+    separator = "&" if "?" in suffix else "?"
+    return (
+        f"/api/projects/{project_id}/{suffix}{separator}revision="
+        f"{current_revision(client, project_id)}"
+    )
+
+
 def create_generated_project(client: TestClient) -> str:
     response = client.post("/api/projects", json={"title": "テスト本", "work_name": "テスト作品"})
     assert response.status_code == 200
-    project_id = response.json()["id"]
+    project_id = response.json()["project"]["id"]
     response = client.post(
-        f"/api/projects/{project_id}/generate-name",
+        f"/api/projects/{project_id}/generate-name?revision=0",
         json={
-            "revision": 0,
             "work_name": "テスト作品",
             "character_a": "春香",
             "character_b": "千早",
@@ -147,23 +154,24 @@ def test_project_crud_and_generate_name(tmp_path: Path) -> None:
 def test_render_and_export_cbz(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        response = client.post(f"/api/projects/{project_id}/render")
+        response = client.post(mutation_url(client, project_id, "render"))
         assert response.status_code == 200
-        assets = response.json()["page_assets"]
+        assets = response.json()["result"]["page_assets"]
         assert len(assets) == 4
         for asset in assets:
             asset_response = client.get(f"/api/assets/{asset}")
             assert asset_response.status_code == 200
 
-        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        response = client.post(mutation_url(client, project_id, "export/cbz"))
         assert response.status_code == 200
-        cbz_asset = response.json()["cbz_asset"]
+        export_result = response.json()["result"]
+        cbz_asset = export_result["cbz_asset"]
         cbz_path = tmp_path / "exports" / cbz_asset
         assert cbz_path.exists()
         assert cbz_path.name.startswith("テスト本-")
         assert "-r" in cbz_path.name
         assert cbz_path.name.endswith(".cbz")
-        assert Path(response.json()["absolute_path"]) == cbz_path.resolve()
+        assert Path(export_result["absolute_path"]) == cbz_path.resolve()
         with ZipFile(cbz_path) as archive:
             assert archive.namelist() == [
                 "page_001.png",
@@ -171,10 +179,10 @@ def test_render_and_export_cbz(tmp_path: Path) -> None:
                 "page_003.png",
                 "page_004.png",
             ]
-        second = client.post(f"/api/projects/{project_id}/export/cbz")
+        second = client.post(mutation_url(client, project_id, "export/cbz"))
         assert second.status_code == 200
-        assert second.json()["cbz_asset"] != cbz_asset
-        assert response.json()["warnings"] == []
+        assert second.json()["result"]["cbz_asset"] != cbz_asset
+        assert export_result["warnings"] == []
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert status["status"] == "complete"
         assert status["adopted_panels"] == status["total_panels"]
@@ -185,7 +193,7 @@ def test_open_export_folder_selects_cbz(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(projects_router, "open_in_file_manager", lambda path: opened.append(path))
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        client.post(f"/api/projects/{project_id}/export/cbz")
+        client.post(mutation_url(client, project_id, "export/cbz"))
         response = client.post(f"/api/projects/{project_id}/export/open-folder")
         assert response.status_code == 200
         payload = response.json()
@@ -205,9 +213,9 @@ def test_comfyui_unavailable_falls_back_to_stub(tmp_path: Path) -> None:
     workflow_path.write_text(json.dumps(sample_workflow()), encoding="utf-8")
     with make_client(tmp_path, image_backend="comfyui", workflow_path=workflow_path) as client:
         project_id = create_generated_project(client)
-        response = client.post(f"/api/projects/{project_id}/render")
+        response = client.post(mutation_url(client, project_id, "render"))
         assert response.status_code == 200
-        manga = response.json()["manga_json"]
+        manga = response.json()["project"]["manga_json"]
         first_panel = manga["pages"][0]["panels"][0]
         assert first_panel["generation"]["backend"] == "comfyui"
         assert first_panel["generation"]["status"] == "fallback"
@@ -218,7 +226,7 @@ def test_comfyui_missing_workflow_is_error_not_silent_stub(tmp_path: Path) -> No
     # 設定不備（ワークフロー欠如）は黙ってstubへ退避せず、エラーとして表面化させる。
     with make_client(tmp_path, image_backend="comfyui") as client:
         project_id = create_generated_project(client)
-        response = client.post(f"/api/projects/{project_id}/render")
+        response = client.post(mutation_url(client, project_id, "render"))
         assert response.status_code == 502
         project = client.get(f"/api/projects/{project_id}").json()
         first_panel = project["manga_json"]["pages"][0]["panels"][0]
@@ -232,7 +240,7 @@ def test_generate_image_returns_502_when_backend_fails(tmp_path: Path) -> None:
     with make_client(tmp_path, image_backend="comfyui") as client:
         project_id = create_generated_project(client)
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         assert response.status_code == 502
@@ -245,7 +253,7 @@ def test_generate_image_returns_502_when_backend_fails(tmp_path: Path) -> None:
 def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/projects", json={"title": "不正テスト", "work_name": ""})
-        project_id = response.json()["id"]
+        project_id = response.json()["project"]["id"]
         response = client.put(
             f"/api/projects/{project_id}/manga-json?revision=0",
             json={
@@ -266,11 +274,16 @@ def test_manga_json_optimistic_lock_rejects_stale_revision(tmp_path: Path) -> No
 
         first = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
         assert first.status_code == 200
-        assert first.json()["revision"] == revision + 1
+        assert first.json()["project"]["revision"] == revision + 1
 
         # 古いrevisionでの保存は409で弾く（生成完了・別タブ保存との競合）。
         stale = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
         assert stale.status_code == 409
+        conflict = stale.json()
+        assert conflict["code"] == "project_revision_conflict"
+        assert conflict["expected_revision"] == revision
+        assert conflict["actual_revision"] == revision + 1
+        assert conflict["project"]["revision"] == revision + 1
 
         # revisionは必須。未指定の無条件保存は許可しない（古いJSONでの巻き戻し防止）。
         missing = client.put(f"/api/projects/{project_id}/manga-json", json=manga)
@@ -281,9 +294,8 @@ def test_generate_name_rejects_stale_revision(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         stale = client.post(
-            f"/api/projects/{project_id}/generate-name",
+            f"/api/projects/{project_id}/generate-name?revision=0",
             json={
-                "revision": 0,
                 "work_name": "別作品",
                 "character_a": "A",
                 "character_b": "B",
@@ -337,7 +349,7 @@ def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
 ) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         assert all(page["render_status"] == "done" for page in manga["pages"])
 
@@ -346,17 +358,18 @@ def test_metadata_change_keeps_rendered_pages_but_render_change_invalidates(
         meta_only = put_manga(client, project_id, manga)
         assert meta_only.status_code == 200
         assert all(
-            page["render_status"] == "done" for page in meta_only.json()["manga_json"]["pages"]
+            page["render_status"] == "done"
+            for page in meta_only.json()["project"]["manga_json"]["pages"]
         )
 
         # 描画に影響する変更（1ページ目の台詞追加）は当該ページだけpendingにする。
-        manga2 = meta_only.json()["manga_json"]
+        manga2 = meta_only.json()["project"]["manga_json"]
         manga2["pages"][0]["panels"][0]["dialogue"].append(
             {"speaker": "char_a", "text": "追加の台詞"}
         )
         render_change = put_manga(client, project_id, manga2)
         assert render_change.status_code == 200
-        pages = render_change.json()["manga_json"]["pages"]
+        pages = render_change.json()["project"]["manga_json"]["pages"]
         assert pages[0]["render_status"] == "pending"
         assert all(page["render_status"] == "done" for page in pages[1:])
 
@@ -376,8 +389,8 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
         app = client.app
         project_id = create_generated_project(client)
         # 既存候補を2つ作る（2回目が選択状態になる）。
-        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
-        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
+        client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
         manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         panel = next(p for p in manga["pages"][0]["panels"] if p["panel_id"] == "p01_01")
         assert len(panel["image_candidates"]) == 2
@@ -416,13 +429,13 @@ def test_generation_keeps_user_selection_made_during_run(tmp_path: Path, monkeyp
         )
 
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         assert response.status_code == 200
         panel2 = next(
             p
-            for p in response.json()["manga_json"]["pages"][0]["panels"]
+            for p in response.json()["project"]["manga_json"]["pages"][0]["panels"]
             if p["panel_id"] == "p01_01"
         )
         # 新候補は追加されるが、生成中のユーザー選択は自動採用で上書きされない。
@@ -464,7 +477,7 @@ def test_generation_discards_candidate_when_input_changes(tmp_path: Path, monkey
             generation_module, "build_image_backend", lambda settings: EditingBackend()
         )
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 2},
         )
         # 生成入力が変わってジョブがcancelledになると、同期生成APIは409を返す。
@@ -555,10 +568,11 @@ def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         response = client.post(
-            f"/api/projects/{project_id}/generation-jobs", json={"page": 1, "candidate_count": 1}
+            mutation_url(client, project_id, "generation-jobs"),
+            json={"page": 1, "candidate_count": 1},
         )
         assert response.status_code == 200
-        jobs = response.json()["jobs"]
+        jobs = response.json()["result"]["jobs"]
         assert len(jobs) >= 2
         # 先頭ジョブがlock取得→set_running→generate_panelで停止し、残りはlock待ちqueuedになる。
         time.sleep(0.5)
@@ -592,11 +606,13 @@ def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeyp
         app = client.app
         project_id = create_generated_project(client)
         first = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 2},
         )
         assert first.status_code == 200
-        candidates = first.json()["manga_json"]["pages"][0]["panels"][0]["image_candidates"]
+        candidates = first.json()["project"]["manga_json"]["pages"][0]["panels"][0][
+            "image_candidates"
+        ]
         assert len(candidates) == 2
         # 最小seedの既存候補を生成中に採用する。修正前は旧ジョブ選択でgeneration.seedが
         # 末尾候補のseedへ進むため、これを採用するとseed不一致でジョブが破棄されていた。
@@ -633,12 +649,12 @@ def test_selecting_candidate_midjob_does_not_discard_job(tmp_path: Path, monkeyp
             generation_module, "build_image_backend", lambda settings: SelectingBackend()
         )
         second = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 2},
         )
         # 候補採用ではseedが変わらないため、ジョブはcancelされず新候補が保存される。
         assert second.status_code == 200, second.text
-        panel = second.json()["manga_json"]["pages"][0]["panels"][0]
+        panel = second.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert len(panel["image_candidates"]) == 4
 
 
@@ -706,7 +722,7 @@ def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
         project_id = create_generated_project(client)
         # generate-imageはジョブ完了まで待つため、終了後にキャンセルする。
         generated = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         assert generated.status_code == 200
@@ -717,7 +733,7 @@ def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
         cancelled = client.post(f"/api/generation-jobs/{job['id']}/cancel")
         assert cancelled.status_code == 200
         # 完了済みジョブのキャンセルは何もしない（doneのまま）。
-        assert cancelled.json()["status"] == "done"
+        assert cancelled.json()["result"]["status"] == "done"
         # 成功したコマがskippedへ巻き戻らない。
         panel = next(
             p
@@ -733,8 +749,8 @@ def test_cancel_completed_job_is_noop(tmp_path: Path) -> None:
 def test_use_stub_creates_unique_candidate_files(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
-        client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
+        client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
         panel = next(
             p
             for p in client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
@@ -753,13 +769,13 @@ def test_auto_adopt_marks_page_pending(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         # ページ1をレンダリング済み(done)にする。
-        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "pages/1/render")).status_code == 200
         page1 = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
         assert page1["render_status"] == "done"
 
         # ページ1のコマで候補を生成→自動採用されると、当該ページはpendingへ戻る。
         client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         page1_after = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
@@ -909,9 +925,9 @@ def test_mock_comfyui_generates_single_panel_image(tmp_path: Path, monkeypatch) 
         assert response.status_code == 200
         assert response.json()["connected"] is True
 
-        response = client.post(f"/api/projects/{project_id}/panels/p01_01/generate-image")
+        response = client.post(mutation_url(client, project_id, "panels/p01_01/generate-image"))
         assert response.status_code == 200
-        first_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        first_panel = response.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert first_panel["generation"]["status"] == "done"
         assert first_panel["generation"]["prompt_id"] == "prompt-1"
         assert (tmp_path / "exports" / first_panel["image_asset"]).exists()
@@ -920,9 +936,9 @@ def test_mock_comfyui_generates_single_panel_image(tmp_path: Path, monkeypatch) 
 def test_single_panel_stub_endpoint_updates_panel(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        response = client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        response = client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
         assert response.status_code == 200
-        first_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        first_panel = response.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert first_panel["generation"]["backend"] == "stub"
         assert first_panel["generation"]["status"] == "done"
         assert first_panel["image_asset"]
@@ -931,11 +947,11 @@ def test_single_panel_stub_endpoint_updates_panel(tmp_path: Path) -> None:
 def test_single_panel_render_page_endpoint_updates_page_png(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        response = client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub")
+        response = client.post(mutation_url(client, project_id, "panels/p01_01/use-stub"))
         assert response.status_code == 200
-        response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
+        response = client.post(mutation_url(client, project_id, "panels/p01_01/render-page"))
         assert response.status_code == 200
-        page_asset = response.json()["page_asset"]
+        page_asset = response.json()["result"]["page_asset"]
         assert page_asset.startswith(f"{project_id}/pages/page_001.")
         assert page_asset.endswith(".png")
         assert (tmp_path / "exports" / page_asset).exists()
@@ -945,11 +961,11 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
             json={"candidate_count": 2},
         )
         assert response.status_code == 200
-        job_id = response.json()["id"]
+        job_id = response.json()["result"]["id"]
 
         with client.websocket_connect(f"/api/generation-jobs/{job_id}/ws") as websocket:
             while True:
@@ -971,12 +987,14 @@ def test_generation_job_creates_candidates_and_selects_one(tmp_path: Path) -> No
 
         first_candidate_id = panel["image_candidates"][0]["id"]
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/candidates/{first_candidate_id}/select"
+            mutation_url(
+                client, project_id, f"panels/p01_01/candidates/{first_candidate_id}/select"
+            )
         )
         assert response.status_code == 200
-        selected_panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        selected_panel = response.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert selected_panel["selected_candidate_id"] == first_candidate_id
-        assert response.json()["page_asset"].startswith(f"{project_id}/pages/page_001.")
+        assert response.json()["result"]["page_asset"].startswith(f"{project_id}/pages/page_001.")
 
 
 def test_job_manager_cancels_running_task() -> None:
@@ -1009,24 +1027,24 @@ def test_cancel_before_task_start_releases_panel_and_allows_regeneration(
 
         monkeypatch.setattr(manager, "start", do_not_start)
         created = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
             json={"candidate_count": 1},
         )
         assert created.status_code == 200
-        cancelled = client.post(f"/api/generation-jobs/{created.json()['id']}/cancel")
+        cancelled = client.post(f"/api/generation-jobs/{created.json()['result']['id']}/cancel")
         assert cancelled.status_code == 200
-        assert cancelled.json()["status"] == "cancelled"
+        assert cancelled.json()["result"]["status"] == "cancelled"
         detail = client.get(f"/api/projects/{project_id}").json()
         panel = detail["manga_json"]["pages"][0]["panels"][0]
         assert panel["generation"]["status"] == "skipped"
         revision_after_cancel = detail["revision"]
-        cancelled_job = manager.get(created.json()["id"])
+        cancelled_job = manager.get(created.json()["result"]["id"])
         assert cancelled_job is not None
         mark_panel_job_stopped(client.app, cancelled_job, "生成をキャンセルしました")
         assert client.get(f"/api/projects/{project_id}").json()["revision"] == revision_after_cancel
 
         retried = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
             json={"candidate_count": 1},
         )
         assert retried.status_code == 200
@@ -1080,14 +1098,14 @@ def test_cancelled_job_stays_cancelled_when_backend_raises_late(
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 client.post,
-                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                mutation_url(client, project_id, "panels/p01_01/generate-image"),
                 json={"candidate_count": 1},
             )
             assert started.wait(timeout=10)
             jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
             cancelled = client.post(f"/api/generation-jobs/{jobs[0]['id']}/cancel")
             generated = future.result(timeout=10)
-        assert cancelled.json()["status"] == "cancelled"
+        assert cancelled.json()["result"]["status"] == "cancelled"
         assert generated.status_code == 409
         persisted = client.get(f"/api/projects/{project_id}/generation-jobs").json()[0]
         assert persisted["status"] == "cancelled"
@@ -1134,7 +1152,7 @@ def test_shutdown_marks_running_job_error_not_queued(tmp_path: Path) -> None:
 def test_use_stub_marks_page_pending(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        assert client.post(f"/api/projects/{project_id}/pages/1/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "pages/1/render")).status_code == 200
         assert (
             client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
                 "render_status"
@@ -1142,7 +1160,10 @@ def test_use_stub_marks_page_pending(tmp_path: Path) -> None:
             == "done"
         )
         # use-stubで採用画像が変わったら、対象ページは再レンダリング対象(pending)へ戻る。
-        assert client.post(f"/api/projects/{project_id}/panels/p01_01/use-stub").status_code == 200
+        assert (
+            client.post(mutation_url(client, project_id, "panels/p01_01/use-stub")).status_code
+            == 200
+        )
         assert (
             client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0][
                 "render_status"
@@ -1154,12 +1175,12 @@ def test_use_stub_marks_page_pending(tmp_path: Path) -> None:
 def test_cbz_returns_revision_and_client_can_sync(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
         before = client.get(f"/api/projects/{project_id}").json()["revision"]
-        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        export = client.post(mutation_url(client, project_id, "export/cbz"))
         assert export.status_code == 200
         # CBZ出力もrevisionを進め、応答で返すのでクライアントが同期できる。
-        exported_revision = export.json()["revision"]
+        exported_revision = export.json()["project"]["revision"]
         assert exported_revision > before
         assert client.get(f"/api/projects/{project_id}").json()["revision"] == exported_revision
 
@@ -1194,7 +1215,7 @@ def test_page_render_conflict_cleans_its_unreferenced_png(tmp_path: Path, monkey
                 rendering_module.RenderInputChangedError()
             ),
         )
-        response = client.post(f"/api/projects/{project_id}/pages/1/render")
+        response = client.post(mutation_url(client, project_id, "pages/1/render"))
         assert response.status_code == 409
         assert not list((tmp_path / "exports" / project_id / "pages").glob("page_001.*.png"))
 
@@ -1245,7 +1266,7 @@ def test_render_exception_keeps_page_pending(tmp_path: Path, monkeypatch) -> Non
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("描画失敗")),
         )
         with pytest.raises(RuntimeError, match="描画失敗"):
-            client.post(f"/api/projects/{project_id}/pages/1/render")
+            client.post(mutation_url(client, project_id, "pages/1/render"))
         page = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
         assert page["render_status"] == "pending"
         assert page["render_asset"] is None
@@ -1263,7 +1284,7 @@ def test_old_render_cannot_overwrite_new_render(tmp_path: Path) -> None:
 
         changed = detail_a["manga_json"]
         changed["pages"][0]["panels"][0]["bbox"][0] += 0.001
-        saved = put_manga(client, project_id, changed).json()
+        saved = put_manga(client, project_id, changed).json()["project"]
         snapshot_b = MangaProject.model_validate(saved["manga_json"])
         asset_b, _ = rendering_module.render_snapshot_page(
             project_id, snapshot_b, 1, app.state.settings.export_dir, saved["revision"]
@@ -1312,12 +1333,16 @@ def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
             )
 
         red = upload("red").json()
-        old_snapshot = MangaProject.model_validate(red["manga_json"])
+        old_snapshot = MangaProject.model_validate(red["project"]["manga_json"])
         old_asset, _ = rendering_module.render_snapshot_page(
-            project_id, old_snapshot, 1, app.state.settings.export_dir, red["revision"]
+            project_id,
+            old_snapshot,
+            1,
+            app.state.settings.export_dir,
+            red["project"]["revision"],
         )
         green = upload("green").json()
-        assert red["asset"] != green["asset"]
+        assert red["result"]["asset"] != green["result"]["asset"]
 
         with pytest.raises(HTTPException) as conflict:
             commit_rendered_pages(
@@ -1330,11 +1355,11 @@ def test_overlay_reupload_rejects_old_render_snapshot(tmp_path: Path) -> None:
         current = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"][0]
         assert current["render_status"] == "pending"
 
-        rendered = client.post(f"/api/projects/{project_id}/pages/1/render")
+        rendered = client.post(mutation_url(client, project_id, "pages/1/render"))
         assert rendered.status_code == 200
-        rendered_page = rendered.json()["manga_json"]["pages"][0]
+        rendered_page = rendered.json()["project"]["manga_json"]["pages"][0]
         assert rendered_page["render_status"] == "done"
-        assert green["asset"] in json.dumps(rendered_page, ensure_ascii=False)
+        assert green["result"]["asset"] in json.dumps(rendered_page, ensure_ascii=False)
 
 
 def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
@@ -1348,7 +1373,7 @@ def test_cbz_failure_keeps_pages_pending(tmp_path: Path, monkeypatch) -> None:
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CBZ失敗")),
         )
         with pytest.raises(RuntimeError, match="CBZ失敗"):
-            client.post(f"/api/projects/{project_id}/export/cbz")
+            client.post(mutation_url(client, project_id, "export/cbz"))
         pages = client.get(f"/api/projects/{project_id}").json()["manga_json"]["pages"]
         assert all(page["render_status"] == "pending" for page in pages)
         # CBZ生成が例外でも、先に公開したPNGは回収され残らない。
@@ -1366,7 +1391,7 @@ def test_cbz_render_conflict_removes_uncommitted_archive(tmp_path: Path, monkeyp
                 rendering_module.RenderInputChangedError()
             ),
         )
-        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        response = client.post(mutation_url(client, project_id, "export/cbz"))
         assert response.status_code == 409
         assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
 
@@ -1385,7 +1410,7 @@ def test_cbz_rejects_newer_invalid_reading_order_snapshot(tmp_path: Path, monkey
             return original_export(*args, **kwargs)
 
         monkeypatch.setattr(project_render_module, "export_confirmed_cbz", update_then_export)
-        response = client.post(f"/api/projects/{project_id}/export/cbz")
+        response = client.post(mutation_url(client, project_id, "export/cbz"))
         assert response.status_code == 409
         latest_preflight = client.post(f"/api/projects/{project_id}/preflight").json()
         assert any(issue["code"] == "invalid_reading_order" for issue in latest_preflight["errors"])
@@ -1407,15 +1432,15 @@ def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, mon
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = list(
                 executor.map(
-                    lambda _: client.post(f"/api/projects/{project_id}/export/cbz"),
+                    lambda _: client.post(mutation_url(client, project_id, "export/cbz")),
                     range(2),
                 )
             )
         assert sorted(response.status_code for response in responses) == [200, 409]
         successful = next(response.json() for response in responses if response.status_code == 200)
-        cbz_path = tmp_path / "exports" / successful["cbz_asset"]
+        cbz_path = tmp_path / "exports" / successful["result"]["cbz_asset"]
         assert cbz_path.is_file()
-        for page in successful["manga_json"]["pages"]:
+        for page in successful["project"]["manga_json"]["pages"]:
             assert (tmp_path / "exports" / page["render_asset"]).is_file()
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         assert all(page["rendered"] for page in status["pages"])
@@ -1424,8 +1449,8 @@ def test_concurrent_cbz_conflict_preserves_successful_assets(tmp_path: Path, mon
 def test_production_status_detects_missing_render_asset(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        rendered = client.post(f"/api/projects/{project_id}/pages/1/render").json()
-        asset = tmp_path / "exports" / rendered["page_asset"]
+        rendered = client.post(mutation_url(client, project_id, "pages/1/render")).json()
+        asset = tmp_path / "exports" / rendered["result"]["page_asset"]
         asset.unlink()
         status = client.get(f"/api/projects/{project_id}/production-status").json()
         page = next(item for item in status["pages"] if item["page"] == 1)
@@ -1880,9 +1905,8 @@ def test_stale_structural_replace_does_not_cancel_active_job(tmp_path: Path) -> 
         job = app.state.generation.enqueue(project_id, ["p01_01"], 1, "停止されないジョブ")[0]
         app.state.job_manager.register_in_memory(job)
         response = client.post(
-            f"/api/projects/{project_id}/generate-name",
+            f"/api/projects/{project_id}/generate-name?revision=0",
             json={
-                "revision": 0,
                 "work_name": "stale",
                 "character_a": "A",
                 "character_b": "B",
@@ -1930,17 +1954,17 @@ def test_manga_json_structure_change_advances_epoch_and_cancels_old_job(
         assert stopped == ["old-prompt"]
         updated_panel = next(
             panel
-            for page in response.json()["manga_json"]["pages"]
+            for page in response.json()["project"]["manga_json"]["pages"]
             for panel in page["panels"]
             if panel["panel_id"] == "p01_01"
         )
         assert updated_panel["generation"]["status"] == "pending"
         retried = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generation-jobs",
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
             json={"candidate_count": 1},
         )
         assert retried.status_code == 200
-        new_job = app.state.job_manager.get(retried.json()["id"])
+        new_job = app.state.job_manager.get(retried.json()["result"]["id"])
         assert new_job is not None
         assert new_job.epoch == before_epoch + 1
 
@@ -2014,7 +2038,7 @@ def test_structure_change_clears_stale_active_job_id_on_done_panel(tmp_path: Pat
         assert response.status_code == 200
         panel = next(
             panel
-            for page in response.json()["manga_json"]["pages"]
+            for page in response.json()["project"]["manga_json"]["pages"]
             for panel in page["panels"]
             if panel["panel_id"] == "p01_01"
         )
@@ -2077,7 +2101,7 @@ def test_structural_replace_discards_stale_job_candidate(tmp_path: Path, monkeyp
         )
 
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         # 世代が変わってジョブがcancelledになると、同期生成APIは409を返す。
@@ -2130,7 +2154,7 @@ def test_render_aborts_when_epoch_changes_midway(tmp_path: Path, monkeypatch) ->
         )
 
         # 開始時epochで固定された/renderは、途中で世代が変わると409で止まる。
-        response = client.post(f"/api/projects/{project_id}/render", json={"force": True})
+        response = client.post(mutation_url(client, project_id, "render"), json={"force": True})
         assert response.status_code == 409
         # 新しい作品構成へ後続ジョブを積まない（最初の1件だけで中止する）。
         jobs = client.get(f"/api/projects/{project_id}/generation-jobs").json()
@@ -2148,7 +2172,7 @@ def test_completed_job_not_reverted_by_stale_job_stop(tmp_path: Path) -> None:
         # 新jobを正常完了させる（完了時にactive_job_id=Noneへ戻る）。
         assert (
             client.post(
-                f"/api/projects/{project_id}/panels/p01_01/generate-image",
+                mutation_url(client, project_id, "panels/p01_01/generate-image"),
                 json={"candidate_count": 1},
             ).status_code
             == 200
@@ -2187,7 +2211,7 @@ def test_missing_selected_asset_blocks_render_and_cbz(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         # 全ページ生成・レンダリングして完成状態にする。
-        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
         assert client.get(f"/api/projects/{project_id}/production-status").json()["status"] == (
             "complete"
         )
@@ -2203,19 +2227,19 @@ def test_missing_selected_asset_blocks_render_and_cbz(tmp_path: Path) -> None:
         assert any("欠損" in blocker for blocker in status["blockers"])
 
         # 採用画像が欠損したコマがあると、CBZ出力は422で拒否する。
-        export = client.post(f"/api/projects/{project_id}/export/cbz")
+        export = client.post(mutation_url(client, project_id, "export/cbz"))
         assert export.status_code == 422
         assert not list((tmp_path / "exports" / project_id).glob("*.cbz"))
 
         # /renderもプレースホルダを完成PNGとして確定せず409で中止する。
-        render = client.post(f"/api/projects/{project_id}/render")
+        render = client.post(mutation_url(client, project_id, "render"))
         assert render.status_code == 409
 
 
 def test_missing_selected_asset_blocks_single_page_render(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
-        assert client.post(f"/api/projects/{project_id}/render").status_code == 200
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
         detail = client.get(f"/api/projects/{project_id}").json()
         page = detail["manga_json"]["pages"][0]
         asset = page["panels"][0]["image_asset"]
@@ -2224,10 +2248,10 @@ def test_missing_selected_asset_blocks_single_page_render(tmp_path: Path) -> Non
         before_render_asset = page["render_asset"]
 
         # 直接ページrender・コマ単位render-pageも採用asset欠損なら409で確定しない。
-        page_render = client.post(f"/api/projects/{project_id}/pages/1/render")
+        page_render = client.post(mutation_url(client, project_id, "pages/1/render"))
         assert page_render.status_code == 409
         panel_render = client.post(
-            f"/api/projects/{project_id}/panels/{page['panels'][0]['panel_id']}/render-page"
+            mutation_url(client, project_id, f"panels/{page['panels'][0]['panel_id']}/render-page")
         )
         assert panel_render.status_code == 409
         # render_asset/render_statusが新規確定されていない（古い参照のまま）。
@@ -2277,7 +2301,7 @@ def test_long_prompt_does_not_break_stale_candidate_cleanup(tmp_path: Path, monk
         )
         # 長promptでも、入力不一致の破棄が502ではなく本来の409で完結する。
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 2},
         )
         assert response.status_code == 409
@@ -2353,7 +2377,7 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
             generation_module, "build_image_backend", lambda settings: shared_backend
         )
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         # キャンセル済みjobの同期生成は409。返ってきたPNGは孤児化させず回収する。
@@ -2371,7 +2395,7 @@ def test_cancelled_job_cleans_up_returned_candidate_png(tmp_path: Path, monkeypa
         assert panel["generation"]["status"] == "skipped"
         # 直後の再生成が受理される（runningのままだと409で再生成不能になる）。
         retry = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         assert retry.status_code == 200
@@ -2400,7 +2424,7 @@ def test_backend_exception_after_png_write_cleans_up_orphan(tmp_path: Path, monk
             generation_module, "build_image_backend", lambda settings: WriteThenFailBackend()
         )
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/generate-image",
+            mutation_url(client, project_id, "panels/p01_01/generate-image"),
             json={"candidate_count": 1},
         )
         assert response.status_code == 502
@@ -2657,15 +2681,17 @@ def test_reference_image_upload_api(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/characters/char_a/reference-image"
-            f"?revision={current_revision(client, project_id)}",
+            mutation_url(client, project_id, "characters/char_a/reference-image"),
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
-        asset = response.json()["asset"]
+        asset = response.json()["result"]["asset"]
         assert (tmp_path / "exports" / asset).exists()
-        assert response.json()["manga_json"]["characters"][0]["reference_image_asset"] == asset
+        assert (
+            response.json()["project"]["manga_json"]["characters"][0]["reference_image_asset"]
+            == asset
+        )
 
 
 def test_save_request_image_parallel_same_target(tmp_path: Path, monkeypatch) -> None:
@@ -2849,7 +2875,7 @@ def test_same_content_parallel_upload_keeps_winner_asset(tmp_path: Path) -> None
             headers={"Content-Type": "image/png"},
         )
         assert first.status_code == 200
-        asset = first.json()["asset"]
+        asset = first.json()["result"]["asset"]
         assert (tmp_path / "exports" / asset).is_file()
 
         # 後発リクエスト: 同一内容・同一参照先だがrevisionが古く409。
@@ -2886,13 +2912,16 @@ def test_reference_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/characters/{quote(character_id, safe='')}/reference-image"
-                f"?revision={current_revision(client, project_id)}",
+                mutation_url(
+                    client,
+                    project_id,
+                    f"characters/{quote(character_id, safe='')}/reference-image",
+                ),
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
             assert response.status_code == 200
-            assets.append(response.json()["asset"])
+            assets.append(response.json()["result"]["asset"])
 
         assert assets[0] != assets[1]
         colors = []
@@ -2922,13 +2951,16 @@ def test_location_upload_keeps_colliding_ids_separate(
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             response = client.post(
-                f"/api/projects/{project_id}/locations/{quote(location_id, safe='')}/reference-image"
-                f"?revision={current_revision(client, project_id)}",
+                mutation_url(
+                    client,
+                    project_id,
+                    f"locations/{quote(location_id, safe='')}/reference-image",
+                ),
                 content=buffer.getvalue(),
                 headers={"Content-Type": "image/png"},
             )
             assert response.status_code == 200
-            assets.append(response.json()["asset"])
+            assets.append(response.json()["result"]["asset"])
 
         assert assets[0] != assets[1]
         assert all((tmp_path / "exports" / asset).is_file() for asset in assets)
@@ -2964,11 +2996,11 @@ def test_overlay_asset_upload_and_project_preflight(tmp_path: Path) -> None:
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
-        asset = response.json()["asset"]
+        asset = response.json()["result"]["asset"]
         assert " " not in asset
         assert (tmp_path / "exports" / asset).is_file()
 
-        manga = response.json()["manga_json"]
+        manga = response.json()["project"]["manga_json"]
         manga["pages"][0]["reading_order"] = ["unknown-panel"]
         assert put_manga(client, project_id, manga).status_code == 200
         preflight_response = client.post(f"/api/projects/{project_id}/preflight")
@@ -3003,7 +3035,7 @@ def test_overlay_upload_keeps_colliding_ids_separate(tmp_path: Path, left: str, 
                 headers={"Content-Type": "image/png"},
             )
             assert response.status_code == 200
-            assets.append(response.json()["asset"])
+            assets.append(response.json()["result"]["asset"])
 
         assert assets[0] != assets[1]
         assert all((tmp_path / "exports" / asset).is_file() for asset in assets)
@@ -3013,11 +3045,11 @@ def test_batch_generation_queue_completes_page(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         response = client.post(
-            f"/api/projects/{project_id}/generation-jobs",
+            mutation_url(client, project_id, "generation-jobs"),
             json={"page": 1, "candidate_count": 1},
         )
         assert response.status_code == 200
-        jobs = response.json()["jobs"]
+        jobs = response.json()["result"]["jobs"]
         assert len(jobs) == 4
         for job in jobs:
             with client.websocket_connect(f"/api/generation-jobs/{job['id']}/ws") as websocket:
@@ -3074,11 +3106,10 @@ def test_generate_sixteen_page_name(tmp_path: Path) -> None:
             "/api/projects",
             json={"title": "16ページ本", "work_name": "作品", "target_pages": 16},
         )
-        project_id = response.json()["id"]
+        project_id = response.json()["project"]["id"]
         response = client.post(
-            f"/api/projects/{project_id}/generate-name",
+            f"/api/projects/{project_id}/generate-name?revision=0",
             json={
-                "revision": 0,
                 "work_name": "作品",
                 "character_a": "A",
                 "character_b": "B",
@@ -3088,7 +3119,7 @@ def test_generate_sixteen_page_name(tmp_path: Path) -> None:
             },
         )
         assert response.status_code == 200
-        manga = response.json()["manga_json"]
+        manga = response.json()["project"]["manga_json"]
         assert manga["target_pages"] == 16
         assert len(manga["pages"]) == 16
         panel_ids = [panel["panel_id"] for page in manga["pages"] for panel in page["panels"]]
@@ -3102,20 +3133,22 @@ def test_location_and_control_image_upload_apis(tmp_path: Path) -> None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         response = client.post(
-            f"/api/projects/{project_id}/locations/default_room/reference-image"
-            f"?revision={current_revision(client, project_id)}",
+            mutation_url(client, project_id, "locations/default_room/reference-image"),
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
         response = client.post(
-            f"/api/projects/{project_id}/panels/p01_01/controls/pose/reference-image"
-            f"?load_node_id=51&revision={current_revision(client, project_id)}",
+            mutation_url(
+                client,
+                project_id,
+                "panels/p01_01/controls/pose/reference-image?load_node_id=51",
+            ),
             content=buffer.getvalue(),
             headers={"Content-Type": "image/png"},
         )
         assert response.status_code == 200
-        panel = response.json()["manga_json"]["pages"][0]["panels"][0]
+        panel = response.json()["project"]["manga_json"]["pages"][0]["panels"][0]
         assert panel["control_references"][0]["kind"] == "pose"
         assert panel["control_references"][0]["load_node_id"] == "51"
 
@@ -3132,7 +3165,7 @@ def test_fit_image_cover_and_contain_modes() -> None:
 def test_long_dialogue_renders_with_auto_font_shrink(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/projects", json={"title": "写植テスト", "work_name": ""})
-        project_id = response.json()["id"]
+        project_id = response.json()["project"]["id"]
         manga = MangaProject(
             title="写植テスト",
             target_pages=4,
@@ -3162,7 +3195,7 @@ def test_long_dialogue_renders_with_auto_font_shrink(tmp_path: Path) -> None:
         )
         response = put_manga(client, project_id, manga.model_dump())
         assert response.status_code == 200
-        response = client.post(f"/api/projects/{project_id}/panels/p01_01/render-page")
+        response = client.post(mutation_url(client, project_id, "panels/p01_01/render-page"))
         assert response.status_code == 200
 
 

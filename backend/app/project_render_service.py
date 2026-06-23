@@ -18,6 +18,7 @@ from .generation_service import GenerationService, ensure_sync_generation_succee
 from .mutation import (
     ProjectMutationService,
     ProjectNotFoundError,
+    ProjectRevisionConflictError,
     ProjectSnapshot,
     parse_manga,
 )
@@ -122,8 +123,12 @@ class ProjectRenderService:
         normalize_manga_assets(manga, export_dir)
         return _LoadedProject(manga, record.revision, record.generation_epoch)
 
-    async def render_project(self, project_id: str, *, force: bool) -> ProjectRenderResult:
+    async def render_project(
+        self, project_id: str, *, force: bool, expected_revision: int
+    ) -> ProjectRenderResult:
         loaded = self._load(project_id)
+        if loaded.revision != expected_revision:
+            raise ProjectRevisionConflictError(project_id, expected_revision)
         started_epoch = loaded.generation_epoch
 
         def ensure_same_epoch() -> None:
@@ -174,8 +179,10 @@ class ProjectRenderService:
             raise
         return ProjectRenderResult(page_assets=page_assets, project=committed, warnings=warnings)
 
-    def export_cbz(self, project_id: str) -> CbzExportResult:
+    def export_cbz(self, project_id: str, *, expected_revision: int) -> CbzExportResult:
         loaded = self._load(project_id)
+        if loaded.revision != expected_revision:
+            raise ProjectRevisionConflictError(project_id, expected_revision)
         manga = loaded.manga
         preflight_errors = [
             issue

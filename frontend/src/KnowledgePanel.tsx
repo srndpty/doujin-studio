@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api } from "./api/client";
 
 type Usage = "required" | "reference";
 type DocType = "json" | "markdown" | "txt";
@@ -27,22 +28,6 @@ type KnowledgeChunk = {
 };
 
 type SearchHit = { chunk: KnowledgeChunk; score: number; method: "trigram" | "like" };
-
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
-async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
 
 export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string }) {
   const [workName, setWorkName] = useState(defaultWorkName);
@@ -78,7 +63,7 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       return;
     }
     setSources(
-      await getJson<KnowledgeSource[]>(`/api/knowledge/sources?work_name=${encodeURIComponent(workName)}`)
+      await api.get<KnowledgeSource[]>(`/api/knowledge/sources?work_name=${encodeURIComponent(workName)}`)
     );
   }
 
@@ -93,7 +78,7 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       const payloadFiles = await Promise.all(
         Array.from(files).map(async (file) => ({ filename: file.name, content: await file.text() }))
       );
-      await sendJson(`/api/knowledge/sources/import`, "POST", {
+      await api.post(`/api/knowledge/sources/import`, {
         work_name: workName,
         usage,
         files: payloadFiles
@@ -109,7 +94,7 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
       return;
     }
     await run(async () => {
-      await sendJson(`/api/knowledge/documents`, "POST", {
+      await api.post(`/api/knowledge/documents`, {
         work_name: workName,
         title: docTitle || "無題ドキュメント",
         doc_type: docType,
@@ -125,7 +110,7 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
 
   async function deleteSource(id: string) {
     await run(async () => {
-      await sendJson(`/api/knowledge/sources/${id}`, "DELETE");
+      await api.delete(`/api/knowledge/sources/${id}`);
       setMessage("知識ソースを削除しました");
       await refreshSources();
     });
@@ -134,7 +119,7 @@ export function KnowledgePanel({ defaultWorkName }: { defaultWorkName: string })
   async function search() {
     if (!query.trim()) return;
     await run(async () => {
-      const response = await sendJson<{ hits: SearchHit[] }>(`/api/knowledge/search`, "POST", {
+      const response = await api.post<{ hits: SearchHit[] }>(`/api/knowledge/search`, {
         work_name: workName,
         query,
         usage: searchUsage || undefined,

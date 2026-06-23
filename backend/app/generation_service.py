@@ -26,6 +26,7 @@ from .mutation import (
     ProjectConflictError,
     ProjectMutationService,
     ProjectNotFoundError,
+    ProjectRevisionConflictError,
     mark_page_dirty,
     parse_manga,
 )
@@ -268,6 +269,7 @@ class GenerationService:
         attempts: int = 5,
         skip_active: bool = False,
         expected_epoch: int | None = None,
+        expected_revision: int | None = None,
     ) -> list[GenerationJob]:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
 
@@ -282,6 +284,8 @@ class GenerationService:
                 if record is None:
                     raise ProjectNotFoundError()
                 base_revision = record.revision
+                if expected_revision is not None and base_revision != expected_revision:
+                    raise ProjectRevisionConflictError(project_id, expected_revision)
                 if required_epoch is None:
                     required_epoch = record.generation_epoch
                 elif record.generation_epoch != required_epoch:
@@ -342,6 +346,8 @@ class GenerationService:
                     != 1
                 ):
                     session.rollback()
+                    if expected_revision is not None:
+                        raise ProjectRevisionConflictError(project_id, expected_revision)
                     continue
                 for job in jobs:
                     self.repository.add_generation_job(
@@ -376,6 +382,7 @@ class GenerationService:
         *,
         skip_active: bool = False,
         expected_epoch: int | None = None,
+        expected_revision: int | None = None,
     ) -> list[GenerationJob]:
         """ジョブ登録後、メモリ登録とTask起動までをGenerationServiceへ集約する。"""
         runtime = self.require_runtime()
@@ -386,6 +393,7 @@ class GenerationService:
             message,
             skip_active=skip_active,
             expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
         )
         for job in jobs:
             runtime.jobs.register_in_memory(job)

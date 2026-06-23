@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -433,8 +433,24 @@ class ProjectDetail(ProjectSummary):
     manga_json: MangaProject
 
 
+MutationResultT = TypeVar("MutationResultT")
+
+
+class ProjectMutationResponse(BaseModel, Generic[MutationResultT]):
+    """ProjectRecordを変更するAPIの共通成功応答。
+
+    projectは常に最新のmanga_json/revisionを含み、resultは操作固有情報だけを持つ。
+    """
+
+    project: ProjectDetail
+    result: MutationResultT
+
+
+class EmptyMutationResult(BaseModel):
+    """操作固有情報がないmutation用の空result。"""
+
+
 class GenerateNameRequest(BaseModel):
-    revision: int = Field(ge=0)
     work_name: str = Field(min_length=1, max_length=120)
     character_a: str = Field(min_length=1, max_length=80)
     character_b: str = Field(min_length=1, max_length=80)
@@ -452,12 +468,17 @@ class ApiErrorResponse(BaseModel):
     detail: str
 
 
-class RenderResponse(BaseModel):
-    project_id: str
+class ProjectRevisionConflictResponse(ApiErrorResponse):
+    """revision競合時の専用409応答。最新projectを同梱する。"""
+
+    code: Literal["project_revision_conflict"] = "project_revision_conflict"
+    expected_revision: int
+    actual_revision: int
+    project: ProjectDetail
+
+
+class ProjectRenderResult(BaseModel):
     page_assets: list[str]
-    manga_json: MangaProject
-    # 保存後の最新revision。クライアントは楽観ロック用に同期する。
-    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -495,12 +516,9 @@ class PreflightResponse(BaseModel):
     warnings: list[PreflightIssue] = Field(default_factory=list)
 
 
-class PageRenderResponse(BaseModel):
-    project_id: str
+class PageRenderResult(BaseModel):
     page: int
     page_asset: str
-    manga_json: MangaProject
-    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
     preflight: PreflightResponse
 
@@ -509,12 +527,9 @@ class LayoutSuggestRequest(BaseModel):
     family: str | None = None
 
 
-class LayoutSuggestResponse(BaseModel):
-    project_id: str
+class LayoutSuggestResult(BaseModel):
     page: int
     layout_family: str
-    manga_json: MangaProject
-    revision: int = 0
 
 
 class ComfyUIStatusResponse(BaseModel):
@@ -528,19 +543,13 @@ class ComfyUIStatusResponse(BaseModel):
     message: str
 
 
-class PanelImageGenerationResponse(BaseModel):
-    project_id: str
+class PanelImageGenerationResult(BaseModel):
     panel_id: str
-    manga_json: MangaProject
-    revision: int = 0
 
 
-class PanelPageRenderResponse(BaseModel):
-    project_id: str
+class PanelPageRenderResult(BaseModel):
     panel_id: str
     page_asset: str
-    manga_json: MangaProject
-    revision: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -576,7 +585,7 @@ class PromptPreviewResponse(BaseModel):
     character_ids: list[str] = Field(default_factory=list)
 
 
-class BatchGenerationJobResponse(BaseModel):
+class BatchGenerationJobResult(BaseModel):
     jobs: list[GenerationJobResponse]
 
 
@@ -600,27 +609,19 @@ class ProjectProductionStatus(BaseModel):
     blockers: list[str] = Field(default_factory=list)
 
 
-class CharacterReferenceResponse(BaseModel):
+class CharacterReferenceResult(BaseModel):
     character_id: str
     asset: str
-    manga_json: MangaProject
-    revision: int = 0
 
 
-class ReferenceAssetResponse(BaseModel):
+class ReferenceAssetResult(BaseModel):
     target_id: str
     asset: str
-    manga_json: MangaProject
-    revision: int = 0
 
 
-class ExportResponse(BaseModel):
-    project_id: str
+class ExportResult(BaseModel):
     cbz_asset: str
     absolute_path: str
-    # CBZ出力時にページ再レンダリングでrevisionが進むため返す（クライアント同期用）。
-    revision: int = 0
-    manga_json: MangaProject
     warnings: list[str] = Field(default_factory=list)
 
 
