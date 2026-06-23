@@ -449,7 +449,7 @@ export function App() {
       setSelectedPage(1);
       setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setPageAssets([]);
+      setPageAssets(project.manga_json.pages.map((page) => page.render_asset ?? ""));
       await refreshProjects();
       setNewProjectOpen(false);
       setActiveTab("story");
@@ -485,7 +485,7 @@ export function App() {
       setSelectedPage(1);
       setSelectedPanelId(project.manga_json.pages[0]?.panels[0]?.panel_id ?? null);
       setJsonText(JSON.stringify(project.manga_json, null, 2));
-      setPageAssets([]);
+      setPageAssets(project.manga_json.pages.map((page) => page.render_asset ?? ""));
       setProductionStatus(null);
       setJobHistory([]);
       setActiveJobIds([]);
@@ -558,10 +558,9 @@ export function App() {
   function applyRenderedPageAsset(adopted: Adopted<{ page_asset: string }>, _pageNumber?: number): void {
     if (!adopted.applied || !adopted.project) return;
     const project = adopted.project;
-    updateProjectPageAssets(project.id, (assets) => {
-      const latestAssets = project.manga_json.pages.map((page) => page.render_asset ?? "");
-      return latestAssets.length > 0 ? latestAssets : assets;
-    });
+    updateProjectPageAssets(project.id, () =>
+      project.manga_json.pages.map((page) => page.render_asset ?? "")
+    );
     setAssetVersion((value) => value + 1);
   }
 
@@ -587,6 +586,7 @@ export function App() {
       const manga = saved.manga_json;
       let latestRevision = saved.revision;
       for (const page of manga.pages) {
+        if (selectedProjectIdRef.current !== projectId) return;
         const firstPanel = page.panels[0];
         if (!firstPanel) continue;
         setProgress({
@@ -598,8 +598,9 @@ export function App() {
           withRevision(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`, latestRevision)
         );
         const adopted = await adoptMutationResponse(response);
+        if (!adopted.applied || !adopted.project) return;
         // 次のrender-pageへは反映済みの最新revisionを渡す（再同期で進んだ場合も追従）。
-        latestRevision = adopted.project?.revision ?? latestRevision;
+        latestRevision = adopted.project.revision;
         applyRenderedPageAsset(adopted, page.page);
         if (adopted.resynced) {
           setMessage("構成が更新されたためレンダリングを中断しました。再実行してください。");
@@ -631,7 +632,13 @@ export function App() {
           selectedRef.current?.revision ?? fresh.revision
         )
       );
-      applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
+      const adopted = await adoptMutationResponse(pageResponse);
+      if (!adopted.applied || !adopted.project) return;
+      applyRenderedPageAsset(adopted, selectedPage);
+      if (adopted.resynced) {
+        setMessage("構成が更新されたためページ更新を中断しました。再実行してください。");
+        return;
+      }
       setProgress({ label: "プレビューを更新しました", current: 4, total: 4 });
       setMessage(`${currentPanel.panel_id}に候補を${candidateCount}件追加しました`);
       await refreshProductionStatus(projectId);
@@ -682,7 +689,13 @@ export function App() {
             selectedRef.current?.revision ?? selected.revision
           )
         );
-        applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
+        const adopted = await adoptMutationResponse(pageResponse);
+        if (!adopted.applied || !adopted.project) return;
+        applyRenderedPageAsset(adopted, selectedPage);
+        if (adopted.resynced) {
+          setMessage("構成が更新されたためページ更新を中断しました。再実行してください。");
+          return;
+        }
       }
       setAssetVersion((value) => value + 1);
       setMessage(`${selectedPage}ページの全コマを生成しました`);
@@ -713,16 +726,15 @@ export function App() {
         await reloadSelectedProject(projectId);
       }
       if (selectedProjectIdRef.current !== projectId) return;
-      const latest = (await reloadSelectedProject(projectId)) ?? selectedRef.current;
-      if (latest) {
-        const completed = await renderAllPages(projectId, latest);
-        if (!completed) return;
-      }
+      const latest = await reloadSelectedProject(projectId);
+      if (!latest || latest.id !== projectId || selectedProjectIdRef.current !== projectId) return;
+      const completed = await renderAllPages(projectId, latest);
+      if (!completed) return;
       // page_*.pngを書き換えた後にキャッシュバスターを進める（同一URLの古い画像が残らないように）。
       setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
       setMessage("全ページの画像生成とレンダリングが完了しました");
-      notifyCompletion("全ページ生成が完了しました", latest?.title ?? selected.title);
+      notifyCompletion("全ページ生成が完了しました", latest.title);
     });
   }
 
@@ -745,8 +757,10 @@ export function App() {
   }
 
   async function renderAllPages(projectId: string, project: Project): Promise<boolean> {
+    if (project.id !== projectId || selectedProjectIdRef.current !== projectId) return false;
     let latestRevision = project.revision;
     for (let index = 0; index < project.manga_json.pages.length; index += 1) {
+      if (selectedProjectIdRef.current !== projectId) return false;
       const page = project.manga_json.pages[index];
       const firstPanel = page.panels[0];
       if (!firstPanel) continue;
@@ -758,8 +772,10 @@ export function App() {
       const response = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
         withRevision(`/api/projects/${projectId}/panels/${firstPanel.panel_id}/render-page`, latestRevision)
       );
+      if (selectedProjectIdRef.current !== projectId) return false;
       const adopted = await adoptMutationResponse(response);
-      latestRevision = adopted.project?.revision ?? latestRevision;
+      if (!adopted.applied || !adopted.project) return false;
+      latestRevision = adopted.project.revision;
       applyRenderedPageAsset(adopted, page.page);
       if (adopted.resynced) {
         setMessage("構成が更新されたためレンダリングを中断しました。再実行してください。");
@@ -942,7 +958,13 @@ export function App() {
           selected.revision
         )
       );
-      applyRenderedPageAsset(await adoptMutationResponse(response), selectedPage);
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      applyRenderedPageAsset(adopted, selectedPage);
+      if (adopted.resynced) {
+        setMessage("構成が更新されたため候補採用結果を再同期しました");
+        return;
+      }
       setMessage("画像候補を採用し、ページを更新しました");
       await refreshProductionStatus(selected.id);
     });
@@ -966,7 +988,13 @@ export function App() {
           stubAdopted.project.revision
         )
       );
-      applyRenderedPageAsset(await adoptMutationResponse(pageResponse), selectedPage);
+      const pageAdopted = await adoptMutationResponse(pageResponse);
+      if (!pageAdopted.applied || !pageAdopted.project) return;
+      applyRenderedPageAsset(pageAdopted, selectedPage);
+      if (pageAdopted.resynced) {
+        setMessage("構成が更新されたためstub結果を再同期しました");
+        return;
+      }
       setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
       await refreshProductionStatus(projectId);
     });
@@ -981,7 +1009,13 @@ export function App() {
       const response = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
         withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`, saved.revision)
       );
-      applyRenderedPageAsset(await adoptMutationResponse(response), selectedPage);
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      applyRenderedPageAsset(adopted, selectedPage);
+      if (adopted.resynced) {
+        setMessage("構成が更新されたためページを再同期しました");
+        return;
+      }
       setMessage(`${selectedPage}ページを更新しました`);
       await refreshProductionStatus(projectId);
     });
@@ -994,7 +1028,9 @@ export function App() {
       const response = await api.post<ProjectMutationResponse<ExportResult>>(
         withRevision(`/api/projects/${projectId}/export/cbz`, selected.revision)
       );
-      const { result } = await adoptMutationResponse(response);
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      const { result } = adopted;
       const warnings = result.warnings ?? [];
       const warning = warnings.length ? ` / 警告 ${warnings.length}件` : "";
       setMessage(`CBZを書き出しました: ${result.absolute_path}${warning}`);
@@ -1493,10 +1529,11 @@ export function App() {
                     ),
                     file
                   );
-                  if ((await adoptMutationResponse(response)).applied) {
+                  const adopted = await adoptMutationResponse(response);
+                  if (adopted.applied && adopted.project) {
                     setAssetVersion((value) => value + 1);
                   }
-                  return true;
+                  return adopted.applied && !!adopted.project && !adopted.resynced;
                 } catch (error) {
                   if (await handleProjectMutationError(error)) return false;
                   throw error;
@@ -1521,7 +1558,13 @@ export function App() {
                     )
                   );
                   // 生成されたページPNGを制作タブのプレビューへ反映する。
-                  applyRenderedPageAsset(await adoptMutationResponse(rendered), pageNumber);
+                  const renderedAdopted = await adoptMutationResponse(rendered);
+                  if (!renderedAdopted.applied || !renderedAdopted.project) return;
+                  applyRenderedPageAsset(renderedAdopted, pageNumber);
+                  if (renderedAdopted.resynced) {
+                    setMessage("構成が更新されたためページを再同期しました");
+                    return;
+                  }
                   setMessage("レイアウトを保存し、ページ画像を更新しました");
                 } catch (error) {
                   // typed 409(revision競合等)は最新project採用＋派生状態再同期へ寄せる。
@@ -1552,7 +1595,9 @@ export function App() {
                     ),
                     { family }
                   );
-                  const { result } = await adoptMutationResponse(response);
+                  const adopted = await adoptMutationResponse(response);
+                  if (!adopted.applied || !adopted.project) return;
+                  const { result } = adopted;
                   setMessage(`レイアウトを再提案しました（${result.layout_family}）`);
                 } catch (error) {
                   if (await handleProjectMutationError(error)) return;

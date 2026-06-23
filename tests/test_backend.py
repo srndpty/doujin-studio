@@ -2173,6 +2173,82 @@ def test_schema_migration_failure_stops_startup_and_records_only_success(
     with sqlite3.connect(db_path) as connection:
         rows = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
         assert rows == [(1, "baseline_schema")]
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'should_rollback'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_schema_migration_rolls_back_alter_table_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "alter-failure.db"
+    create_session_factory(f"sqlite:///{db_path}")
+
+    def fail_after_alter(connection) -> None:
+        connection.execute(text("ALTER TABLE projects ADD COLUMN should_rollback TEXT"))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "failing_alter", fail_after_alter),
+        ),
+    )
+    with pytest.raises(database_module.SchemaMigrationError, match="失敗しました"):
+        create_session_factory(f"sqlite:///{db_path}")
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
+        assert "should_rollback" not in columns
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema")]
+
+
+def test_schema_migration_concurrent_runners_apply_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from sqlalchemy import text
+
+    db_path = tmp_path / "concurrent-migration.db"
+    create_session_factory(f"sqlite:///{db_path}")
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def migrate_once(connection) -> None:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        connection.execute(text("CREATE TABLE concurrent_once (id TEXT PRIMARY KEY)"))
+        time.sleep(0.1)
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(2, "concurrent_once", migrate_once),
+        ),
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        factories = list(
+            executor.map(lambda _index: create_session_factory(f"sqlite:///{db_path}"), range(2))
+        )
+    assert len(factories) == 2
+    assert calls == 1
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema"), (2, "concurrent_once")]
 
 
 def test_schema_migration_unknown_newer_version_stops_startup(tmp_path: Path) -> None:
@@ -2193,6 +2269,34 @@ def test_schema_migration_unknown_newer_version_stops_startup(tmp_path: Path) ->
         )
 
     with pytest.raises(database_module.SchemaMigrationError, match="新しいDB schema version"):
+        create_session_factory(f"sqlite:///{db_path}")
+    with sqlite3.connect(db_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_schema_migration_name_mismatch_stops_startup(tmp_path: Path) -> None:
+    db_path = tmp_path / "name-mismatch.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "wrong_name", db_now_utc().isoformat()),
+        )
+
+    with pytest.raises(database_module.SchemaMigrationError, match="未知のmigration名"):
         create_session_factory(f"sqlite:///{db_path}")
 
 
