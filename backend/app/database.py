@@ -145,6 +145,9 @@ class SchemaMigration:
     version: int
     name: str
     upgrade: Callable[[Connection], None]
+    # 親テーブルをcreate-copy-drop-renameで再作成するmigrationだけで指定する。
+    # PRAGMA foreign_keysはトランザクション開始前に切り替える必要がある。
+    requires_foreign_keys_off: bool = False
 
 
 def _table_columns(connection: Connection, table_name: str) -> set[str]:
@@ -355,6 +358,7 @@ def run_schema_migrations(engine) -> None:
 
     新規DBとschema_migrationsを持たない既存DBのどちらも、同じrunnerでbaseline
     migrationを通して最新化する。各migrationは成功した場合にのみ適用記録を追加する。
+    親テーブル再作成はrequires_foreign_keys_offを指定し、commit前にFK整合性を検査する。
     """
     known_versions = [migration.version for migration in MIGRATIONS]
     if known_versions != list(range(1, len(known_versions) + 1)):
@@ -362,10 +366,24 @@ def run_schema_migrations(engine) -> None:
     migrations_by_version = {migration.version: migration for migration in MIGRATIONS}
     latest_known = known_versions[-1] if known_versions else 0
 
+    # FK無効化が必要なmigrationは、通常接続でpendingを確認した後、専用接続で
+    # PRAGMAを切り替えて再度lock・履歴確認する。並行runnerが先に適用した場合は、
+    # lock取得後に判明した次migrationの要件に合わせて接続を取り直す。
+    planned_migration: SchemaMigration | None = None
     while True:
         migration: SchemaMigration | None = None
         connection = engine.connect()
+        foreign_keys_disabled = bool(
+            planned_migration and planned_migration.requires_foreign_keys_off
+        )
         try:
+            if foreign_keys_disabled:
+                connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+                if foreign_keys != 0:
+                    raise SchemaMigrationError(
+                        "migration用connectionの外部キー制約を無効化できません。起動を停止します。"
+                    )
             # sqlite3はDDLだけでは物理トランザクションを開始しないことがある。
             # 書込lockを明示取得してから履歴を読み直し、DDLと履歴INSERTを同時に確定する。
             connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -409,7 +427,20 @@ def run_schema_migrations(engine) -> None:
             if migration is None:
                 connection.commit()
                 return
+            if migration.requires_foreign_keys_off != foreign_keys_disabled:
+                connection.rollback()
+                planned_migration = migration
+                continue
             migration.upgrade(connection)
+            if foreign_keys_disabled:
+                violations = connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+                if violations:
+                    table, rowid, parent, foreign_key_id = violations[0]
+                    raise SchemaMigrationError(
+                        "schema migration後の外部キー整合性検査に失敗しました。"
+                        f"table={table}, rowid={rowid}, parent={parent}, fk_id={foreign_key_id}。"
+                        "起動を停止します。"
+                    )
             connection.execute(
                 text(
                     """
@@ -424,6 +455,7 @@ def run_schema_migrations(engine) -> None:
                 },
             )
             connection.commit()
+            planned_migration = None
         except Exception as exc:
             connection.rollback()
             if isinstance(exc, SchemaMigrationError):
@@ -435,6 +467,9 @@ def run_schema_migrations(engine) -> None:
                 f"schema migration {migration_label} に失敗しました。起動を停止します。"
             ) from exc
         finally:
+            if foreign_keys_disabled:
+                # PRAGMA foreign_keysはtransaction終了後に必ず元へ戻す。
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
             connection.close()
 
 

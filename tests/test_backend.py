@@ -2251,6 +2251,84 @@ def test_schema_migration_concurrent_runners_apply_once(
         ).fetchall() == [(1, "baseline_schema"), (2, "concurrent_once")]
 
 
+def test_schema_migration_recreates_referenced_parent_with_foreign_keys_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "recreate-parent.db"
+    create_session_factory(f"sqlite:///{db_path}")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "CREATE TABLE migration_parent (id TEXT PRIMARY KEY, label TEXT NOT NULL)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE migration_child (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL REFERENCES migration_parent(id)
+            )
+            """
+        )
+        connection.execute("INSERT INTO migration_parent VALUES ('parent-1', 'before')")
+        connection.execute("INSERT INTO migration_child VALUES ('child-1', 'parent-1')")
+
+    def recreate_parent(connection) -> None:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE migration_parent_new (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    migrated INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO migration_parent_new (id, label)
+                SELECT id, label FROM migration_parent
+                """
+            )
+        )
+        connection.execute(text("DROP TABLE migration_parent"))
+        connection.execute(text("ALTER TABLE migration_parent_new RENAME TO migration_parent"))
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATIONS",
+        (
+            database_module.MIGRATIONS[0],
+            database_module.SchemaMigration(
+                2,
+                "recreate_parent",
+                recreate_parent,
+                requires_foreign_keys_off=True,
+            ),
+        ),
+    )
+    migrated_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with migrated_factory() as session:
+        assert session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT id, label, migrated FROM migration_parent"
+        ).fetchall() == [("parent-1", "before", 1)]
+        assert connection.execute("SELECT id, parent_id FROM migration_child").fetchall() == [
+            ("child-1", "parent-1")
+        ]
+        assert connection.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1, "baseline_schema"), (2, "recreate_parent")]
+
+
 def test_schema_migration_unknown_newer_version_stops_startup(tmp_path: Path) -> None:
     db_path = tmp_path / "newer.db"
     with sqlite3.connect(db_path) as connection:
