@@ -8,7 +8,7 @@ export type ProjectMutationResponse<Project, Result> = {
 
 type Options<Project> = {
   applyProject: (project: Project) => boolean;
-  onConflict: () => void;
+  onConflict: (project: Project) => void | Promise<void>;
 };
 
 /**
@@ -25,15 +25,16 @@ export function useProjectMutation<Project>({ applyProject, onConflict }: Option
   );
 
   const handleProjectMutationError = useCallback(
-    (error: unknown): boolean => {
+    async (error: unknown): Promise<boolean> => {
       if (
         error instanceof ApiError &&
         error.status === 409 &&
         error.body?.code === "project_revision_conflict" &&
         error.body.project
       ) {
-        applyProject(error.body.project as Project);
-        onConflict();
+        const project = error.body.project as Project;
+        applyProject(project);
+        await onConflict(project);
         return true;
       }
       return false;

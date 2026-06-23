@@ -47,7 +47,7 @@ type Props = {
     overlayId: string,
     kind: "asset" | "mask",
     file: File
-  ) => Promise<void> | void;
+  ) => Promise<boolean> | boolean;
   setMessage: (text: string) => void;
   // アセットのキャッシュバスターを進める（同一URLの画像差し替えを反映する）。
 };
@@ -304,7 +304,8 @@ export function PageEditor({
   };
 
   const uploadOverlay = async (overlay: OverlayElement, kind: "asset" | "mask", file: File) => {
-    await onOverlayUpload(manga, pageNumber, overlay.id, kind, file);
+    const completed = await onOverlayUpload(manga, pageNumber, overlay.id, kind, file);
+    if (!completed) return;
     setMessage(kind === "asset" ? "overlay画像を登録しました" : "overlayマスクを登録しました");
   };
 

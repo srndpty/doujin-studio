@@ -10,7 +10,7 @@ import {
   useState
 } from "react";
 import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
-import { ApiError, api, withRevision } from "./api/client";
+import { api, withRevision } from "./api/client";
 import type { components } from "./api/schema";
 import {
   type ProjectMutationResponse as ApiProjectMutationResponse,
@@ -292,15 +292,20 @@ export function App() {
     setComfyStatus(status);
   }
 
-  async function refreshProductionStatus(projectId: string) {
+  const refreshProductionStatus = useCallback(async (projectId: string) => {
     const status = await api.get<ProductionStatus>(`/api/projects/${projectId}/production-status`);
     if (selectedProjectIdRef.current === projectId) setProductionStatus(status);
-  }
+  }, []);
 
-  async function refreshJobHistory(projectId: string) {
+  const refreshJobHistory = useCallback(async (projectId: string) => {
     const history = await api.get<GenerationJob[]>(`/api/projects/${projectId}/generation-jobs`);
-    if (selectedProjectIdRef.current === projectId) setJobHistory(history);
-  }
+    if (selectedProjectIdRef.current === projectId) {
+      setJobHistory(history);
+      setActiveJobIds(
+        history.filter((job) => ["queued", "running"].includes(job.status)).map((job) => job.id)
+      );
+    }
+  }, []);
 
   const applyProjectDetail = useCallback((project: Project): boolean => {
     if (selectedProjectIdRef.current !== project.id) return false;
@@ -321,6 +326,23 @@ export function App() {
     return true;
   }, []);
 
+  const refreshProjectDerivedState = useCallback(
+    async (project: Project): Promise<void> => {
+      if (selectedProjectIdRef.current !== project.id) return;
+      const pages = project.manga_json.pages;
+      setSelectedPage((current) =>
+        pages.some((page) => page.page === current) ? current : (pages[0]?.page ?? 1)
+      );
+      setSelectedPanelId((current) => {
+        const panelIds = new Set(pages.flatMap((page) => page.panels.map((panel) => panel.panel_id)));
+        return current && panelIds.has(current) ? current : (pages[0]?.panels[0]?.panel_id ?? null);
+      });
+      setPageAssets(pages.map((page) => page.render_asset ?? ""));
+      await Promise.all([refreshProductionStatus(project.id), refreshJobHistory(project.id)]);
+    },
+    [refreshJobHistory, refreshProductionStatus]
+  );
+
   function applyProjectMutation(projectId: string, mangaJson: MangaProject, revision?: number): boolean {
     if (selectedProjectIdRef.current !== projectId) return false;
     setSelected((current) =>
@@ -338,9 +360,13 @@ export function App() {
     return true;
   }
 
-  const onProjectConflict = useCallback(() => {
-    setMessage("他の操作で更新されたため最新を採用しました。未保存編集は適用されませんでした。");
-  }, []);
+  const onProjectConflict = useCallback(
+    async (project: Project) => {
+      await refreshProjectDerivedState(project);
+      setMessage("他の操作で更新されたため最新を採用しました。未保存編集は適用されませんでした。");
+    },
+    [refreshProjectDerivedState]
+  );
   const { applyMutationResponse, handleProjectMutationError } = useProjectMutation<Project>({
     applyProject: applyProjectDetail,
     onConflict: onProjectConflict
@@ -356,7 +382,7 @@ export function App() {
     try {
       await task();
     } catch (error) {
-      if (!handleProjectMutationError(error)) {
+      if (!(await handleProjectMutationError(error))) {
         setMessage(error instanceof Error ? error.message : "処理に失敗しました");
       }
     } finally {
@@ -434,14 +460,7 @@ export function App() {
       );
       return response.project;
     } catch (error) {
-      if (
-        error instanceof ApiError &&
-        error.status === 409 &&
-        error.body?.code === "project_revision_conflict" &&
-        error.body.project
-      ) {
-        const latest = error.body.project as Project;
-        if (selectedProjectIdRef.current === projectId) applyProjectDetail(latest);
+      if (await handleProjectMutationError(error)) {
         throw new Error(
           "他の操作で更新されていたため最新を採用しました。未保存の編集は適用されませんでした。"
         );
@@ -515,12 +534,11 @@ export function App() {
         saved?.revision ?? selected.revision
       );
       if (job.status !== "done") throw new Error(job.message);
+      const fresh = await api.get<Project>(`/api/projects/${projectId}`);
+      applyProjectDetail(fresh);
       setProgress({ label: `${selectedPage}ページを更新中`, current: 3, total: 4 });
       const pageResponse = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
-        withRevision(
-          `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`,
-          saved?.revision ?? selected.revision
-        )
+        withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`, fresh.revision)
       );
       applyProjectDetail(pageResponse.project);
       updateProjectPageAssets(projectId, (assets) => {
@@ -1394,17 +1412,23 @@ export function App() {
               onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
               onOverlayUpload={async (manga, pageNumber, overlayId, kind, file) => {
                 const projectId = selected.id;
-                const saved = await putMangaJson(projectId, selected.revision, manga);
-                applyProjectDetail(saved);
-                const response = await api.postBinary<ProjectMutationResponse<ReferenceAssetResult>>(
-                  withRevision(
-                    `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlayId)}/${kind}`,
-                    saved.revision
-                  ),
-                  file
-                );
-                applyProjectDetail(response.project);
-                setAssetVersion((value) => value + 1);
+                try {
+                  const saved = await putMangaJson(projectId, selected.revision, manga);
+                  applyProjectDetail(saved);
+                  const response = await api.postBinary<ProjectMutationResponse<ReferenceAssetResult>>(
+                    withRevision(
+                      `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlayId)}/${kind}`,
+                      saved.revision
+                    ),
+                    file
+                  );
+                  applyProjectDetail(response.project);
+                  setAssetVersion((value) => value + 1);
+                  return true;
+                } catch (error) {
+                  if (await handleProjectMutationError(error)) return false;
+                  throw error;
+                }
               }}
               onSave={async (manga) => {
                 if (!selected) return;
@@ -1466,13 +1490,15 @@ export function App() {
         {activeTab === "knowledge" && <KnowledgePanel defaultWorkName={selected?.work_name ?? ""} />}
 
         {activeTab === "story" && selected && (
-          <StoryPanel
+          <StoryPanel<Project>
             projectId={selected.id}
             revision={selected.revision}
             workName={selected.work_name}
             onProjectMutation={(response) => {
               applyMutationResponse(response);
+              return refreshProjectDerivedState(response.project);
             }}
+            onProjectMutationError={handleProjectMutationError}
             onBusyChange={(working, label) => {
               setBusy(working);
               setProgress(working ? { label, current: 0, total: 100, indeterminate: true } : null);

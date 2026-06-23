@@ -277,11 +277,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Generate Name Api Projects  Project Id  Generate Name Post"
                 }
               }
             }
@@ -345,11 +353,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Update Manga Json Api Projects  Project Id  Manga Json Put"
                 }
               }
             }
@@ -412,11 +428,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Character Reference Api Projects  Project Id  Characters  Character Id  Reference Image Post"
                 }
               }
             }
@@ -479,11 +503,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Location Reference Api Projects  Project Id  Locations  Location Id  Reference Image Post"
                 }
               }
             }
@@ -564,11 +596,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Panel Control Reference Api Projects  Project Id  Panels  Panel Id  Controls  Kind  Reference Image Post"
                 }
               }
             }
@@ -649,11 +689,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Overlay Asset Api Projects  Project Id  Pages  Page Number  Overlays  Overlay Id   Asset Kind  Post"
                 }
               }
             }
@@ -733,11 +781,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Suggest Page Layout Api Projects  Project Id  Pages  Page Number  Layout Suggest Post"
                 }
               }
             }
@@ -904,11 +960,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Render Page Endpoint Api Projects  Project Id  Pages  Page Number  Render Post"
                 }
               }
             }
@@ -971,11 +1035,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Render Panel Page Api Projects  Project Id  Panels  Panel Id  Render Page Post"
                 }
               }
             }
@@ -1029,11 +1101,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Export Project Cbz Api Projects  Project Id  Export Cbz Post"
                 }
               }
             }
@@ -1434,11 +1514,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Generation Job Api Projects  Project Id  Panels  Panel Id  Generation Jobs Post"
                 }
               }
             }
@@ -1509,11 +1597,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Batch Generation Jobs Api Projects  Project Id  Generation Jobs Post"
                 }
               }
             }
@@ -1704,11 +1800,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Select Panel Candidate Api Projects  Project Id  Panels  Panel Id  Candidates  Candidate Id  Select Post"
                 }
               }
             }
@@ -1771,11 +1875,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Use Stub Panel Image Api Projects  Project Id  Panels  Panel Id  Use Stub Post"
                 }
               }
             }
@@ -2107,11 +2219,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Story Session Api Projects  Project Id  Story Sessions Post"
                 }
               }
             }
@@ -2416,11 +2536,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Apply Story Session Api Story Sessions  Session Id  Apply Post"
                 }
               }
             }
@@ -2526,11 +2654,19 @@
             }
           },
           "409": {
-            "description": "revision競合。最新のprojectを同梱する",
+            "description": "revision競合、または通常の更新競合",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Restore Project Revision Api Projects  Project Id  Revisions  Revision Id  Restore Post"
                 }
               }
             }

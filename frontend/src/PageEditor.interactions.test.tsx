@@ -216,7 +216,7 @@ describe("PageEditor interactions", () => {
   });
 
   it("オーバーフレームを追加・編集・アップロード・削除する", async () => {
-    const onOverlayUpload = vi.fn().mockResolvedValue(undefined);
+    const onOverlayUpload = vi.fn().mockResolvedValue(true);
     const props = setup({ onOverlayUpload });
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
     expect(props.onChange).toHaveBeenCalled();

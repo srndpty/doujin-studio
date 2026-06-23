@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ProjectMutationResponse } from "./App";
 import { api, withRevision } from "./api/client";
+import type { ProjectMutationResponse } from "./api/use-project-mutation";
 
 type StageName = "brief" | "plot" | "pages" | "script";
 type StageStatus = "empty" | "draft" | "approved";
@@ -51,17 +51,19 @@ const STAGES: { name: StageName; label: string; hint: string }[] = [
 
 const STATUS_LABEL: Record<StageStatus, string> = { empty: "未生成", draft: "未承認", approved: "承認済み" };
 
-export function StoryPanel({
+export function StoryPanel<ProjectType>({
   projectId,
   revision,
   workName,
   onProjectMutation,
+  onProjectMutationError,
   onBusyChange
 }: {
   projectId: string;
   revision: number;
   workName: string;
-  onProjectMutation: (response: ProjectMutationResponse<unknown>) => void;
+  onProjectMutation: (response: ProjectMutationResponse<ProjectType, unknown>) => void | Promise<void>;
+  onProjectMutationError: (error: unknown) => boolean | Promise<boolean>;
   onBusyChange?: (busy: boolean, label: string) => void;
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -87,7 +89,11 @@ export function StoryPanel({
     try {
       await task();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "処理に失敗しました");
+      if (await onProjectMutationError(error)) {
+        setMessage("他の操作で更新されたため、最新のプロジェクトを採用しました");
+      } else {
+        setMessage(error instanceof Error ? error.message : "処理に失敗しました");
+      }
     } finally {
       setBusy(false);
       onBusyChange?.(false, "");
@@ -140,7 +146,7 @@ export function StoryPanel({
 
   async function createSession() {
     await run(async () => {
-      const response = await api.post<ProjectMutationResponse<StorySession>>(
+      const response = await api.post<ProjectMutationResponse<ProjectType, StorySession>>(
         withRevision(`/api/projects/${projectId}/story-sessions`, revision),
         {
           work_name: selectedLocalWork?.work_name ?? workName,
@@ -149,7 +155,7 @@ export function StoryPanel({
           instruction
         }
       );
-      onProjectMutation(response);
+      await onProjectMutation(response);
       syncDrafts(response.result);
       setMessage(
         knowledgeWorkId
@@ -211,10 +217,10 @@ export function StoryPanel({
   async function applySession() {
     if (!session) return;
     await run(async () => {
-      const response = await api.post<ProjectMutationResponse<unknown>>(
+      const response = await api.post<ProjectMutationResponse<ProjectType, unknown>>(
         withRevision(`/api/story-sessions/${session.id}/apply`, revision)
       );
-      onProjectMutation(response);
+      await onProjectMutation(response);
       setMessage("プロジェクトへ適用しました。適用前の状態はリビジョンに保存されています");
       await refreshRevisions();
     });
@@ -222,10 +228,10 @@ export function StoryPanel({
 
   async function restoreRevision(id: string) {
     await run(async () => {
-      const response = await api.post<ProjectMutationResponse<unknown>>(
+      const response = await api.post<ProjectMutationResponse<ProjectType, unknown>>(
         withRevision(`/api/projects/${projectId}/revisions/${id}/restore`, revision)
       );
-      onProjectMutation(response);
+      await onProjectMutation(response);
       setMessage("リビジョンを復元しました");
       await refreshRevisions();
     });

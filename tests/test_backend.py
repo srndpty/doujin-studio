@@ -1459,6 +1459,30 @@ def test_production_status_detects_missing_render_asset(tmp_path: Path) -> None:
         assert saved_page["render_status"] == "pending"
 
 
+def test_page_render_response_uses_its_committed_snapshot(tmp_path: Path, monkeypatch) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        app = client.app
+        original = projects_router.to_project_mutation_response
+
+        def interleave_update(request, target_id, result, *, snapshot=None):
+            assert snapshot is not None
+            app.state.mutation.mutate_local(
+                project_id, lambda manga: setattr(manga, "premise", "応答整形前の別更新")
+            )
+            return original(request, target_id, result, snapshot=snapshot)
+
+        monkeypatch.setattr(projects_router, "to_project_mutation_response", interleave_update)
+        response = client.post(mutation_url(client, project_id, "pages/1/render"))
+        assert response.status_code == 200
+        body = response.json()
+        latest = client.get(f"/api/projects/{project_id}").json()
+        assert body["project"]["revision"] + 1 == latest["revision"]
+        page = body["project"]["manga_json"]["pages"][0]
+        assert page["render_asset"] == body["result"]["page_asset"]
+        assert body["project"]["manga_json"]["premise"] != latest["manga_json"]["premise"]
+
+
 def test_mutation_service_cas_detects_conflict(tmp_path: Path) -> None:
     from backend.app.mutation import ProjectConflictError, ProjectMutationService
 

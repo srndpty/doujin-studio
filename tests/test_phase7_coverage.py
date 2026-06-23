@@ -281,6 +281,25 @@ def test_upload_missing_entities_return_404(tmp_path: Path) -> None:
             assert response.status_code == 404, path
 
 
+def test_stale_revision_precedes_missing_entity_errors(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_project(client)
+        stale = revision(client, project_id)
+        bump_revision(client, project_id)
+        cases = [
+            f"/api/projects/{project_id}/characters/none/reference-image?revision={stale}",
+            f"/api/projects/{project_id}/locations/none/reference-image?revision={stale}",
+            f"/api/projects/{project_id}/panels/none/controls/pose/reference-image?load_node_id=1&revision={stale}",
+            f"/api/projects/{project_id}/pages/1/overlays/none/asset?revision={stale}",
+        ]
+        for path in cases:
+            response = client.post(
+                path, content=png_bytes("blue"), headers={"Content-Type": "image/png"}
+            )
+            assert response.status_code == 409, path
+            assert response.json()["code"] == "project_revision_conflict"
+
+
 # --- mutation service のdomain例外 ---
 
 

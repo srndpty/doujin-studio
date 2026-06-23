@@ -127,6 +127,7 @@ def create_session(
     work_name: str,
     target_pages: int,
     instruction: str,
+    commit: bool = True,
 ) -> StoryGenerationSessionRecord:
     record = StoryGenerationSessionRecord(
         id=str(uuid.uuid4()),
@@ -139,8 +140,11 @@ def create_session(
         updated_at=now_utc(),
     )
     session.add(record)
-    session.commit()
-    session.refresh(record)
+    if commit:
+        session.commit()
+        session.refresh(record)
+    else:
+        session.flush()
     return record
 
 

@@ -30,7 +30,10 @@ function jsonResponse(value: unknown): Promise<Response> {
 }
 
 describe("AppのManga JSON保存", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it("直接編集したjsonTextをツールバー保存で送信する", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
@@ -191,6 +194,13 @@ describe("AppのManga JSON保存", () => {
     expect((textarea as HTMLTextAreaElement).value).not.toContain("自分のローカル編集");
     // PUTは1回だけ（自動で古い全文を再送して上書きしていない）。
     expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(1);
+    // 最新project採用時は派生状態も再取得する。
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/production-status")).length
+    ).toBeGreaterThan(1);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/generation-jobs")).length
+    ).toBeGreaterThan(1);
   });
 
   it("プロジェクト切替後は古いCBZ応答を現在の編集状態へ反映しない", async () => {
@@ -284,4 +294,179 @@ describe("AppのManga JSON保存", () => {
     expect(textarea?.value).toContain("プロジェクト2");
     expect(textarea?.value).not.toContain("遅延したプロジェクト1");
   });
+
+  it.each(["画像生成", "ページ内全コマ生成", "全ページ生成"])(
+    "%s完了後のrender-pageには最新revisionを送る",
+    async (buttonName) => {
+      const mangaWithPanel = {
+        ...manga,
+        pages: [
+          {
+            page: 1,
+            theme: "導入",
+            layout_template: "one",
+            reading_order: ["p01_01"],
+            overlay_elements: [],
+            panels: [
+              {
+                panel_id: "p01_01",
+                bbox: [0.05, 0.05, 0.9, 0.9],
+                shot: "wide",
+                camera: "",
+                location_id: "",
+                characters: [],
+                prompt: "",
+                image_asset: null,
+                image_candidates: [],
+                selected_candidate_id: null,
+                control_references: [],
+                dialogue: [],
+                sfx: [],
+                generation: {
+                  backend: "stub",
+                  prompt: "",
+                  negative_prompt: "",
+                  seed: 1,
+                  workflow_id: null,
+                  prompt_id: null,
+                  width: 768,
+                  height: 1024,
+                  fit_mode: "cover",
+                  crop_anchor: "center",
+                  text_policy: "no_text",
+                  model_notes: "",
+                  status: "pending",
+                  message: "",
+                  loras: [],
+                  reference_images: [],
+                  workflow_preset_id: null,
+                  workflow_preset: null
+                }
+              }
+            ],
+            render_status: "pending",
+            rendered_at: null
+          }
+        ]
+      } as MangaProject;
+      const renderUrls: string[] = [];
+      let generationStarted = false;
+      const job = {
+        id: "job-1",
+        project_id: "p1",
+        panel_id: "p01_01",
+        candidate_count: 1,
+        status: "queued",
+        progress: 0,
+        message: "生成中",
+        node: null,
+        prompt_id: null,
+        candidate_ids: [],
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01"
+      };
+      class ImmediateWebSocket {
+        onmessage: ((event: { data: string }) => void) | null = null;
+        onerror: (() => void) | null = null;
+        onclose: (() => void) | null = null;
+        constructor() {
+          window.setTimeout(() => {
+            this.onmessage?.({
+              data: JSON.stringify({ ...job, status: "done", progress: 100, message: "完了" })
+            });
+          }, 0);
+        }
+        close() {}
+      }
+      vi.stubGlobal("WebSocket", ImmediateWebSocket);
+      vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+        const url = String(input);
+        if (init?.method === "PUT" && url.includes("/manga-json")) {
+          return jsonResponse({
+            project: {
+              id: "p1",
+              title: mangaWithPanel.title,
+              work_name: mangaWithPanel.work_name,
+              revision: 1,
+              manga_json: mangaWithPanel
+            },
+            result: {}
+          });
+        }
+        if (init?.method === "POST" && url.includes("/generation-jobs")) {
+          generationStarted = true;
+          const result = url.includes("/panels/") ? job : { jobs: [] };
+          return jsonResponse({
+            project: {
+              id: "p1",
+              title: mangaWithPanel.title,
+              work_name: mangaWithPanel.work_name,
+              revision: 2,
+              manga_json: mangaWithPanel
+            },
+            result
+          });
+        }
+        if (init?.method === "POST" && url.includes("/render-page")) {
+          renderUrls.push(url);
+          return jsonResponse({
+            project: {
+              id: "p1",
+              title: mangaWithPanel.title,
+              work_name: mangaWithPanel.work_name,
+              revision: 5,
+              manga_json: mangaWithPanel
+            },
+            result: { panel_id: "p01_01", page_asset: "p1/pages/page_001.png", warnings: [] }
+          });
+        }
+        if (url === "/api/projects") {
+          return jsonResponse([
+            { id: "p1", title: "テスト本", work_name: "テスト作品", revision: 0, updated_at: "2026-01-01" }
+          ]);
+        }
+        if (url === "/api/projects/p1") {
+          return jsonResponse({
+            id: "p1",
+            title: mangaWithPanel.title,
+            work_name: mangaWithPanel.work_name,
+            revision: generationStarted ? 4 : 0,
+            manga_json: mangaWithPanel
+          });
+        }
+        if (url.endsWith("/production-status")) {
+          return jsonResponse({
+            project_id: "p1",
+            status: "incomplete",
+            adopted_panels: 0,
+            total_panels: 1,
+            rendered_pages: 0,
+            total_pages: 1,
+            pages: [],
+            blockers: []
+          });
+        }
+        if (url.endsWith("/generation-jobs")) return jsonResponse([]);
+        if (url === "/api/comfyui/status") {
+          return jsonResponse({
+            backend: "stub",
+            base_url: "",
+            workflow_path: "",
+            connected: false,
+            workflow_exists: false,
+            workflow_valid: false,
+            missing_nodes: [],
+            message: "stub"
+          });
+        }
+        return jsonResponse({});
+      });
+
+      render(<App />);
+      fireEvent.click(await screen.findByText("テスト本"));
+      fireEvent.click(await screen.findByRole("button", { name: buttonName }));
+      await waitFor(() => expect(renderUrls).toHaveLength(1));
+      expect(renderUrls[0]).toContain("revision=4");
+    }
+  );
 });

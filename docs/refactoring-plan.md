@@ -38,6 +38,14 @@ CASリトライ、という二層構造にする。
 `ProjectRevisionConflictResponse`（expected/actual revisionと最新projectを含む）で返し、
 通常の409とは区別する。
 
+成功応答の`project`は応答整形時の再読込値ではなく、その操作が確定したsnapshotを返す。
+story session作成はrevision検証・必要なwork name更新・session追加を同一トランザクションで
+確定し、projectが不変ならrevisionを消費しない。
+
+例外としてjob cancelは「古い編集内容を書き込むproject mutation」ではなく、指定jobを
+終端化する管理操作として扱う。完了済みjobへのno-opを含め常に安全に停止できることを優先し、
+project revisionは要求しない。応答には停止後のproject snapshotを含める。
+
 フロントエンドは`api/client.ts`と`useProjectMutation()`を新設し、
 
 - 通信エラーの正規化（`ApiError`）

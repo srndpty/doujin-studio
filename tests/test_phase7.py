@@ -199,6 +199,21 @@ def test_cannot_skip_stage_and_edit_invalidates_downstream(tmp_path: Path) -> No
         assert edited["stages"]["script"]["status"] == "draft"
 
 
+def test_story_session_creation_without_project_change_does_not_consume_revision(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_project(client)
+        before = client.get(f"/api/projects/{project_id}").json()["revision"]
+        created = client.post(
+            f"/api/projects/{project_id}/story-sessions?revision={before}",
+            json={"target_pages": 4},
+        )
+        assert created.status_code == 200
+        assert created.json()["project"]["revision"] == before
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == before
+
+
 def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_project(client)

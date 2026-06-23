@@ -210,6 +210,26 @@ class ProjectMutationService:
                 raise ProjectNotFoundError()
             return record.generation_epoch
 
+    def require_revision(self, project_id: str, expected_revision: int) -> ProjectSnapshot:
+        """revision一致を検証し、書き込みやrevision消費なしでsnapshotを返す。"""
+        snapshot = self.current_snapshot(project_id)
+        if snapshot.revision != expected_revision:
+            raise ProjectRevisionConflictError(project_id, expected_revision)
+        return snapshot
+
+    def current_snapshot(self, project_id: str) -> ProjectSnapshot:
+        """現在projectを単一読み取りから不変snapshotとして返す。"""
+        with self.session_factory() as session:
+            record = self.repository.get(session, project_id)
+            if record is None:
+                raise ProjectNotFoundError()
+            return ProjectSnapshot(
+                project_id,
+                parse_manga(record.manga_json),
+                record.revision,
+                record.generation_epoch,
+            )
+
     def mutate_user(
         self,
         project_id: str,
@@ -237,6 +257,36 @@ class ProjectMutationService:
                 return MutationResult(result, ProjectSnapshot(project_id, manga, base + 1, epoch))
             session.rollback()
             raise ProjectRevisionConflictError(project_id, expected_revision)
+
+    def mutate_user_transaction(
+        self,
+        project_id: str,
+        *,
+        expected_revision: int,
+        mutate: Callable[[Session, MangaProject], T],
+    ) -> MutationResult[T]:
+        """project CASと関連レコード作成を同一トランザクションで確定する。"""
+        with self.session_factory() as session:
+            record = self.repository.get(session, project_id)
+            if record is None:
+                raise ProjectNotFoundError()
+            if record.revision != expected_revision:
+                raise ProjectRevisionConflictError(project_id, expected_revision)
+            base = record.revision
+            epoch = record.generation_epoch
+            manga = parse_manga(record.manga_json)
+            before = manga.model_dump_json()
+            result = mutate(session, manga)
+            normalize_manga_assets(manga, self.export_dir)
+            changed = manga.model_dump_json() != before
+            if changed and self.repository.cas_set_manga(session, project_id, base, manga) != 1:
+                session.rollback()
+                raise ProjectRevisionConflictError(project_id, expected_revision)
+            session.commit()
+            return MutationResult(
+                result,
+                ProjectSnapshot(project_id, manga, base + int(changed), epoch),
+            )
 
     def mutate_local(
         self,

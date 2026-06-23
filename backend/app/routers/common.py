@@ -48,6 +48,7 @@ from ..mutation import (
     ProjectNotFoundError,
     ProjectReplaceConflictError,
     ProjectRevisionConflictError,
+    ProjectSnapshot,
     RenderCommitConflictError,
     WorkerScopeViolationError,
 )
@@ -91,8 +92,8 @@ GENERATION_ERROR_RESPONSES: dict[int | str, dict] = {
 
 PROJECT_MUTATION_ERROR_RESPONSES: dict[int | str, dict] = {
     409: {
-        "model": ProjectRevisionConflictResponse,
-        "description": "revision競合。最新のprojectを同梱する",
+        "model": ApiErrorResponse | ProjectRevisionConflictResponse,
+        "description": "revision競合、または通常の更新競合",
     }
 }
 
@@ -109,21 +110,18 @@ def _revision_conflict_response(
         # story-session applyなど、path上にproject_idがないAPIは例外へproject_idを持たせる。
         exc = getattr(request.state, "revision_conflict_project_id", None)
         project_id = exc if isinstance(exc, str) else None
-    if project_id is not None:
-        try:
-            project = to_detail(
-                load_project_record(request, project_id), request.app.state.settings.export_dir
-            )
-            payload = ProjectRevisionConflictResponse(
-                detail=detail,
-                expected_revision=expected_revision,
-                actual_revision=project.revision,
-                project=project,
-            )
-            return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
-        except Exception:
-            pass
-    return _error_response(409, detail)
+    if project_id is None:
+        return _error_response(409, detail)
+    project = to_detail(
+        load_project_record(request, project_id), request.app.state.settings.export_dir
+    )
+    payload = ProjectRevisionConflictResponse(
+        detail=detail,
+        expected_revision=expected_revision,
+        actual_revision=project.revision,
+        project=project,
+    )
+    return JSONResponse(status_code=409, content=payload.model_dump(mode="json"))
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -432,16 +430,34 @@ def to_detail(record: ProjectRecord, export_dir: Path | None = None) -> ProjectD
 
 
 def to_project_mutation_response(
-    request: Request, project_id: str, result: MutationResultT
+    request: Request,
+    project_id: str,
+    result: MutationResultT,
+    *,
+    snapshot: ProjectSnapshot | None = None,
 ) -> ProjectMutationResponse[MutationResultT]:
-    """mutation成功応答を共通形へ整形する。"""
+    """mutation成功応答を、その操作が確定したsnapshotと対応させる。"""
 
-    return ProjectMutationResponse(
-        project=to_detail(
+    if snapshot is None:
+        project = to_detail(
             load_project_record(request, project_id), request.app.state.settings.export_dir
-        ),
-        result=result,
-    )
+        )
+    else:
+        with request.app.state.SessionLocal() as session:
+            record = request.app.state.repository.get(session, project_id)
+            if record is None:
+                raise ProjectNotFoundError()
+        project = ProjectDetail(
+            id=project_id,
+            title=snapshot.manga.title,
+            work_name=snapshot.manga.work_name,
+            revision=snapshot.revision,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            manga_json=snapshot.manga,
+        )
+
+    return ProjectMutationResponse(project=project, result=result)
 
 
 def open_in_file_manager(path: Path) -> None:
