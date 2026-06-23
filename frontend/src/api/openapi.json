@@ -174,7 +174,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectDetail"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_EmptyMutationResult_"
                 }
               }
             }
@@ -244,6 +244,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -262,7 +271,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectDetail"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_EmptyMutationResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Generate Name Api Projects  Project Id  Generate Name Post"
                 }
               }
             }
@@ -320,7 +347,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectDetail"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_EmptyMutationResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Update Manga Json Api Projects  Project Id  Manga Json Put"
                 }
               }
             }
@@ -377,7 +422,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CharacterReferenceResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_CharacterReferenceResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Character Reference Api Projects  Project Id  Characters  Character Id  Reference Image Post"
                 }
               }
             }
@@ -434,7 +497,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_ReferenceAssetResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Location Reference Api Projects  Project Id  Locations  Location Id  Reference Image Post"
                 }
               }
             }
@@ -509,7 +590,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_ReferenceAssetResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Panel Control Reference Api Projects  Project Id  Panels  Panel Id  Controls  Kind  Reference Image Post"
                 }
               }
             }
@@ -584,7 +683,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReferenceAssetResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_ReferenceAssetResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Upload Overlay Asset Api Projects  Project Id  Pages  Page Number  Overlays  Overlay Id   Asset Kind  Post"
                 }
               }
             }
@@ -624,6 +741,15 @@
               "type": "integer",
               "title": "Page Number"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -649,7 +775,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LayoutSuggestResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_LayoutSuggestResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Suggest Page Layout Api Projects  Project Id  Pages  Page Number  Layout Suggest Post"
                 }
               }
             }
@@ -793,6 +937,15 @@
               "type": "integer",
               "title": "Page Number"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -801,7 +954,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PageRenderResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PageRenderResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Render Page Endpoint Api Projects  Project Id  Pages  Page Number  Render Post"
                 }
               }
             }
@@ -841,6 +1012,15 @@
               "type": "string",
               "title": "Panel Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -849,7 +1029,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PanelPageRenderResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PanelPageRenderResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Render Panel Page Api Projects  Project Id  Panels  Panel Id  Render Page Post"
                 }
               }
             }
@@ -880,6 +1078,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -888,7 +1095,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExportResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_ExportResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Export Project Cbz Api Projects  Project Id  Export Cbz Post"
                 }
               }
             }
@@ -997,6 +1222,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -1022,17 +1256,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RenderResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_ProjectRenderResult_"
                 }
               }
             }
           },
           "409": {
-            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "description": "revision競合、または生成キャンセル（入力変更・構成置換など）",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Render Project Api Projects  Project Id  Render Post"
                 }
               }
             }
@@ -1082,6 +1324,15 @@
               "type": "string",
               "title": "Panel Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -1107,17 +1358,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PanelImageGenerationResult_"
                 }
               }
             }
           },
           "409": {
-            "description": "生成がキャンセルされた（入力変更・構成置換など）",
+            "description": "revision競合、または生成キャンセル（入力変更・構成置換など）",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Generate Panel Image Api Projects  Project Id  Panels  Panel Id  Generate Image Post"
                 }
               }
             }
@@ -1215,6 +1474,15 @@
               "type": "string",
               "title": "Panel Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -1240,7 +1508,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GenerationJobResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_GenerationJobResponse_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Generation Job Api Projects  Project Id  Panels  Panel Id  Generation Jobs Post"
                 }
               }
             }
@@ -1271,6 +1557,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -1296,7 +1591,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BatchGenerationJobResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_BatchGenerationJobResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Batch Generation Jobs Api Projects  Project Id  Generation Jobs Post"
                 }
               }
             }
@@ -1415,7 +1728,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GenerationJobResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_GenerationJobResponse_"
                 }
               }
             }
@@ -1464,6 +1777,15 @@
               "type": "string",
               "title": "Candidate Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -1472,7 +1794,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PanelPageRenderResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PanelPageRenderResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、通常の更新競合、または候補採用後render競合の部分成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectMutationPartialSuccessResponse"
+                    }
+                  ],
+                  "title": "Response 409 Select Panel Candidate Api Projects  Project Id  Panels  Panel Id  Candidates  Candidate Id  Select Post"
                 }
               }
             }
@@ -1512,6 +1855,15 @@
               "type": "string",
               "title": "Panel Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -1520,7 +1872,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PanelImageGenerationResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PanelImageGenerationResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Use Stub Panel Image Api Projects  Project Id  Panels  Panel Id  Use Stub Post"
                 }
               }
             }
@@ -1819,6 +2189,15 @@
               "type": "string",
               "title": "Project Id"
             }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
           }
         ],
         "requestBody": {
@@ -1837,7 +2216,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StorySessionResponse"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_StorySessionResponse_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Create Story Session Api Projects  Project Id  Story Sessions Post"
                 }
               }
             }
@@ -2136,7 +2533,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectDetail"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_EmptyMutationResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Apply Story Session Api Story Sessions  Session Id  Apply Post"
                 }
               }
             }
@@ -2236,7 +2651,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectDetail"
+                  "$ref": "#/components/schemas/ProjectMutationResponse_EmptyMutationResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Restore Project Revision Api Projects  Project Id  Revisions  Revision Id  Restore Post"
                 }
               }
             }
@@ -2341,7 +2774,7 @@
         "type": "object",
         "title": "BatchGenerationJobCreate"
       },
-      "BatchGenerationJobResponse": {
+      "BatchGenerationJobResult": {
         "properties": {
           "jobs": {
             "items": {
@@ -2355,7 +2788,7 @@
         "required": [
           "jobs"
         ],
-        "title": "BatchGenerationJobResponse"
+        "title": "BatchGenerationJobResult"
       },
       "Character": {
         "properties": {
@@ -2458,7 +2891,7 @@
         ],
         "title": "Character"
       },
-      "CharacterReferenceResponse": {
+      "CharacterReferenceResult": {
         "properties": {
           "character_id": {
             "type": "string",
@@ -2467,23 +2900,14 @@
           "asset": {
             "type": "string",
             "title": "Asset"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           }
         },
         "type": "object",
         "required": [
           "character_id",
-          "asset",
-          "manga_json"
+          "asset"
         ],
-        "title": "CharacterReferenceResponse"
+        "title": "CharacterReferenceResult"
       },
       "ComfyUIStatusResponse": {
         "properties": {
@@ -2655,12 +3079,14 @@
         ],
         "title": "Dialogue"
       },
-      "ExportResponse": {
+      "EmptyMutationResult": {
+        "properties": {},
+        "type": "object",
+        "title": "EmptyMutationResult",
+        "description": "操作固有情報がないmutation用の空result。"
+      },
+      "ExportResult": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "cbz_asset": {
             "type": "string",
             "title": "Cbz Asset"
@@ -2668,14 +3094,6 @@
           "absolute_path": {
             "type": "string",
             "title": "Absolute Path"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
           },
           "warnings": {
             "items": {
@@ -2687,12 +3105,10 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "cbz_asset",
-          "absolute_path",
-          "manga_json"
+          "absolute_path"
         ],
-        "title": "ExportResponse"
+        "title": "ExportResult"
       },
       "FontInfo": {
         "properties": {
@@ -2755,11 +3171,6 @@
       },
       "GenerateNameRequest": {
         "properties": {
-          "revision": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Revision"
-          },
           "work_name": {
             "type": "string",
             "maxLength": 120,
@@ -2803,7 +3214,6 @@
         },
         "type": "object",
         "required": [
-          "revision",
           "work_name",
           "character_a",
           "character_b",
@@ -3646,12 +4056,8 @@
         "type": "object",
         "title": "LayoutSuggestRequest"
       },
-      "LayoutSuggestResponse": {
+      "LayoutSuggestResult": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "page": {
             "type": "integer",
             "title": "Page"
@@ -3659,24 +4065,14 @@
           "layout_family": {
             "type": "string",
             "title": "Layout Family"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           }
         },
         "type": "object",
         "required": [
-          "project_id",
           "page",
-          "layout_family",
-          "manga_json"
+          "layout_family"
         ],
-        "title": "LayoutSuggestResponse"
+        "title": "LayoutSuggestResult"
       },
       "LoRABinding": {
         "properties": {
@@ -4196,12 +4592,8 @@
         ],
         "title": "PageProductionStatus"
       },
-      "PageRenderResponse": {
+      "PageRenderResult": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "page": {
             "type": "integer",
             "title": "Page"
@@ -4209,14 +4601,6 @@
           "page_asset": {
             "type": "string",
             "title": "Page Asset"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           },
           "warnings": {
             "items": {
@@ -4231,13 +4615,11 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "page",
           "page_asset",
-          "manga_json",
           "preflight"
         ],
-        "title": "PageRenderResponse"
+        "title": "PageRenderResult"
       },
       "Panel": {
         "properties": {
@@ -4413,39 +4795,21 @@
         ],
         "title": "PanelControlReference"
       },
-      "PanelImageGenerationResponse": {
+      "PanelImageGenerationResult": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "panel_id": {
             "type": "string",
             "title": "Panel Id"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           }
         },
         "type": "object",
         "required": [
-          "project_id",
-          "panel_id",
-          "manga_json"
+          "panel_id"
         ],
-        "title": "PanelImageGenerationResponse"
+        "title": "PanelImageGenerationResult"
       },
-      "PanelPageRenderResponse": {
+      "PanelPageRenderResult": {
         "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
           "panel_id": {
             "type": "string",
             "title": "Panel Id"
@@ -4453,14 +4817,6 @@
           "page_asset": {
             "type": "string",
             "title": "Page Asset"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           },
           "warnings": {
             "items": {
@@ -4472,12 +4828,10 @@
         },
         "type": "object",
         "required": [
-          "project_id",
           "panel_id",
-          "page_asset",
-          "manga_json"
+          "page_asset"
         ],
-        "title": "PanelPageRenderResponse"
+        "title": "PanelPageRenderResult"
       },
       "PreflightIssue": {
         "properties": {
@@ -4640,6 +4994,301 @@
         ],
         "title": "ProjectDetail"
       },
+      "ProjectMutationPartialSuccessResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "code": {
+            "type": "string",
+            "const": "project_mutation_partially_applied",
+            "title": "Code",
+            "default": "project_mutation_partially_applied"
+          },
+          "completed_operation": {
+            "type": "string",
+            "title": "Completed Operation"
+          },
+          "failed_operation": {
+            "type": "string",
+            "title": "Failed Operation"
+          },
+          "completed_project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "completed_operation",
+          "failed_operation",
+          "completed_project",
+          "project",
+          "latest_revision"
+        ],
+        "title": "ProjectMutationPartialSuccessResponse",
+        "description": "複合操作の前段だけが確定した部分成功の専用409応答。\n\n部分成功は同時更新で起きるため通常成功よりstaleになりやすい。``completed_project`` は\n前段(候補採用など)を確定した時点のsnapshot、``project`` は応答整形時点のDB最新stateで、\n両者を分けて返す。フロントは``project``を採用し、``latest_revision``が更にそれを上回る場合は\n最新stateへ再同期する。``completed_project``は「前段が何を確定したか」を示すための参考値。"
+      },
+      "ProjectMutationResponse_BatchGenerationJobResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/BatchGenerationJobResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[BatchGenerationJobResult]"
+      },
+      "ProjectMutationResponse_CharacterReferenceResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/CharacterReferenceResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[CharacterReferenceResult]"
+      },
+      "ProjectMutationResponse_EmptyMutationResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EmptyMutationResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[EmptyMutationResult]"
+      },
+      "ProjectMutationResponse_ExportResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ExportResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[ExportResult]"
+      },
+      "ProjectMutationResponse_GenerationJobResponse_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/GenerationJobResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[GenerationJobResponse]"
+      },
+      "ProjectMutationResponse_LayoutSuggestResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/LayoutSuggestResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[LayoutSuggestResult]"
+      },
+      "ProjectMutationResponse_PageRenderResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/PageRenderResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[PageRenderResult]"
+      },
+      "ProjectMutationResponse_PanelImageGenerationResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/PanelImageGenerationResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[PanelImageGenerationResult]"
+      },
+      "ProjectMutationResponse_PanelPageRenderResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/PanelPageRenderResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[PanelPageRenderResult]"
+      },
+      "ProjectMutationResponse_ProjectRenderResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ProjectRenderResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[ProjectRenderResult]"
+      },
+      "ProjectMutationResponse_ReferenceAssetResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ReferenceAssetResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[ReferenceAssetResult]"
+      },
+      "ProjectMutationResponse_StorySessionResponse_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/StorySessionResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[StorySessionResponse]"
+      },
       "ProjectProductionStatus": {
         "properties": {
           "project_id": {
@@ -4697,6 +5346,63 @@
           "pages"
         ],
         "title": "ProjectProductionStatus"
+      },
+      "ProjectRenderResult": {
+        "properties": {
+          "page_assets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Page Assets"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "page_assets"
+        ],
+        "title": "ProjectRenderResult"
+      },
+      "ProjectRevisionConflictResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "code": {
+            "type": "string",
+            "const": "project_revision_conflict",
+            "title": "Code",
+            "default": "project_revision_conflict"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision"
+          },
+          "actual_revision": {
+            "type": "integer",
+            "title": "Actual Revision"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "expected_revision",
+          "actual_revision",
+          "project"
+        ],
+        "title": "ProjectRevisionConflictResponse",
+        "description": "revision競合時の専用409応答。最新projectを同梱する。"
       },
       "ProjectRevisionResponse": {
         "properties": {
@@ -4797,7 +5503,7 @@
         ],
         "title": "PromptPreviewResponse"
       },
-      "ReferenceAssetResponse": {
+      "ReferenceAssetResult": {
         "properties": {
           "target_id": {
             "type": "string",
@@ -4806,23 +5512,14 @@
           "asset": {
             "type": "string",
             "title": "Asset"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
           }
         },
         "type": "object",
         "required": [
           "target_id",
-          "asset",
-          "manga_json"
+          "asset"
         ],
-        "title": "ReferenceAssetResponse"
+        "title": "ReferenceAssetResult"
       },
       "ReferenceImageBinding": {
         "properties": {
@@ -4871,43 +5568,6 @@
         },
         "type": "object",
         "title": "RenderRequest"
-      },
-      "RenderResponse": {
-        "properties": {
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "page_assets": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Page Assets"
-          },
-          "manga_json": {
-            "$ref": "#/components/schemas/MangaProject"
-          },
-          "revision": {
-            "type": "integer",
-            "title": "Revision",
-            "default": 0
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Warnings"
-          }
-        },
-        "type": "object",
-        "required": [
-          "project_id",
-          "page_assets",
-          "manga_json"
-        ],
-        "title": "RenderResponse"
       },
       "Sfx": {
         "properties": {

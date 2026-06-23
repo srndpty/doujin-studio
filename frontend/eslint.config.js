@@ -20,7 +20,15 @@ export default tseslint.config(
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/preserve-manual-memoization": "off",
       "@typescript-eslint/no-explicit-any": "error",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }]
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "no-restricted-globals": [
+        "error",
+        { name: "fetch", message: "HTTP通信はsrc/api/client.tsへ集約してください" }
+      ]
     }
+  },
+  {
+    files: ["src/api/client.ts"],
+    rules: { "no-restricted-globals": "off" }
   }
 );

@@ -36,11 +36,10 @@ def create_project(client: TestClient, work_name: str = "テスト作品", targe
     response = client.post(
         "/api/projects", json={"title": "本", "work_name": work_name, "target_pages": target_pages}
     )
-    project_id = response.json()["id"]
+    project_id = response.json()["project"]["id"]
     client.post(
-        f"/api/projects/{project_id}/generate-name",
+        f"/api/projects/{project_id}/generate-name?revision=0",
         json={
-            "revision": 0,
             "work_name": work_name,
             "character_a": "春香",
             "character_b": "千早",
@@ -50,6 +49,11 @@ def create_project(client: TestClient, work_name: str = "テスト作品", targe
         },
     )
     return project_id
+
+
+def mutation_url(client: TestClient, project_id: str, suffix: str) -> str:
+    revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+    return f"/api/projects/{project_id}/{suffix}?revision={revision}"
 
 
 # --- 知識DBとチャンク分割 ---
@@ -143,10 +147,10 @@ def test_required_always_in_context_reference_by_relevance(tmp_path: Path) -> No
 
 def run_full_stub_flow(client: TestClient, project_id: str, target_pages: int) -> str:
     session = client.post(
-        f"/api/projects/{project_id}/story-sessions",
+        mutation_url(client, project_id, "story-sessions"),
         json={"target_pages": target_pages, "instruction": "短い日常話"},
     ).json()
-    session_id = session["id"]
+    session_id = session["result"]["id"]
     for stage in ["brief", "plot", "pages", "script"]:
         generated = client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate")
         assert generated.status_code == 200, generated.text
@@ -171,9 +175,9 @@ def test_cannot_skip_stage_and_edit_invalidates_downstream(tmp_path: Path) -> No
     with make_client(tmp_path) as client:
         project_id = create_project(client)
         session = client.post(
-            f"/api/projects/{project_id}/story-sessions", json={"target_pages": 4}
+            mutation_url(client, project_id, "story-sessions"), json={"target_pages": 4}
         ).json()
-        session_id = session["id"]
+        session_id = session["result"]["id"]
 
         # brief未承認でplotは生成できない。
         blocked = client.post(f"/api/story-sessions/{session_id}/stages/plot/generate")
@@ -195,6 +199,21 @@ def test_cannot_skip_stage_and_edit_invalidates_downstream(tmp_path: Path) -> No
         assert edited["stages"]["script"]["status"] == "draft"
 
 
+def test_story_session_creation_without_project_change_does_not_consume_revision(
+    tmp_path: Path,
+) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_project(client)
+        before = client.get(f"/api/projects/{project_id}").json()["revision"]
+        created = client.post(
+            f"/api/projects/{project_id}/story-sessions?revision={before}",
+            json={"target_pages": 4},
+        )
+        assert created.status_code == 200
+        assert created.json()["project"]["revision"] == before
+        assert client.get(f"/api/projects/{project_id}").json()["revision"] == before
+
+
 def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_project(client)
@@ -205,7 +224,7 @@ def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
         revision = client.get(f"/api/projects/{project_id}").json()["revision"]
         applied = client.post(f"/api/story-sessions/{session_id}/apply?revision={revision}")
         assert applied.status_code == 200
-        manga = applied.json()["manga_json"]
+        manga = applied.json()["project"]["manga_json"]
         assert len(manga["pages"]) == 4
         # キャラ・共通promptが維持されること。
         assert manga["characters"][0]["display_name"] == "春香"
@@ -226,7 +245,7 @@ def test_apply_and_revision_roundtrip(tmp_path: Path) -> None:
         restored = client.post(
             f"/api/projects/{project_id}/revisions/{revisions[0]['id']}/restore?revision={revision}"
         ).json()
-        assert restored["manga_json"]["pages"][0]["theme"] == first_theme
+        assert restored["project"]["manga_json"]["pages"][0]["theme"] == first_theme
         # 復元時も現在状態を新リビジョンとして保存する。
         assert len(client.get(f"/api/projects/{project_id}/revisions").json()) == 2
 
@@ -248,10 +267,10 @@ def test_required_knowledge_recorded_in_stage(tmp_path: Path) -> None:
         )
         project_id = create_project(client, work_name="知識作品")
         session = client.post(
-            f"/api/projects/{project_id}/story-sessions",
+            mutation_url(client, project_id, "story-sessions"),
             json={"work_name": "知識作品", "target_pages": 4},
         ).json()
-        session_id = session["id"]
+        session_id = session["result"]["id"]
         generated = client.post(f"/api/story-sessions/{session_id}/stages/brief/generate").json()
         assert generated["stages"]["brief"]["knowledge_ids"], (
             "required知識がステージに記録されること"
@@ -326,7 +345,7 @@ def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
 
         project_id = create_project(client, work_name="変更前")
         created = client.post(
-            f"/api/projects/{project_id}/story-sessions",
+            mutation_url(client, project_id, "story-sessions"),
             json={
                 "knowledge_work_id": "local-work",
                 "target_pages": 4,
@@ -334,11 +353,11 @@ def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
             },
         )
         assert created.status_code == 200, created.text
-        assert created.json()["work_name"] == "ローカル作品"
+        assert created.json()["result"]["work_name"] == "ローカル作品"
         assert client.get(f"/api/projects/{project_id}").json()["work_name"] == "ローカル作品"
 
         generated = client.post(
-            f"/api/story-sessions/{created.json()['id']}/stages/brief/generate"
+            f"/api/story-sessions/{created.json()['result']['id']}/stages/brief/generate"
         ).json()
         assert generated["stages"]["brief"]["knowledge_ids"]
         assert generated["stages"]["brief"]["data"]["characters"][0]["name"] == "美嘉"
@@ -352,7 +371,7 @@ def test_local_knowledge_pack_is_selected_and_synced(tmp_path: Path) -> None:
             encoding="utf-8",
         )
         second = client.post(
-            f"/api/projects/{project_id}/story-sessions",
+            mutation_url(client, project_id, "story-sessions"),
             json={"knowledge_work_id": "local-work", "target_pages": 4},
         )
         assert second.status_code == 200
@@ -402,9 +421,10 @@ def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
     with make_client(tmp_path, knowledge_dir=knowledge_dir) as client:
         project_id = create_project(client, work_name="変更前")
         session_id = client.post(
-            f"/api/projects/{project_id}/story-sessions",
+            f"/api/projects/{project_id}/story-sessions?revision="
+            f"{client.get(f'/api/projects/{project_id}').json()['revision']}",
             json={"knowledge_work_id": "cg", "target_pages": 4, "instruction": "美嘉の日常"},
-        ).json()["id"]
+        ).json()["result"]["id"]
         for stage in ["brief", "plot", "pages", "script"]:
             assert (
                 client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate").status_code
@@ -417,8 +437,8 @@ def test_knowledge_character_image_prompt_applied(tmp_path: Path) -> None:
 
         revision = client.get(f"/api/projects/{project_id}").json()["revision"]
         manga = client.post(f"/api/story-sessions/{session_id}/apply?revision={revision}").json()[
-            "manga_json"
-        ]
+            "project"
+        ]["manga_json"]
 
         mika = next((c for c in manga["characters"] if c["display_name"] == "城ヶ崎美嘉"), None)
         assert mika is not None, "知識のキャラがプロジェクトへ反映されること"

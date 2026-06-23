@@ -26,6 +26,8 @@ from .mutation import (
     ProjectConflictError,
     ProjectMutationService,
     ProjectNotFoundError,
+    ProjectRevisionConflictError,
+    ProjectSnapshot,
     mark_page_dirty,
     parse_manga,
 )
@@ -44,6 +46,14 @@ class GenerationRuntime:
     mutation: ProjectMutationService
     rendering: "RenderingService"
     repository: ProjectRepository
+
+
+class EnqueuedJobs(list[GenerationJob]):
+    """ジョブ群と、登録CASで同時に確定したproject snapshot。"""
+
+    def __init__(self, jobs: list[GenerationJob], project: ProjectSnapshot) -> None:
+        super().__init__(jobs)
+        self.project = project
 
 
 class ActiveJobConflictError(ProjectConflictError):
@@ -268,7 +278,8 @@ class GenerationService:
         attempts: int = 5,
         skip_active: bool = False,
         expected_epoch: int | None = None,
-    ) -> list[GenerationJob]:
+        expected_revision: int | None = None,
+    ) -> EnqueuedJobs:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
 
         expected_epoch指定時は、呼び出し元が固定した世代と一致する場合のみ登録する。
@@ -282,6 +293,8 @@ class GenerationService:
                 if record is None:
                     raise ProjectNotFoundError()
                 base_revision = record.revision
+                if expected_revision is not None and base_revision != expected_revision:
+                    raise ProjectRevisionConflictError(project_id, expected_revision)
                 if required_epoch is None:
                     required_epoch = record.generation_epoch
                 elif record.generation_epoch != required_epoch:
@@ -342,6 +355,8 @@ class GenerationService:
                     != 1
                 ):
                     session.rollback()
+                    if expected_revision is not None:
+                        raise ProjectRevisionConflictError(project_id, expected_revision)
                     continue
                 for job in jobs:
                     self.repository.add_generation_job(
@@ -361,7 +376,15 @@ class GenerationService:
                     )
                 try:
                     session.commit()
-                    return jobs
+                    return EnqueuedJobs(
+                        jobs,
+                        ProjectSnapshot(
+                            project_id,
+                            manga,
+                            base_revision + 1,
+                            required_epoch,
+                        ),
+                    )
                 except IntegrityError as exc:
                     session.rollback()
                     raise ActiveJobConflictError() from exc
@@ -376,7 +399,8 @@ class GenerationService:
         *,
         skip_active: bool = False,
         expected_epoch: int | None = None,
-    ) -> list[GenerationJob]:
+        expected_revision: int | None = None,
+    ) -> EnqueuedJobs:
         """ジョブ登録後、メモリ登録とTask起動までをGenerationServiceへ集約する。"""
         runtime = self.require_runtime()
         jobs = self.enqueue(
@@ -386,6 +410,7 @@ class GenerationService:
             message,
             skip_active=skip_active,
             expected_epoch=expected_epoch,
+            expected_revision=expected_revision,
         )
         for job in jobs:
             runtime.jobs.register_in_memory(job)

@@ -13,29 +13,38 @@ from ..generation_service import (
 )
 from ..image_backends import StubImageBackend
 from ..jobs import TERMINAL_JOB_STATUSES, JobManager
-from ..mutation import mark_page_dirty
+from ..mutation import (
+    ProjectMutationPartiallyAppliedError,
+    ProjectRevisionConflictError,
+    RenderCommitConflictError,
+    mark_page_dirty,
+)
 from ..prompt_composer import compose_panel_prompts
-from ..rendering import asset_to_id
+from ..rendering import RenderInputChangedError, asset_to_id
 from ..schemas import (
     BatchGenerationJobCreate,
-    BatchGenerationJobResponse,
+    BatchGenerationJobResult,
     GenerationJobCreate,
     GenerationJobResponse,
     MangaProject,
-    PanelImageGenerationResponse,
-    PanelPageRenderResponse,
+    PanelImageGenerationResult,
+    PanelPageRenderResult,
+    ProjectMutationResponse,
+    ProjectRenderResult,
     PromptPreviewResponse,
     RenderRequest,
-    RenderResponse,
 )
 from .common import (
+    CANDIDATE_SELECT_ERROR_RESPONSES,
     GENERATION_ERROR_RESPONSES,
+    PROJECT_MUTATION_ERROR_RESPONSES,
     find_panel,
     find_panel_page_number,
     get_job_or_404,
     load_project_record,
     parse_manga_json,
     to_job_response,
+    to_project_mutation_response,
 )
 
 router = APIRouter()
@@ -43,50 +52,65 @@ router = APIRouter()
 
 @router.post(
     "/api/projects/{project_id}/render",
-    response_model=RenderResponse,
+    response_model=ProjectMutationResponse[ProjectRenderResult],
     responses=GENERATION_ERROR_RESPONSES,
 )
 async def render_project(
     project_id: str,
     request: Request,
+    revision: int,
     payload: Annotated[RenderRequest | None, Body()] = None,
-) -> RenderResponse:
+) -> ProjectMutationResponse[ProjectRenderResult]:
     settings = request.app.state.settings
     force = payload.force if payload else False
-    result = await request.app.state.project_render.render_project(project_id, force=force)
-    return RenderResponse(
-        project_id=project_id,
-        page_assets=[asset_to_id(path, settings.export_dir) for path in result.page_assets],
-        manga_json=result.project.manga,
-        revision=result.project.revision,
-        warnings=result.warnings,
+    try:
+        result = await request.app.state.project_render.render_project(
+            project_id, force=force, expected_revision=revision
+        )
+    except (RenderCommitConflictError, RenderInputChangedError) as exc:
+        raise ProjectRevisionConflictError(project_id, revision) from exc
+    return to_project_mutation_response(
+        request,
+        project_id,
+        ProjectRenderResult(
+            page_assets=[asset_to_id(path, settings.export_dir) for path in result.page_assets],
+            warnings=result.warnings,
+        ),
+        snapshot=result.project,
     )
 
 
 @router.post(
     "/api/projects/{project_id}/panels/{panel_id}/generate-image",
-    response_model=PanelImageGenerationResponse,
+    response_model=ProjectMutationResponse[PanelImageGenerationResult],
     responses=GENERATION_ERROR_RESPONSES,
 )
 async def generate_panel_image(
     project_id: str,
     panel_id: str,
     request: Request,
+    revision: int,
     payload: Annotated[GenerationJobCreate | None, Body()] = None,
-) -> PanelImageGenerationResponse:
+) -> ProjectMutationResponse[PanelImageGenerationResult]:
+    request.app.state.mutation.require_revision(project_id, revision)
     if request.app.state.generation.find_active_panel_job(project_id, panel_id):
         raise HTTPException(status_code=409, detail="このコマは画像生成中です")
     candidate_count = payload.candidate_count if payload else 1
-    job = request.app.state.generation.start(
-        project_id, [panel_id], candidate_count, "画像生成ジョブを登録しました"
-    )[0]
+    jobs = request.app.state.generation.start(
+        project_id,
+        [panel_id],
+        candidate_count,
+        "画像生成ジョブを登録しました",
+        expected_revision=revision,
+    )
+    job = jobs[0]
     ensure_sync_generation_succeeded(await request.app.state.generation.await_completion(job))
-    latest = load_project_record(request, project_id)
-    return PanelImageGenerationResponse(
-        project_id=project_id,
-        panel_id=panel_id,
-        manga_json=parse_manga_json(latest.manga_json),
-        revision=latest.revision,
+    completed_snapshot = request.app.state.mutation.current_snapshot(project_id)
+    return to_project_mutation_response(
+        request,
+        project_id,
+        PanelImageGenerationResult(panel_id=panel_id),
+        snapshot=completed_snapshot,
     )
 
 
@@ -108,34 +132,44 @@ def preview_panel_prompt(project_id: str, panel_id: str, request: Request) -> Pr
 
 @router.post(
     "/api/projects/{project_id}/panels/{panel_id}/generation-jobs",
-    response_model=GenerationJobResponse,
+    response_model=ProjectMutationResponse[GenerationJobResponse],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
 )
 async def create_generation_job(
     project_id: str,
     panel_id: str,
     request: Request,
+    revision: int,
     payload: Annotated[GenerationJobCreate | None, Body()] = None,
-) -> GenerationJobResponse:
+) -> ProjectMutationResponse[GenerationJobResponse]:
+    request.app.state.mutation.require_revision(project_id, revision)
     if request.app.state.generation.find_active_panel_job(project_id, panel_id):
         raise HTTPException(status_code=409, detail="このコマは画像生成中です")
-    job = request.app.state.generation.start(
+    jobs = request.app.state.generation.start(
         project_id,
         [panel_id],
         payload.candidate_count if payload else 1,
         "画像生成ジョブを登録しました",
-    )[0]
-    return to_job_response(job)
+        expected_revision=revision,
+    )
+    job = jobs[0]
+    return to_project_mutation_response(
+        request, project_id, to_job_response(job), snapshot=jobs.project
+    )
 
 
 @router.post(
-    "/api/projects/{project_id}/generation-jobs", response_model=BatchGenerationJobResponse
+    "/api/projects/{project_id}/generation-jobs",
+    response_model=ProjectMutationResponse[BatchGenerationJobResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
 )
 async def create_batch_generation_jobs(
     project_id: str,
     request: Request,
+    revision: int,
     payload: Annotated[BatchGenerationJobCreate | None, Body()] = None,
-) -> BatchGenerationJobResponse:
-    manga = parse_manga_json(load_project_record(request, project_id).manga_json)
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
+    manga = request.app.state.mutation.require_revision(project_id, revision).manga
     options = payload or BatchGenerationJobCreate()
     panels = [
         panel
@@ -152,8 +186,14 @@ async def create_batch_generation_jobs(
         options.candidate_count,
         "一括生成キューへ登録しました",
         skip_active=True,
+        expected_revision=revision,
     )
-    return BatchGenerationJobResponse(jobs=[to_job_response(job) for job in jobs])
+    return to_project_mutation_response(
+        request,
+        project_id,
+        BatchGenerationJobResult(jobs=[to_job_response(job) for job in jobs]),
+        snapshot=jobs.project,
+    )
 
 
 @router.get("/api/generation-jobs/{job_id}", response_model=GenerationJobResponse)
@@ -170,10 +210,19 @@ def list_generation_jobs(project_id: str, request: Request) -> list[GenerationJo
     return [to_job_response(job) for job in manager.list_for_project(project_id)]
 
 
-@router.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobResponse)
-async def cancel_generation_job(job_id: str, request: Request) -> GenerationJobResponse:
+@router.post(
+    "/api/generation-jobs/{job_id}/cancel",
+    response_model=ProjectMutationResponse[GenerationJobResponse],
+)
+async def cancel_generation_job(
+    job_id: str, request: Request
+) -> ProjectMutationResponse[GenerationJobResponse]:
     job = get_job_or_404(request, job_id)
-    return to_job_response(await request.app.state.generation.cancel(job))
+    cancelled = await request.app.state.generation.cancel(job)
+    snapshot = request.app.state.mutation.current_snapshot(cancelled.project_id)
+    return to_project_mutation_response(
+        request, cancelled.project_id, to_job_response(cancelled), snapshot=snapshot
+    )
 
 
 @router.websocket("/api/generation-jobs/{job_id}/ws")
@@ -197,14 +246,16 @@ async def generation_job_websocket(websocket: WebSocket, job_id: str) -> None:
 
 @router.post(
     "/api/projects/{project_id}/panels/{panel_id}/candidates/{candidate_id}/select",
-    response_model=PanelPageRenderResponse,
+    response_model=ProjectMutationResponse[PanelPageRenderResult],
+    responses=CANDIDATE_SELECT_ERROR_RESPONSES,
 )
 def select_panel_candidate(
     project_id: str,
     panel_id: str,
     candidate_id: str,
     request: Request,
-) -> PanelPageRenderResponse:
+    revision: int,
+) -> ProjectMutationResponse[PanelPageRenderResult]:
     settings = request.app.state.settings
 
     def select(manga: MangaProject) -> int:
@@ -218,33 +269,48 @@ def select_panel_candidate(
         mark_page_dirty(page)
         return page_number
 
-    mutation_result = request.app.state.mutation.mutate_local(project_id, select)
-    page_number = mutation_result.result
-    rendered = request.app.state.rendering.render_and_commit_page(
-        project_id, mutation_result.project.manga, mutation_result.project.revision, page_number
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=select
     )
-    return PanelPageRenderResponse(
-        project_id=project_id,
-        panel_id=panel_id,
-        page_asset=asset_to_id(rendered.asset, settings.export_dir),
-        manga_json=rendered.project.manga,
-        revision=rendered.project.revision,
-        warnings=rendered.warnings,
+    page_number = mutation_result.result
+    try:
+        rendered = request.app.state.rendering.render_and_commit_page(
+            project_id, mutation_result.project.manga, mutation_result.project.revision, page_number
+        )
+    except (RenderCommitConflictError, RenderInputChangedError) as exc:
+        # 候補採用は既にCAS確定済み。通常のrevision競合として返すと「未保存編集は適用
+        # されませんでした」と誤認されるため、採用済みstateを持つ部分成功として返す。
+        raise ProjectMutationPartiallyAppliedError(
+            project_id,
+            completed_operation="candidate_selection",
+            failed_operation="render_page",
+            snapshot=mutation_result.project,
+        ) from exc
+    return to_project_mutation_response(
+        request,
+        project_id,
+        PanelPageRenderResult(
+            panel_id=panel_id,
+            page_asset=asset_to_id(rendered.asset, settings.export_dir),
+            warnings=rendered.warnings,
+        ),
+        snapshot=rendered.project,
     )
 
 
 @router.post(
     "/api/projects/{project_id}/panels/{panel_id}/use-stub",
-    response_model=PanelImageGenerationResponse,
+    response_model=ProjectMutationResponse[PanelImageGenerationResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
 )
 async def use_stub_panel_image(
     project_id: str,
     panel_id: str,
     request: Request,
-) -> PanelImageGenerationResponse:
-    panel = find_panel(
-        parse_manga_json(load_project_record(request, project_id).manga_json), panel_id
-    )
+    revision: int,
+) -> ProjectMutationResponse[PanelImageGenerationResult]:
+    checked = request.app.state.mutation.require_revision(project_id, revision)
+    panel = find_panel(checked.manga, panel_id)
     settings = request.app.state.settings
     candidate_id = str(uuid.uuid4())
     target = settings.export_dir / project_id / "panels" / panel_id / f"{candidate_id}.png"
@@ -260,9 +326,12 @@ async def use_stub_panel_image(
         if page is not None:
             mark_page_dirty(page)
 
-    mutation_result = request.app.state.mutation.mutate_local(project_id, add)
-    manga = mutation_result.project.manga
-    revision = mutation_result.project.revision
-    return PanelImageGenerationResponse(
-        project_id=project_id, panel_id=panel_id, manga_json=manga, revision=revision
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=add
+    )
+    return to_project_mutation_response(
+        request,
+        project_id,
+        PanelImageGenerationResult(panel_id=panel_id),
+        snapshot=mutation_result.project,
     )

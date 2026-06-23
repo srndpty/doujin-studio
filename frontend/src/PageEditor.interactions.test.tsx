@@ -159,6 +159,7 @@ function setup(overrides: Partial<Parameters<typeof PageEditor>[0]> = {}) {
     onChange: vi.fn(),
     onSave: vi.fn(),
     onSuggest: vi.fn(),
+    onOverlayUpload: vi.fn(),
     setMessage: vi.fn(),
     ...overrides
   };
@@ -215,10 +216,8 @@ describe("PageEditor interactions", () => {
   });
 
   it("オーバーフレームを追加・編集・アップロード・削除する", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({ manga_json: sampleManga() })));
-    const props = setup();
+    const onOverlayUpload = vi.fn().mockResolvedValue(true);
+    const props = setup({ onOverlayUpload });
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
     expect(props.onChange).toHaveBeenCalled();
     const controls = screen.getByText(/overlay_/).closest(".overlay-controls") as HTMLElement;
@@ -231,21 +230,21 @@ describe("PageEditor interactions", () => {
 
     const file = new File(["x"], "a.png", { type: "image/png" });
     fireEvent.change(within(controls).getByLabelText("画像"), { target: { files: [file] } });
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    const [saveUrl, saveOptions] = fetchMock.mock.calls[0];
-    expect(saveUrl).toBe("/api/projects/project/manga-json?revision=0");
-    expect(saveOptions?.method).toBe("PUT");
-    const savedManga = JSON.parse(String(saveOptions?.body)) as MangaProject;
-    expect(savedManga.pages[0].overlay_elements).toHaveLength(1);
-    expect(String(fetchMock.mock.calls[1][0])).toContain("/overlays/overlay_");
+    await waitFor(() => expect(onOverlayUpload).toHaveBeenCalledTimes(1));
+    expect(onOverlayUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ pages: expect.any(Array) }),
+      1,
+      expect.stringMatching(/^overlay_/),
+      "asset",
+      file
+    );
 
     fireEvent.click(within(controls).getByRole("button", { name: "削除" }));
     expect(props.setMessage).toHaveBeenCalled();
   });
 
   it("オーバーフレームのアップロード失敗を通知する", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ng", { status: 500 }));
-    const props = setup();
+    const props = setup({ onOverlayUpload: vi.fn().mockRejectedValue(new Error("ng")) });
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
     const controls = screen.getByText(/overlay_/).closest(".overlay-controls") as HTMLElement;
     const file = new File(["x"], "a.png", { type: "image/png" });

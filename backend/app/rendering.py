@@ -509,6 +509,8 @@ class RenderingService:
             page = next(item for item in snapshot.pages if item.page == page_number)
             commit_snapshot = snapshot.model_copy(deep=True)
             commit_snapshot.pages = [page.model_copy(deep=True)]
+            # 描画中に対象ページ以外が更新されても、page_render_hashが一致する限り最新へ
+            # 対象ページだけを安全に再適用する。対象ページが変わればRenderInputChangedError。
             committed = self.commit_rendered_pages(project_id, commit_snapshot, [asset])
         except Exception:
             self.cleanup_published_assets(project_id, published_by_request)

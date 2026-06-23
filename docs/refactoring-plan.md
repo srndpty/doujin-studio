@@ -29,20 +29,35 @@ ProjectMutationResponse<T> = { project: ProjectDetail; result: T }
 ユーザー起点の変更は `expected_revision` 必須、バックグラウンド生成は対象パネル限定の
 CASリトライ、という二層構造にする。
 
-## 2. フロントエンドのAPI境界集約
+## 2. API mutation契約とフロントエンド境界の集約（PR2完了）
 
-`App.tsx` の `api`、`StoryPanel`、`KnowledgePanel` に通信・例外処理が分散している。
-`api/client.ts` と `useProjectMutation()` を新設し、
+すべてのproject変更APIを
+`ProjectMutationResponse<T> = { project: ProjectDetail; result: T }`へ統一した。
+ユーザー起点の変更はquery parameterの`revision`を必須とし、成功時は常に最新の
+`manga_json`と`revision`を返す。revision競合は専用の
+`ProjectRevisionConflictResponse`（expected/actual revisionと最新projectを含む）で返し、
+通常の409とは区別する。
+
+成功応答の`project`は応答整形時の再読込値ではなく、その操作が確定したsnapshotを返す。
+story session作成はrevision検証・必要なwork name更新・session追加を同一トランザクションで
+確定し、projectが不変ならrevisionを消費しない。
+
+例外としてjob cancelは「古い編集内容を書き込むproject mutation」ではなく、指定jobを
+終端化する管理操作として扱う。完了済みjobへのno-opを含め常に安全に停止できることを優先し、
+project revisionは要求しない。応答には停止後のproject snapshotを含める。
+
+フロントエンドは`api/client.ts`と`useProjectMutation()`を新設し、
 
 - 通信エラーの正規化（`ApiError`）
 - 409競合処理（最新採用 reload。将来は base/local/latest の三者マージUIへ）
 - `ProjectDetail`（manga_json + revision）の反映
-- 更新中UI状態
-- revision付き保存
+- revision付き保存と成功応答の全体反映
 
-を集約する。現状は `App.tsx` 内の `putMangaJson()` / `applyMutatedManga()` で
-revision契約を満たしているが、`StoryPanel` / `KnowledgePanel` までは未統一。
-`App.tsx` の画面単位分割は client 集約の後に進める方が低リスク。
+を集約した。409時はtyped revision conflictだけ最新projectを採用し、古い全文JSONを
+自動再送しない。`StoryPanel` / `KnowledgePanel`を含め、HTTP通信はclient経由に統一し、
+ESLintでも直接`fetch`を禁止した。
+
+残課題はbase/local/latestの三者マージUIと、`App.tsx`の画面単位分割。
 
 ## 3. DBスキーマのマイグレーション基盤
 

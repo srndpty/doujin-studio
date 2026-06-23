@@ -11,6 +11,7 @@ import {
   Transformer
 } from "react-konva";
 import type Konva from "konva";
+import { api } from "./api/client";
 import type { Dialogue, MangaPage, MangaProject, OverlayElement, Panel, Sfx } from "./App";
 import { computeImagePlacement, normalizeBox, overlapsWithGutter } from "./editor-geometry";
 import type { Box } from "./editor-geometry";
@@ -40,9 +41,15 @@ type Props = {
   onChange: (manga: MangaProject, revision?: number) => void;
   onSave: (manga: MangaProject) => Promise<void> | void;
   onSuggest: (family: string | null) => Promise<void> | void;
+  onOverlayUpload: (
+    manga: MangaProject,
+    pageNumber: number,
+    overlayId: string,
+    kind: "asset" | "mask",
+    file: File
+  ) => Promise<boolean> | boolean;
   setMessage: (text: string) => void;
   // アセットのキャッシュバスターを進める（同一URLの画像差し替えを反映する）。
-  onAssetVersionBump?: () => void;
 };
 
 function useAssetImage(asset: string | null, version: number): HTMLImageElement | null {
@@ -140,7 +147,6 @@ const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
 export function PageEditor({
   projectId,
-  revision,
   manga: mangaProp,
   pageNumber,
   assetVersion,
@@ -148,8 +154,8 @@ export function PageEditor({
   onChange,
   onSave,
   onSuggest,
-  setMessage,
-  onAssetVersionBump
+  onOverlayUpload,
+  setMessage
 }: Props) {
   // 親のonChangeが反映される前でも編集を即時表示できるよう、作業コピーを持つ。
   const [manga, setManga] = useState<MangaProject>(mangaProp);
@@ -172,13 +178,11 @@ export function PageEditor({
   const runPreflight = async () => {
     try {
       // 現在の編集内容を本文で渡し、非破壊で検査する（保存しないのでレンダリング状態を消さない）。
-      const response = await fetch(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(manga)
-      });
-      if (!response.ok) throw new Error(await response.text());
-      const result = await response.json();
+      const result = await api.post<{
+        ok: boolean;
+        errors: PreflightIssue[];
+        warnings: PreflightIssue[];
+      }>(`/api/projects/${projectId}/pages/${pageNumber}/preflight`, manga);
       setPreflight(result);
       setMessage(
         result.ok ? "プリフライト: 重大エラーなし" : `プリフライト: ${result.errors.length}件のエラー`
@@ -300,26 +304,8 @@ export function PageEditor({
   };
 
   const uploadOverlay = async (overlay: OverlayElement, kind: "asset" | "mask", file: File) => {
-    const saveResponse = await fetch(`/api/projects/${projectId}/manga-json?revision=${revision}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(manga)
-    });
-    if (!saveResponse.ok) throw new Error(await saveResponse.text());
-    const saved = (await saveResponse.json()) as { manga_json: MangaProject; revision: number };
-    setManga(saved.manga_json);
-    onChange(saved.manga_json, saved.revision);
-
-    const response = await fetch(
-      `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlay.id)}/${kind}?revision=${saved.revision}`,
-      { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file }
-    );
-    if (!response.ok) throw new Error(await response.text());
-    const result = (await response.json()) as { manga_json: MangaProject; revision: number };
-    setManga(result.manga_json);
-    onChange(result.manga_json, result.revision);
-    // 同名アセットへ上書き保存されるためURLが変わらない。キャッシュバスターを進めて差し替えを反映する。
-    onAssetVersionBump?.();
+    const completed = await onOverlayUpload(manga, pageNumber, overlay.id, kind, file);
+    if (!completed) return;
     setMessage(kind === "asset" ? "overlay画像を登録しました" : "overlayマスクを登録しました");
   };
 
