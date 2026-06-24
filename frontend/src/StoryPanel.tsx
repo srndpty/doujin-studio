@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, withRevision } from "./api/client";
 import type { ProjectMutationResponse } from "./api/use-project-mutation";
 
@@ -82,6 +82,8 @@ export function StoryPanel<ProjectType>({
   });
   const [message, setMessage] = useState("ストーリー生成セッションを作成してください");
   const [busy, setBusy] = useState(false);
+  const activeProjectIdRef = useRef(projectId);
+  activeProjectIdRef.current = projectId;
 
   async function run(task: () => Promise<void>) {
     setBusy(true);
@@ -100,10 +102,8 @@ export function StoryPanel<ProjectType>({
     }
   }
 
-  async function refreshSessions() {
-    const next = await api.get<SessionSummary[]>(`/api/projects/${projectId}/story-sessions`);
-    setSessions(next);
-    return next;
+  async function fetchSessions(targetProjectId: string) {
+    return api.get<SessionSummary[]>(`/api/projects/${targetProjectId}/story-sessions`);
   }
 
   async function refreshLlm() {
@@ -112,8 +112,8 @@ export function StoryPanel<ProjectType>({
     return status;
   }
 
-  async function refreshRevisions() {
-    setRevisions(await api.get<Revision[]>(`/api/projects/${projectId}/revisions`));
+  async function fetchRevisions(targetProjectId: string) {
+    return api.get<Revision[]>(`/api/projects/${targetProjectId}/revisions`);
   }
 
   useEffect(() => {
@@ -133,18 +133,30 @@ export function StoryPanel<ProjectType>({
 
   useEffect(() => {
     setSession(null);
+    setSessions([]);
+    setRevisions([]);
     let cancelled = false;
-    void refreshSessions().then(async (items) => {
-      if (cancelled || items.length === 0) return;
+    const requestedProjectId = projectId;
+    void fetchSessions(requestedProjectId).then(async (items) => {
+      if (cancelled || activeProjectIdRef.current !== requestedProjectId) return;
+      setSessions(items);
+      if (items.length === 0) return;
       const latest = await api.get<StorySession>(`/api/story-sessions/${items[0].id}`);
-      if (!cancelled && latest.project_id === projectId) syncDrafts(latest);
+      if (
+        !cancelled &&
+        activeProjectIdRef.current === requestedProjectId &&
+        latest.project_id === requestedProjectId
+      ) {
+        syncDrafts(latest);
+      }
     });
-    void refreshRevisions();
+    void fetchRevisions(requestedProjectId).then((items) => {
+      if (!cancelled && activeProjectIdRef.current === requestedProjectId) setRevisions(items);
+    });
     return () => {
       cancelled = true;
     };
     // プロジェクトIDが変わったときだけ再取得する。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   function syncDrafts(next: StorySession) {
@@ -177,13 +189,16 @@ export function StoryPanel<ProjectType>({
           ? `「${response.result.work_name}」のローカル知識を同期してセッションを作成しました`
           : "セッションを作成しました。企画から生成してください"
       );
-      await refreshSessions();
+      const items = await fetchSessions(projectId);
+      if (activeProjectIdRef.current === projectId) setSessions(items);
     });
   }
 
   async function loadSession(id: string) {
     await run(async () => {
-      syncDrafts(await api.get<StorySession>(`/api/story-sessions/${id}`));
+      const next = await api.get<StorySession>(`/api/story-sessions/${id}`);
+      if (next.project_id !== activeProjectIdRef.current) return;
+      syncDrafts(next);
       setMessage("セッションを読み込みました");
     });
   }
@@ -238,7 +253,8 @@ export function StoryPanel<ProjectType>({
       );
       await onProjectMutation(response);
       setMessage("プロジェクトへ適用しました。適用前の状態はリビジョンに保存されています");
-      await refreshRevisions();
+      const items = await fetchRevisions(projectId);
+      if (activeProjectIdRef.current === projectId) setRevisions(items);
     });
   }
 
@@ -249,7 +265,8 @@ export function StoryPanel<ProjectType>({
       );
       await onProjectMutation(response);
       setMessage("リビジョンを復元しました");
-      await refreshRevisions();
+      const items = await fetchRevisions(projectId);
+      if (activeProjectIdRef.current === projectId) setRevisions(items);
     });
   }
 
@@ -275,9 +292,11 @@ export function StoryPanel<ProjectType>({
             {llm.model ? ` / ${llm.model}` : ""}
           </strong>
           <span>{llm.message}</span>
-          {(llm.provider === "stub" || !llm.connected) && (
+          {llm.provider === "stub" ? (
             <strong>警告: スタブ生成では実LLMの品質を確認できません。</strong>
-          )}
+          ) : !llm.connected ? (
+            <strong>警告: 外部LLMを利用できないため、ストーリー生成は実行できません。</strong>
+          ) : null}
           <button disabled={busy} onClick={() => void refreshLlm()}>
             ロード済みモデルを再検出
           </button>

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
+from ..deletion import write_deletion_fence
 from ..generator import generate_four_page_name
 from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
 from ..rendering import (
@@ -209,6 +210,10 @@ async def delete_project(
         request.app.state.repository.delete(session, current)
         session.commit()
 
+    # DB削除後すぐに通常名directory用の永続fenceを作る。cancel不能workerは生成前後に
+    # fenceを確認し、遅延publishした成果物を回収する。
+    fence_written = write_deletion_fence(export_dir, project_id)
+
     # 2) 入口を閉じた後に進行中ジョブを掃き出す。個別cancelが失敗しても残りを止め、
     #    finallyで成果物掃除へ必ず進む。
     manager = request.app.state.job_manager
@@ -247,6 +252,9 @@ async def delete_project(
     else:
         cleanup_state = "manual_required"
     if cleanup_state != "complete" or cancel_failed:
+        response.status_code = status.HTTP_202_ACCEPTED
+    if cancel_failed and not fence_written:
+        cleanup_state = "manual_required"
         response.status_code = status.HTTP_202_ACCEPTED
     return ProjectDeletionResponse(
         deleted=True,

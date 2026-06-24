@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import uuid
 from asyncio import CancelledError
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from .assets import normalize_manga_assets, resolve_asset_path
 from .config import Settings
 from .database import GenerationJobRecord, now_utc
+from .deletion import project_is_deletion_fenced
 from .image_backends import build_image_backend
 from .jobs import TERMINAL_JOB_STATUSES, GenerationJob, JobManager
 from .mutation import (
@@ -267,6 +269,20 @@ class GenerationService:
         if self.runtime is None:
             raise RuntimeError("GenerationRuntimeが設定されていません")
         return self.runtime
+
+    def is_deletion_fenced(self, project_id: str) -> bool:
+        return project_is_deletion_fenced(self.export_dir, project_id)
+
+    def cleanup_deletion_fenced_assets(self, project_id: str) -> bool:
+        """削除fenceがあるprojectの遅延publish成果物を通常名ディレクトリごと回収する。"""
+        if not self.is_deletion_fenced(project_id):
+            return False
+        export_dir = self.export_dir.resolve()
+        project_dir = (export_dir / project_id).resolve()
+        if project_dir.parent != export_dir:
+            return False
+        shutil.rmtree(project_dir, ignore_errors=True)
+        return True
 
     def enqueue(
         self,
@@ -605,6 +621,15 @@ class GenerationService:
             }
 
             for candidate_index in range(job.candidate_count):
+                if self.cleanup_deletion_fenced_assets(job.project_id):
+                    manager.update(
+                        job,
+                        status="cancelled",
+                        node=None,
+                        prompt_id=None,
+                        message="プロジェクトが削除されたため生成を破棄しました",
+                    )
+                    return
                 candidate_id = str(uuid.uuid4())
                 generated_panel = prepared_panel.model_copy(deep=True)
                 generated_panel.generation.seed += candidate_index
@@ -651,6 +676,17 @@ class GenerationService:
                 # backendが別パスへ書いた場合も所有権へ含める（通常はtargetと同一）。
                 if result.asset_path is not None:
                     candidate_assets[Path(result.asset_path).resolve()] = True
+                # cancel不能workerが削除後に通常名ディレクトリを再作成しても、永続fenceを
+                # 見て公開済みassetとディレクトリを回収する。
+                if self.cleanup_deletion_fenced_assets(job.project_id):
+                    manager.update(
+                        job,
+                        status="cancelled",
+                        node=None,
+                        prompt_id=None,
+                        message="プロジェクトが削除されたため生成を破棄しました",
+                    )
+                    return
                 # キャンセル要求後に生成物が返っても、対象ジョブがキャンセル済みなら保存しない。
                 # PNGを回収し、panel状態もskippedへ確定する（runningのまま固定されると、
                 # 次回enqueueでactive扱いになり再生成不能になるため）。
@@ -764,6 +800,17 @@ class GenerationService:
             # 採用されなかった生成PNGはここで回収する（current/history参照分は残る）。
             runtime.rendering.cleanup_published_assets(job.project_id, candidate_assets)
             raise
+        except ProjectNotFoundError:
+            # DB削除と同時確定したfenceを確認し、backendが遅延publishした通常名directoryも回収する。
+            runtime.rendering.cleanup_published_assets(job.project_id, candidate_assets)
+            self.cleanup_deletion_fenced_assets(job.project_id)
+            manager.update(
+                job,
+                status="cancelled",
+                node=None,
+                prompt_id=None,
+                message="プロジェクトが削除されたため生成を破棄しました",
+            )
         except EpochMismatchError:
             # ネーム再生成・ストーリー適用・復元で作品構成が置き換わった。古いプロンプトの
             # 候補を新作品へ混ぜないよう、保存せずジョブをキャンセル扱いにする。

@@ -4501,6 +4501,56 @@ def test_delete_project_cleans_assets_even_when_job_cancel_fails(
         assert client.get(f"/api/projects/{project_id}").status_code == 404
 
 
+def test_delete_fence_removes_asset_published_after_cancel_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class DelayedBackend:
+        async def generate_panel(self, project_id, panel, export_dir, target_path=None, **kwargs):
+            started.set()
+            await asyncio.to_thread(release.wait)
+            assert target_path is not None
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"late")
+            return ImageResult("stub", "done", target_path, "遅延生成")
+
+    monkeypatch.setattr(generation_module, "build_image_backend", lambda settings: DelayedBackend())
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        created = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        ).json()
+        job_id = created["result"]["id"]
+        assert started.wait(timeout=5.0)
+
+        async def fail_cancel(_job):
+            raise RuntimeError("cancel failed")
+
+        monkeypatch.setattr(client.app.state.generation, "cancel", fail_cancel)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json()["generation_stop_failed"] is True
+
+        # DELETE応答後に停止不能workerが通常名directoryへpublishする。
+        release.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            job = client.app.state.job_manager.jobs[job_id]
+            if job.status == "cancelled" and not (tmp_path / "exports" / project_id).exists():
+                break
+            time.sleep(0.02)
+
+        assert client.app.state.job_manager.jobs[job_id].status == "cancelled"
+        assert not (tmp_path / "exports" / project_id).exists()
+        assert (tmp_path / "exports" / f"{project_id}.deletion-fence").is_file()
+
+
 def test_sweep_shutdown_timeout_warns_without_cancelling_worker(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -4521,3 +4571,20 @@ def test_sweep_shutdown_timeout_warns_without_cancelling_worker(
     with caplog.at_level("WARNING", logger="backend.app.main"):
         asyncio.run(exercise())
     assert "終了待機時間を超えました" in caplog.text
+
+
+def test_persistent_deletion_fence_sweeps_reappeared_project_dir(tmp_path: Path) -> None:
+    from backend.app.deletion import sweep_deletion_fences, write_deletion_fence
+
+    export_dir = tmp_path / "exports"
+    project_id = "deleted-project"
+    assert write_deletion_fence(export_dir, project_id)
+    reappeared = export_dir / project_id
+    reappeared.mkdir()
+    (reappeared / "late.png").write_bytes(b"late")
+
+    sweep_deletion_fences(export_dir)
+
+    assert not reappeared.exists()
+    # fenceは遅延workerや次回起動にも効くよう永続させる。
+    assert (export_dir / f"{project_id}.deletion-fence").is_file()

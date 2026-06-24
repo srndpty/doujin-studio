@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
 from .database import create_session_factory
+from .deletion import sweep_deletion_fences
 from .generation_service import GenerationRuntime, GenerationService
 from .jobs import JobManager
 from .mutation import ProjectMutationService
@@ -93,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def _background_sweep() -> None:
             try:
                 await asyncio.to_thread(sweep_deletion_tombstones, app_settings.export_dir)
+                await asyncio.to_thread(sweep_deletion_fences, app_settings.export_dir)
             except Exception:
                 logger.exception("削除残骸のsweepに失敗しました")
 
