@@ -15,6 +15,7 @@ from backend.app.schemas import (
     Page,
     Panel,
     PanelCharacter,
+    ScriptCharacter,
     ScriptDialogue,
     ScriptPage,
     ScriptPanel,
@@ -412,6 +413,38 @@ def test_character_layout_must_subset_characters() -> None:
             characters=["mika"],
             character_layout=[PanelCharacter(id="rika")],  # charactersに無いID
         )
+
+
+def test_script_directives_flow_to_prompt_per_character() -> None:
+    # 2人物の台本ディレクション（位置・表情・動作）が、変換後のpromptに人物別で残ること。
+    base = MangaProject(
+        title="t",
+        characters=[
+            Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl"),
+            Character(id="rika", display_name="莉嘉", trigger_prompt="rika 1girl"),
+        ],
+    )
+    panel = ScriptPanel(
+        shot="two shot",
+        visual_prompt="two girls",
+        characters=["美嘉", "莉嘉"],
+        character_directives=[
+            ScriptCharacter(
+                name="美嘉", position="upper_left", expression="smiling", action="waving hand"
+            ),
+            ScriptCharacter(name="莉嘉", position="lower_right", expression="crying"),
+        ],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base)
+    drawn = manga.pages[0].panels[0]
+    layout = {entry.id: entry for entry in drawn.character_layout}
+    assert layout["mika"].expression == "smiling" and layout["mika"].action == "waving hand"
+    assert layout["mika"].position == "upper_left"
+    assert layout["rika"].expression == "crying" and layout["rika"].position == "lower_right"
+    positive, _negative = compose_panel_prompts(manga, drawn)
+    for token in ("smiling", "waving hand", "crying", "on the upper left", "on the lower right"):
+        assert token in positive
 
 
 def test_character_layout_feeds_prompt() -> None:

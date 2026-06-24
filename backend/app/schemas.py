@@ -1035,6 +1035,34 @@ class ScriptSfx(BaseModel):
         return value
 
 
+class ScriptCharacter(BaseModel):
+    """台本段階の人物別ディレクション。LLMが人物ごとの位置・表情・動作を出力する。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    position: PositionAnchor = "center"
+    expression: str = ""
+    action: str = ""
+
+    @field_validator("name", "expression", "action", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return value
+
+    @field_validator("position", mode="before")
+    @classmethod
+    def normalize_position(cls, value):
+        valid = {"upper_left", "upper_right", "lower_left", "lower_right", "center"}
+        if isinstance(value, str) and value in valid:
+            return value
+        return "center"
+
+
 class ScriptPanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -1043,6 +1071,8 @@ class ScriptPanel(BaseModel):
     location: str = ""
     visual_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
+    # 人物別の位置・表情・動作（任意）。charactersを補強し、生成promptへ反映する。
+    character_directives: list[ScriptCharacter] = Field(default_factory=list)
     dialogue: list[ScriptDialogue] = Field(default_factory=list)
     sfx: list[ScriptSfx] = Field(default_factory=list)
 
@@ -1067,6 +1097,27 @@ class ScriptPanel(BaseModel):
             return [text] if text else []
         return value
 
+    @field_validator("character_directives", mode="before")
+    @classmethod
+    def normalize_directives(cls, value):
+        """人物ディレクションは文字列・オブジェクト混在を許容し、{name,...}へ正規化する。"""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            value = [value]
+        items: list = []
+        for item in value:
+            if isinstance(item, ScriptCharacter):
+                items.append(item)
+            elif isinstance(item, dict):
+                if str(item.get("name", "")).strip():
+                    items.append(item)
+            elif isinstance(item, (str, int, float, bool)):
+                name = str(item).strip()
+                if name:
+                    items.append({"name": name})
+        return items
+
     @field_validator("sfx", mode="before")
     @classmethod
     def normalize_sfx_list(cls, value):
@@ -1079,7 +1130,9 @@ class ScriptPanel(BaseModel):
             return value
         items: list = []
         for item in value:
-            if isinstance(item, dict):
+            if isinstance(item, ScriptSfx):
+                items.append(item)
+            elif isinstance(item, dict):
                 if str(item.get("text", "")).strip():
                     items.append(item)
             elif isinstance(item, (str, int, float, bool)):

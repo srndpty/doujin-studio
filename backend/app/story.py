@@ -34,6 +34,7 @@ from .schemas import (
     Panel,
     PanelCharacter,
     PlotStage,
+    ScriptCharacter,
     ScriptPanel,
     ScriptStage,
     Sfx,
@@ -393,6 +394,9 @@ def stage_instruction_text(stage: str) -> str:
             "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue, sfx を持ちます。"
             "charactersにはそのコマに実際に描かれる登場人物名だけを列挙してください（画面外の話者は含めない）。"
             "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
+            "可能なら character_directives: [{name, position, expression, action}] も出力し、"
+            "人物ごとの画面内位置(position: upper_left/upper_right/lower_left/lower_right/center)、"
+            "表情(expression)、動作(action)を英語で指定してください（画像生成promptへ反映されます）。"
             "dialogueは [{speaker, text, kind, on_screen}] の配列です。"
             "kindは speech(会話)/monologue(独白・心の声)/narration(ナレーション・地の文)/shout(叫び) から選びます。"
             "on_screenは話者がそのコマに描かれていればtrue、画面外の声ならfalseにします。独白・ナレーションは原則false。"
@@ -1013,13 +1017,27 @@ def script_to_manga(
             # 手元・小物・背景コマは人物指定を外す（LoRA混入を防ぐ）。
             if non_character:
                 character_ids = []
-            character_layout = [
-                PanelCharacter(
-                    id=character_id,
-                    position=_SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center",
+            # 人物別ディレクション（位置・表情・動作）をIDで引けるようにする。
+            directive_by_id: dict[str, ScriptCharacter] = {}
+            for directive in script_panel.character_directives:
+                directive_id = match_character_id(directive.name, base.characters)
+                if directive_id and directive_id not in directive_by_id:
+                    directive_by_id[directive_id] = directive
+            character_layout = []
+            for i, character_id in enumerate(character_ids):
+                directive = directive_by_id.get(character_id)
+                if directive is not None:
+                    position = directive.position
+                else:
+                    position = _SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center"
+                character_layout.append(
+                    PanelCharacter(
+                        id=character_id,
+                        position=position,
+                        expression=directive.expression if directive else "",
+                        action=directive.action if directive else "",
+                    )
                 )
-                for i, character_id in enumerate(character_ids)
-            ]
             dialogues = []
             for dialogue_index, line in enumerate(script_panel.dialogue):
                 if not line.text.strip():
