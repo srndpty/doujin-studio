@@ -1828,10 +1828,18 @@ export interface components {
              */
             deleted: boolean;
             /**
-             * Cleanup Pending
+             * Cleanup State
+             * @default complete
+             * @enum {string}
+             */
+            cleanup_state: "complete" | "pending" | "manual_required";
+            /** Manual Cleanup Path */
+            manual_cleanup_path?: string | null;
+            /**
+             * Generation Stop Failed
              * @default false
              */
-            cleanup_pending: boolean;
+            generation_stop_failed: boolean;
         };
         /** ProjectDetail */
         ProjectDetail: {

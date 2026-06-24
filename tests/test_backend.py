@@ -3905,7 +3905,12 @@ def test_delete_project_removes_database_records_and_assets(tmp_path: Path) -> N
         deleted = client.delete(f"/api/projects/{project_id}")
 
         assert deleted.status_code == 200
-        assert deleted.json() == {"deleted": True, "cleanup_pending": False}
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "complete",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
         assert client.get(f"/api/projects/{project_id}").status_code == 404
         assert not project_dir.exists()
 
@@ -4232,7 +4237,12 @@ def test_delete_project_cleanup_pending_then_sweep_recovers(
         monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
         deleted = client.delete(f"/api/projects/{project_id}")
         assert deleted.status_code == 202
-        assert deleted.json() == {"deleted": True, "cleanup_pending": True}
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "pending",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
         # DBは消えるが、tombstoneが残留する。
         assert client.get(f"/api/projects/{project_id}").status_code == 404
         assert not project_dir.exists()
@@ -4306,7 +4316,12 @@ def test_delete_project_marker_recovers_when_rename_fails(
         monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
         deleted = client.delete(f"/api/projects/{project_id}")
         assert deleted.status_code == 202
-        assert deleted.json() == {"deleted": True, "cleanup_pending": True}
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "pending",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
         # rename失敗のため元ディレクトリが残り、tombstoneにはならない。markerで記録する。
         assert project_dir.exists()
         assert list(export_dir.glob("*.deleting-*")) == []
@@ -4424,3 +4439,85 @@ def test_get_llm_status_unloaded_model_not_connected(
     status = asyncio.run(llm_module.get_llm_status(settings))
     assert not status.connected
     assert "missing-model" in status.message
+
+
+def test_delete_project_reports_manual_cleanup_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "locked.png").write_bytes(b"x")
+
+        monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            projects_router, "_write_deletion_marker", lambda *args, **kwargs: False
+        )
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "manual_required",
+            "manual_cleanup_path": str(project_dir.resolve()),
+            "generation_stop_failed": False,
+        }
+
+
+def test_delete_project_cleans_assets_even_when_job_cancel_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"x")
+        job = GenerationJob(project_id=project_id, panel_id="p01_01", candidate_count=1)
+        client.app.state.job_manager.jobs[job.id] = job
+
+        async def fail_cancel(_job):
+            raise RuntimeError("cancel failed")
+
+        monkeypatch.setattr(client.app.state.generation, "cancel", fail_cancel)
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "complete",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": True,
+        }
+        assert not project_dir.exists()
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+
+
+def test_sweep_shutdown_timeout_warns_without_cancelling_worker(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import threading
+
+    from backend.app.main import wait_for_sweep_shutdown
+
+    release = threading.Event()
+
+    async def exercise() -> None:
+        task = asyncio.create_task(asyncio.to_thread(release.wait))
+        await wait_for_sweep_shutdown(task, timeout_seconds=0.01)
+        assert not task.done()
+        assert not task.cancelled()
+        release.set()
+        await task
+
+    with caplog.at_level("WARNING", logger="backend.app.main"):
+        asyncio.run(exercise())
+    assert "終了待機時間を超えました" in caplog.text

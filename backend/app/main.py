@@ -23,6 +23,19 @@ from .routers.common import register_exception_handlers
 from .routers.projects import sweep_deletion_tombstones
 
 logger = logging.getLogger(__name__)
+SWEEP_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+
+
+async def wait_for_sweep_shutdown(
+    sweep_task: asyncio.Task[None], timeout_seconds: float = SWEEP_SHUTDOWN_TIMEOUT_SECONDS
+) -> None:
+    """sweepの完了を短時間待つ。to_thread実処理はcancel不能なのでshieldして待つ。"""
+    try:
+        await asyncio.wait_for(asyncio.shield(sweep_task), timeout=timeout_seconds)
+    except TimeoutError:
+        logger.warning(
+            "削除残骸のsweepは終了待機時間を超えました。バックグラウンド削除が継続する可能性があります"
+        )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -87,8 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            sweep_task.cancel()
-            await asyncio.gather(sweep_task, return_exceptions=True)
+            await wait_for_sweep_shutdown(sweep_task)
             await app.state.job_manager.shutdown()
 
     app = FastAPI(title="Local Doujin Studio", lifespan=lifespan)

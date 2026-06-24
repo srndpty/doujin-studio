@@ -5029,9 +5029,30 @@
             "title": "Deleted",
             "default": true
           },
-          "cleanup_pending": {
+          "cleanup_state": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "pending",
+              "manual_required"
+            ],
+            "title": "Cleanup State",
+            "default": "complete"
+          },
+          "manual_cleanup_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Cleanup Path"
+          },
+          "generation_stop_failed": {
             "type": "boolean",
-            "title": "Cleanup Pending",
+            "title": "Generation Stop Failed",
             "default": false
           }
         },

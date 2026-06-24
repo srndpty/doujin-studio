@@ -209,24 +209,51 @@ async def delete_project(
         request.app.state.repository.delete(session, current)
         session.commit()
 
-    # 2) 入口を閉じた後に進行中ジョブを掃き出す。直前にenqueueされたジョブも確実に止め、
-    #    ComfyUI promptとローカルTaskの終了まで待ってから成果物を消す。
+    # 2) 入口を閉じた後に進行中ジョブを掃き出す。個別cancelが失敗しても残りを止め、
+    #    finallyで成果物掃除へ必ず進む。
     manager = request.app.state.job_manager
     active_jobs = [
         job
         for job in list(manager.jobs.values())
         if job.project_id == project_id and job.status not in {"done", "error", "cancelled"}
     ]
-    for job in active_jobs:
-        await request.app.state.generation.cancel(job)
+    cancel_failed = False
+    outcome: RemovalOutcome = "orphaned"
+    try:
+        for job in active_jobs:
+            try:
+                await request.app.state.generation.cancel(job)
+            except Exception:
+                cancel_failed = True
+                logger.exception(
+                    "プロジェクト削除時に生成ジョブを停止できませんでした: project=%s job=%s",
+                    project_id,
+                    job.id,
+                )
+    finally:
+        # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
+        try:
+            outcome = await asyncio.to_thread(_remove_project_dir, project_dir)
+        except Exception:
+            # 想定外のfilesystem例外でもDB削除済みの事実を返し、手動対応先を通知する。
+            logger.exception("プロジェクト成果物の削除処理に失敗しました: %s", project_dir)
+            outcome = "orphaned"
 
-    # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
-    #    removed=完全削除、pending=自動再回収予定(202)、orphaned=手動対応必要(202+errorログ)。
-    outcome = await asyncio.to_thread(_remove_project_dir, project_dir)
+    cleanup_state: Literal["complete", "pending", "manual_required"]
     if outcome == "removed":
-        return ProjectDeletionResponse(deleted=True, cleanup_pending=False)
-    response.status_code = status.HTTP_202_ACCEPTED
-    return ProjectDeletionResponse(deleted=True, cleanup_pending=True)
+        cleanup_state = "complete"
+    elif outcome == "pending":
+        cleanup_state = "pending"
+    else:
+        cleanup_state = "manual_required"
+    if cleanup_state != "complete" or cancel_failed:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return ProjectDeletionResponse(
+        deleted=True,
+        cleanup_state=cleanup_state,
+        manual_cleanup_path=str(project_dir) if cleanup_state == "manual_required" else None,
+        generation_stop_failed=cancel_failed,
+    )
 
 
 @router.post(

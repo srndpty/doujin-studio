@@ -499,11 +499,20 @@ export function App() {
         setActiveJobIds([]);
       }
       await refreshProjects();
-      setMessage(
-        result.cleanup_pending
-          ? "プロジェクトは削除済みです。残存ファイルは次回起動時に再回収します"
-          : "プロジェクトを削除しました"
-      );
+      const notices: string[] = [];
+      if (result.cleanup_state === "manual_required") {
+        notices.push(
+          `プロジェクトは削除済みですが成果物を削除できません。対象フォルダを閉じてから手動削除してください: ${result.manual_cleanup_path ?? "保存先を確認してください"}`
+        );
+      } else if (result.cleanup_state === "pending") {
+        notices.push("プロジェクトは削除済みです。残存ファイルは次回起動時に再回収します");
+      } else {
+        notices.push("プロジェクトを削除しました");
+      }
+      if (result.generation_stop_failed) {
+        notices.push("生成停止に失敗したため、成果物が再出現する可能性があります");
+      }
+      setMessage(notices.join(" / "));
     });
   }
 

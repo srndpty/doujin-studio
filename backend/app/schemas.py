@@ -510,9 +510,11 @@ class ProjectSummary(BaseModel):
 
 
 class ProjectDeletionResponse(BaseModel):
-    # DBレコードは常に削除済み。cleanup_pendingは成果物が消しきれず次回起動で再回収する状態。
+    # DBレコードは常に削除済み。成果物掃除と生成停止の結果は独立して通知する。
     deleted: bool = True
-    cleanup_pending: bool = False
+    cleanup_state: Literal["complete", "pending", "manual_required"] = "complete"
+    manual_cleanup_path: str | None = None
+    generation_stop_failed: bool = False
 
 
 class ProjectDetail(ProjectSummary):
