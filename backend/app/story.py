@@ -535,13 +535,9 @@ def review_script(data: dict) -> tuple[dict, list[str]]:
                 text = str(line.get("text", "")).strip()
                 if not text:
                     continue
-                # 1) 擬音らしき台詞。話者のない匿名行だけ自動でsfxへ移し、
-                #    話者付き（自然な台詞の可能性）は内容を保持して警告に留める。
+                # 1) 擬音らしき台詞は内容を破壊しないよう自動移動せず、警告だけ出す
+                #    （「ダメ！」「ハイ！」等の自然な会話の誤変換を避ける）。
                 if _ONOMATOPOEIA_RE.match(text):
-                    if not str(line.get("speaker", "")).strip():
-                        sfx.append({"text": text, "style": "handwritten"})
-                        warnings.append(f"{label}: 話者のない擬音「{text}」を擬音欄へ移しました")
-                        continue
                     warnings.append(
                         f"{label}: 台詞「{text}」は擬音の可能性があります（擬音欄への移動を検討）"
                     )

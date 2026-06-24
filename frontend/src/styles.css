@@ -1350,6 +1350,21 @@ button.primary {
   margin: 0;
 }
 
+.stage-warnings {
+  color: #8a6d1f;
+  background: #fdf6e3;
+  border: 1px solid #ecd9a0;
+  border-radius: 6px;
+  font-size: 12px;
+  margin: 0;
+  padding: 6px 8px 6px 22px;
+  list-style: disc;
+}
+
+.stage-warnings li {
+  margin: 2px 0;
+}
+
 .stage-knowledge {
   color: #3f7d8c;
 }

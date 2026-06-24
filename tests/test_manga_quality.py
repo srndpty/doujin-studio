@@ -124,6 +124,28 @@ def test_preflight_detects_sfx_overlap() -> None:
     assert any(i.code == "sfx_overlap" for i in issues)
 
 
+def test_preflight_detects_cross_panel_sfx_overlap() -> None:
+    # 隣接コマの擬音がガター上（コマ外）で重なるケースもページ全体で検出する。
+    left = Panel(
+        panel_id="p01_01",
+        bbox=(0.05, 0.4, 0.4, 0.2),
+        shot="t",
+        sfx=[Sfx(text="ドン", box=(1.0, 0.5), font_size=80)],
+    )
+    right = Panel(
+        panel_id="p01_02",
+        bbox=(0.45, 0.4, 0.4, 0.2),
+        shot="t",
+        sfx=[Sfx(text="ドン", box=(0.0, 0.5), font_size=80)],
+    )
+    manga = MangaProject(
+        title="t", pages=[Page(page=1, theme="t", layout_template="o", panels=[left, right])]
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    overlap = [i for i in issues if i.code == "sfx_overlap"]
+    assert overlap and "p01_01 と p01_02" in overlap[0].message
+
+
 def test_preflight_flags_character_setup_incomplete() -> None:
     # trigger=表示名のみ・LoRA/参照画像なし → 同一性を保てない警告。
     weak = Character(id="rika", display_name="莉嘉", trigger_prompt="莉嘉")
@@ -263,7 +285,7 @@ def test_review_script_keeps_named_speaker_dialogue() -> None:
     assert panel["sfx"] == []
 
 
-def test_review_script_moves_anonymous_onomatopoeia_and_fixes_kinds() -> None:
+def test_review_script_warns_but_does_not_destroy_content() -> None:
     data = {
         "pages": [
             {
@@ -285,15 +307,40 @@ def test_review_script_moves_anonymous_onomatopoeia_and_fixes_kinds() -> None:
     fixed, warnings = story.review_script(data)
     panel = fixed["pages"][0]["panels"][0]
     texts = [line["text"] for line in panel["dialogue"]]
-    assert "ドカーン" not in texts  # 話者のない擬音は台詞から除去
-    assert any(s["text"] == "ドカーン" for s in panel["sfx"])  # 擬音欄へ移動
+    # 擬音らしき台詞も移動・削除せず保持し、警告だけ出す（自動での内容破壊をしない）。
+    assert "ドカーン" in texts
+    assert any("ドカーン" in warning for warning in warnings)
+    # kindの是正（独白・叫び）は非破壊なので自動で行う。
     monologue = next(line for line in panel["dialogue"] if line["text"] == "（やってしまった）")
     assert monologue["kind"] == "monologue"
     shout = next(line for line in panel["dialogue"] if line["text"] == "やめろ！！")
     assert shout["kind"] == "shout"
-    # 場面非対応らしき擬音は削除せず保持し、警告だけ出す（不可逆な本文削除をしない）。
+    # 場面非対応らしき擬音も削除せず保持し、警告だけ出す。
     assert any(s["text"] == "トドメ" for s in panel["sfx"])
     assert any("トドメ" in warning for warning in warnings)
+
+
+def test_review_script_warns_on_anonymous_onomatopoeia_dialogue() -> None:
+    # 話者未確定の「ダメ！」のような自然な会話を擬音へ移さず保持する（Medium回帰）。
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "panels": [
+                    {
+                        "characters": [],
+                        "dialogue": [{"speaker": "", "text": "ダメ！", "kind": "speech"}],
+                        "sfx": [],
+                    }
+                ],
+            }
+        ]
+    }
+    fixed, warnings = story.review_script(data)
+    panel = fixed["pages"][0]["panels"][0]
+    assert panel["dialogue"][0]["text"] == "ダメ！"
+    assert panel["sfx"] == []
+    assert any("ダメ！" in warning for warning in warnings)
 
 
 # --- 領域5: 候補数の自動提案 ---

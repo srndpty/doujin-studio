@@ -356,16 +356,21 @@ def _check_subject_mode_characters(page: Page) -> list[PreflightIssue]:
 
 
 def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssue]:
-    """擬音のコマ外はみ出し・吹き出し衝突・擬音同士の重なりを検出する（領域4）。"""
+    """擬音のコマ外はみ出し・吹き出し衝突・擬音同士の重なりを検出する（領域4）。
+
+    擬音はコマ外へのはみ出しを許すため、擬音同士の重なりはページ全体で総当たり判定し、
+    隣接コマの擬音がガター上で重なるケースも拾う。
+    """
     issues: list[PreflightIssue] = []
     bubble_boxes = _bubble_boxes(manga, page)
+    # ページ全体の擬音矩形を集める（コマ外はみ出し・吹き出し衝突は個別に判定）。
+    page_sfx: list[tuple[str, str, tuple[int, int, int, int]]] = []
     for panel in page.panels:
         panel_box = _panel_box_px(panel)
-        sfx_boxes: list[tuple[int, int, int, int]] = []
         for sfx in panel.sfx:
             box = sfx_bbox_px(sfx, panel_box)
-            # コマ外はみ出し（擬音面積に対する超過分）。
             sfx_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            # コマ外はみ出し（擬音面積に対する超過分）。
             inside = _overlap_area(box, panel_box)
             if (sfx_area - inside) / sfx_area >= SFX_OUT_OF_BOUNDS_RATIO:
                 issues.append(
@@ -391,29 +396,30 @@ def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssu
                         )
                     )
                     break
-            sfx_boxes.append(box)
-        # 擬音同士の重なり（同一中心への配置を含む）。
-        for i in range(len(sfx_boxes)):
-            for j in range(i + 1, len(sfx_boxes)):
-                overlap = _overlap_area(sfx_boxes[i], sfx_boxes[j])
-                if overlap <= 0:
-                    continue
-                area_i = (sfx_boxes[i][2] - sfx_boxes[i][0]) * (sfx_boxes[i][3] - sfx_boxes[i][1])
-                area_j = (sfx_boxes[j][2] - sfx_boxes[j][0]) * (sfx_boxes[j][3] - sfx_boxes[j][1])
-                smaller = max(1, min(area_i, area_j))
-                if overlap / smaller >= SFX_OVERLAP_RATIO:
-                    issues.append(
-                        PreflightIssue(
-                            level="warning",
-                            code="sfx_overlap",
-                            message=(
-                                f"擬音「{panel.sfx[i].text}」と「{panel.sfx[j].text}」が"
-                                f"重なっています（{panel.panel_id}）"
-                            ),
-                            page=page.page,
-                            panel_id=panel.panel_id,
-                        )
+            page_sfx.append((panel.panel_id, sfx.text, box))
+    # 擬音同士の重なり（同一中心への配置・隣接コマのガター上の重なりを含む）。
+    for i in range(len(page_sfx)):
+        pid_i, text_i, box_i = page_sfx[i]
+        for j in range(i + 1, len(page_sfx)):
+            pid_j, text_j, box_j = page_sfx[j]
+            overlap = _overlap_area(box_i, box_j)
+            if overlap <= 0:
+                continue
+            area_i = (box_i[2] - box_i[0]) * (box_i[3] - box_i[1])
+            area_j = (box_j[2] - box_j[0]) * (box_j[3] - box_j[1])
+            smaller = max(1, min(area_i, area_j))
+            if overlap / smaller >= SFX_OVERLAP_RATIO:
+                same = pid_i == pid_j
+                where = f"{pid_i}" if same else f"{pid_i} と {pid_j}"
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="sfx_overlap",
+                        message=f"擬音「{text_i}」と「{text_j}」が重なっています（{where}）",
+                        page=page.page,
+                        panel_id=pid_i,
                     )
+                )
     return issues
 
 

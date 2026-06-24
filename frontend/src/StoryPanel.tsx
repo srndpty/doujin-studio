@@ -10,6 +10,7 @@ type StageState = {
   data: Record<string, unknown> | null;
   knowledge_ids: string[];
   error: string | null;
+  warnings?: string[];
   updated_at: string | null;
 };
 
@@ -367,6 +368,13 @@ export function StoryPanel<ProjectType>({
                   <span className={`stage-status ${stage.status}`}>{STATUS_LABEL[stage.status]}</span>
                 </header>
                 {stage.error && <p className="stage-error">{stage.error}</p>}
+                {stage.warnings && stage.warnings.length > 0 && (
+                  <ul className="stage-warnings" aria-label="編集チェックの警告">
+                    {stage.warnings.map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
                 {stage.knowledge_ids.length > 0 && (
                   <small className="stage-knowledge">参照知識 {stage.knowledge_ids.length}件</small>
                 )}
