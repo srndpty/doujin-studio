@@ -1,13 +1,19 @@
 """プロジェクト編集・画像アップロード・描画・出力のHTTPルーター。"""
 
+import asyncio
+import logging
+import os
+import shutil
 import uuid
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
+from ..deletion import remove_deletion_fence, write_deletion_fence
 from ..generator import generate_four_page_name
 from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
 from ..rendering import (
@@ -31,6 +37,7 @@ from ..schemas import (
     PanelPageRenderResult,
     PreflightResponse,
     ProjectCreate,
+    ProjectDeletionResponse,
     ProjectDetail,
     ProjectMutationResponse,
     ProjectProductionStatus,
@@ -52,6 +59,7 @@ from .common import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/api/projects", response_model=ProjectMutationResponse[EmptyMutationResult])
@@ -80,6 +88,187 @@ def list_projects(request: Request) -> list[ProjectSummary]:
 def get_project(project_id: str, request: Request) -> ProjectDetail:
     return to_detail(
         load_project_record(request, project_id), request.app.state.settings.export_dir
+    )
+
+
+DELETION_TOMBSTONE_GLOB = "*.deleting-*"
+DELETION_MARKER_GLOB = "*.deletion-pending"
+
+# 成果物削除の結果。removed=完全削除、pending=tombstone/markerで自動再回収予定、
+# orphaned=残骸も再回収手段も用意できず手動対応が必要。
+RemovalOutcome = Literal["removed", "pending", "orphaned"]
+
+
+def _write_deletion_marker(export_dir: Path, residual: Path) -> bool:
+    """残骸ディレクトリ名をmarkerへ記録する。書込み成否を返す。
+
+    任意パスの再帰削除を避けるため、保存するのはexport直下の単一ディレクトリ名のみ。
+    起動時sweepは ``export_dir / name`` を再構成し、範囲外なら削除しない。
+    """
+    marker = export_dir / f"{residual.name}.deletion-pending"
+    try:
+        marker.write_text(residual.name, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _unlink_marker(marker: Path) -> None:
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        # locked等で消せない場合はmarkerを残し、次回起動で再試行する。
+        logger.warning("削除markerを片付けられませんでした: %s", marker)
+
+
+def _remove_project_dir(project_dir: Path) -> RemovalOutcome:
+    """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeする。
+
+    rename成功後の残骸はtombstone名でglob回収できる。renameごと失敗して元ディレクトリが
+    残った場合はtombstone名にならないため、markerへ名前を記録して起動時に再試行する。
+    marker書込みも失敗したら自動再回収できない孤児としてorphanedを返す。
+    """
+    if not project_dir.exists():
+        return "removed"
+    tombstone = project_dir.with_name(f"{project_dir.name}.deleting-{uuid.uuid4().hex}")
+    renamed = False
+    try:
+        os.replace(project_dir, tombstone)
+        renamed = True
+        target = tombstone
+    except OSError:
+        # 退避に失敗（開かれたファイル等）してもそのまま削除を試みる。
+        target = project_dir
+    shutil.rmtree(target, ignore_errors=True)
+    if not target.exists():
+        return "removed"
+    if renamed:
+        # tombstone名で残存。起動時globで再回収できる。
+        return "pending"
+    if _write_deletion_marker(project_dir.parent, target):
+        return "pending"
+    logger.error("成果物を削除できず、再回収markerも作成できませんでした: %s", target)
+    return "orphaned"
+
+
+def sweep_deletion_tombstones(export_dir: Path) -> None:
+    """削除に失敗して残った成果物を再回収する（起動時に呼ぶ）。
+
+    markerに記録された残骸（rename失敗の元ディレクトリ含む）と、marker無しで残った
+    tombstone（プロセスクラッシュ時の保険）の双方を掃除する。markerはexport直下の
+    単一ディレクトリ名のみを指す前提で検証し、範囲外を指すmarkerは削除しない。
+    """
+    if not export_dir.exists():
+        return
+    root = export_dir.resolve()
+    for marker in export_dir.glob(DELETION_MARKER_GLOB):
+        try:
+            name = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not name or name in {".", ".."} or name != Path(name).name:
+            logger.warning("不正な削除markerを無視します: %s", marker)
+            continue
+        residual = root / name
+        if residual.resolve().parent != root:
+            logger.warning("範囲外の削除markerを無視します: %s", marker)
+            continue
+        if residual.exists():
+            shutil.rmtree(residual, ignore_errors=True)
+        if not residual.exists():
+            _unlink_marker(marker)
+    for tombstone in export_dir.glob(DELETION_TOMBSTONE_GLOB):
+        shutil.rmtree(tombstone, ignore_errors=True)
+
+
+@router.delete(
+    "/api/projects/{project_id}",
+    response_model=ProjectDeletionResponse,
+    responses={202: {"model": ProjectDeletionResponse}},
+)
+async def delete_project(
+    project_id: str, request: Request, response: Response
+) -> ProjectDeletionResponse:
+    """DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
+    進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
+
+    DBレコードを削除した時点で、enqueueはProjectNotFoundError、実行中workerも最新
+    読み直しでproject不在となり、成果物の再作成やDB更新ができなくなる。これにより
+    「削除後にworkerが復活させる」「commit失敗で成果物だけ失う」競合を避ける。
+    """
+    record = load_project_record(request, project_id)
+    export_dir = request.app.state.settings.export_dir.resolve()
+    project_dir = (export_dir / project_id).resolve()
+    if project_dir.parent != export_dir:
+        raise HTTPException(status_code=400, detail="プロジェクト保存先が不正です")
+
+    # 1) DBレコードを削除し、commitと原子的に有効化するためcommit直前にfenceを作る。
+    #    commit成功時のみfenceが残り、commit失敗時はrollbackしてfenceも取り消す。
+    #    これによりDB削除とfence作成の間でクラッシュしても整合する（fence先行・commit後も
+    #    fence済みのまま）。万一fenceだけ残ってprojectが生きていても、起動時sweepがDB存在を
+    #    確認して成果物を消さずfenceだけ片付ける。
+    with request.app.state.SessionLocal() as session:
+        current = request.app.state.repository.get(session, record.id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        request.app.state.repository.delete(session, current)
+        fence_written = write_deletion_fence(export_dir, project_id)
+        if not fence_written:
+            session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail="削除fenceを作成できないため、プロジェクトを削除しませんでした",
+            )
+        try:
+            session.commit()
+        except Exception:
+            remove_deletion_fence(export_dir, project_id)
+            raise
+
+    # 2) 入口を閉じた後に進行中ジョブを掃き出す。個別cancelが失敗しても残りを止め、
+    #    finallyで成果物掃除へ必ず進む。
+    manager = request.app.state.job_manager
+    active_jobs = [
+        job
+        for job in list(manager.jobs.values())
+        if job.project_id == project_id and job.status not in {"done", "error", "cancelled"}
+    ]
+    cancel_failed = False
+    outcome: RemovalOutcome = "orphaned"
+    try:
+        for job in active_jobs:
+            try:
+                await request.app.state.generation.cancel(job)
+            except Exception:
+                cancel_failed = True
+                logger.exception(
+                    "プロジェクト削除時に生成ジョブを停止できませんでした: project=%s job=%s",
+                    project_id,
+                    job.id,
+                )
+    finally:
+        # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
+        try:
+            outcome = await asyncio.to_thread(_remove_project_dir, project_dir)
+        except Exception:
+            # 想定外のfilesystem例外でもDB削除済みの事実を返し、手動対応先を通知する。
+            logger.exception("プロジェクト成果物の削除処理に失敗しました: %s", project_dir)
+            outcome = "orphaned"
+
+    cleanup_state: Literal["complete", "pending", "manual_required"]
+    if outcome == "removed":
+        cleanup_state = "complete"
+    elif outcome == "pending":
+        cleanup_state = "pending"
+    else:
+        cleanup_state = "manual_required"
+    if cleanup_state != "complete" or cancel_failed:
+        response.status_code = status.HTTP_202_ACCEPTED
+    return ProjectDeletionResponse(
+        deleted=True,
+        cleanup_state=cleanup_state,
+        manual_cleanup_path=str(project_dir) if cleanup_state == "manual_required" else None,
+        generation_stop_failed=cancel_failed,
     )
 
 

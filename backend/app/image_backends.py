@@ -261,27 +261,106 @@ class ComfyUIImageBackend:
         )
 
 
+class AutoImageBackend:
+    """生成時点のComfyUI可用性を確認し、再起動なしで実生成へ切り替える。"""
+
+    def __init__(self, comfyui: ComfyUIImageBackend, stub: StubImageBackend) -> None:
+        self.comfyui = comfyui
+        self.stub = stub
+
+    async def generate_panel(
+        self,
+        project_id: str,
+        panel: Panel,
+        export_dir: Path,
+        target_path: Path | None = None,
+        progress_callback: Callable[[int, int, str | None, str], Awaitable[None]] | None = None,
+        on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
+    ) -> ImageResult:
+        status = await self.comfyui.get_status()
+        # workflow不正・ノード不足は接続状態に関わらず設定エラーとして表面化させる。
+        # 接続不能を理由に黙ってstubへ退避すると、設定不備がplaceholderの裏に隠れて
+        # 診断できなくなるため、判定はworkflow_validを先に行う。
+        if not status.workflow_valid:
+            if not status.workflow_exists:
+                raise ValueError(f"workflow_api.jsonが見つかりません: {status.workflow_path}")
+            raise ValueError(
+                f"workflow設定ノードが不足しています: {', '.join(status.missing_nodes)}"
+            )
+        if status.connected:
+            return await self.comfyui.generate_panel(
+                project_id,
+                panel,
+                export_dir,
+                target_path=target_path,
+                progress_callback=progress_callback,
+                on_prompt_id=on_prompt_id,
+            )
+        # workflowは正しいがComfyUIへ接続できないときだけstubへ退避する（MVPを止めない）。
+        result = await self.stub.generate_panel(
+            project_id,
+            panel,
+            export_dir,
+            target_path=target_path,
+            progress_callback=progress_callback,
+            on_prompt_id=on_prompt_id,
+        )
+        return ImageResult(
+            "stub",
+            "fallback",
+            result.asset_path,
+            f"ComfyUIを利用できないためstub画像を生成しました: {status.message}",
+        )
+
+    async def get_status(self) -> ComfyUIStatus:
+        status = await self.comfyui.get_status()
+        # workflow不正は実生成がValueErrorになる設定エラー。stub退避とは表示せず、
+        # comfyuiの設定エラー（statusのworkflowメッセージ）をそのまま見せて実行結果と一致させる。
+        if not status.workflow_valid:
+            return status
+        if status.connected:
+            return status
+        # workflowは正しいが接続不能。実際にstubへfallbackするのでstubとして表示する。
+        return ComfyUIStatus(
+            backend="stub",
+            base_url=status.base_url,
+            workflow_path=status.workflow_path,
+            connected=status.connected,
+            workflow_exists=status.workflow_exists,
+            workflow_valid=status.workflow_valid,
+            missing_nodes=status.missing_nodes,
+            message=f"{status.message} / stub画像生成を使用します",
+        )
+
+
+def _build_comfyui_backend(settings: Settings) -> ComfyUIImageBackend:
+    return ComfyUIImageBackend(
+        settings.comfyui_base_url,
+        workflow_config=ComfyUIWorkflowConfig(
+            workflow_path=settings.comfyui_workflow_path,
+            positive_node_id=settings.comfyui_positive_node_id,
+            negative_node_id=settings.comfyui_negative_node_id,
+            seed_node_id=settings.comfyui_seed_node_id,
+            width_node_id=settings.comfyui_width_node_id,
+            height_node_id=settings.comfyui_height_node_id,
+            save_prefix_node_id=settings.comfyui_save_prefix_node_id,
+        ),
+        timeout_seconds=settings.comfyui_timeout_seconds,
+        allow_stub_fallback=settings.comfyui_fallback_to_stub,
+    )
+
+
 def build_image_backend(settings: Settings) -> ImageBackend:
     if settings.image_backend.lower() == "comfyui":
-        return ComfyUIImageBackend(
-            settings.comfyui_base_url,
-            workflow_config=ComfyUIWorkflowConfig(
-                workflow_path=settings.comfyui_workflow_path,
-                positive_node_id=settings.comfyui_positive_node_id,
-                negative_node_id=settings.comfyui_negative_node_id,
-                seed_node_id=settings.comfyui_seed_node_id,
-                width_node_id=settings.comfyui_width_node_id,
-                height_node_id=settings.comfyui_height_node_id,
-                save_prefix_node_id=settings.comfyui_save_prefix_node_id,
-            ),
-            timeout_seconds=settings.comfyui_timeout_seconds,
-            allow_stub_fallback=settings.comfyui_fallback_to_stub,
-        )
+        return _build_comfyui_backend(settings)
+    if settings.image_backend.lower() == "auto":
+        stub = StubImageBackend()
+        return AutoImageBackend(_build_comfyui_backend(settings), stub)
     return StubImageBackend()
 
 
 async def get_comfyui_status(settings: Settings) -> ComfyUIStatus:
-    if settings.image_backend.lower() != "comfyui":
+    if settings.image_backend.lower() not in {"comfyui", "auto"}:
         return ComfyUIStatus(
             backend=settings.image_backend,
             base_url=settings.comfyui_base_url,
@@ -294,6 +373,8 @@ async def get_comfyui_status(settings: Settings) -> ComfyUIStatus:
         )
     backend = build_image_backend(settings)
     if isinstance(backend, ComfyUIImageBackend):
+        return await backend.get_status()
+    if isinstance(backend, AutoImageBackend):
         return await backend.get_status()
     raise RuntimeError("ComfyUI backendを初期化できませんでした")
 

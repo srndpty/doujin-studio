@@ -160,11 +160,27 @@ def draw_panel_art(
 ) -> None:
     """コマの画像と枠線・番号ラベルだけを描く（overlayより下のレイヤー）。"""
     fitted = _fit_panel_image(panel, box, export_dir)
-    if fitted is not None:
-        page_image.paste(fitted.convert("RGB"), (box[0], box[1]))
+    width, height = box[2] - box[0], box[3] - box[1]
+    tile = (
+        fitted.convert("RGBA")
+        if fitted is not None
+        else Image.new("RGBA", (width, height), (230, 232, 235, 255))
+    )
+    if panel.shape_points:
+        relative_points = [(int(x * width), int(y * height)) for x, y in panel.shape_points]
+        mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(mask).polygon(relative_points, fill=255)
+        page_image.paste(tile, (box[0], box[1]), mask)
+        absolute_points = [(box[0] + x, box[1] + y) for x, y in relative_points]
+        draw.line(
+            absolute_points + [absolute_points[0]],
+            fill=(20, 20, 20, 255),
+            width=PANEL_OUTLINE_WIDTH,
+            joint="curve",
+        )
     else:
-        draw.rectangle(box, fill=(230, 232, 235, 255))
-    draw.rectangle(box, outline=(20, 20, 20, 255), width=PANEL_OUTLINE_WIDTH)
+        page_image.paste(tile, (box[0], box[1]))
+        draw.rectangle(box, outline=(20, 20, 20, 255), width=PANEL_OUTLINE_WIDTH)
 
 
 def draw_panel_text(

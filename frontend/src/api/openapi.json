@@ -229,6 +229,54 @@
             }
           }
         }
+      },
+      "delete": {
+        "summary": "Delete Project",
+        "description": "DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に\n進行中ジョブを停止・待機してから成果物を別スレッドで削除する。\n\nDBレコードを削除した時点で、enqueueはProjectNotFoundError、実行中workerも最新\n読み直しでproject不在となり、成果物の再作成やDB更新ができなくなる。これにより\n「削除後にworkerが復活させる」「commit失敗で成果物だけ失う」競合を避ける。",
+        "operationId": "delete_project_api_projects__project_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeletionResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeletionResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/projects/{project_id}/generate-name": {
@@ -4647,6 +4695,30 @@
             "minItems": 4,
             "title": "Bbox"
           },
+          "shape_points": {
+            "anyOf": [
+              {
+                "items": {
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array",
+                  "maxItems": 2,
+                  "minItems": 2
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shape Points"
+          },
           "shot": {
             "type": "string",
             "title": "Shot"
@@ -4949,6 +5021,43 @@
           "title"
         ],
         "title": "ProjectCreate"
+      },
+      "ProjectDeletionResponse": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "default": true
+          },
+          "cleanup_state": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "pending",
+              "manual_required"
+            ],
+            "title": "Cleanup State",
+            "default": "complete"
+          },
+          "manual_cleanup_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Cleanup Path"
+          },
+          "generation_stop_failed": {
+            "type": "boolean",
+            "title": "Generation Stop Failed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ProjectDeletionResponse"
       },
       "ProjectDetail": {
         "properties": {

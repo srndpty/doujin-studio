@@ -135,7 +135,16 @@ export interface paths {
         get: operations["get_project_api_projects__project_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Project
+         * @description DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
+         *     進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
+         *
+         *     DBレコードを削除した時点で、enqueueはProjectNotFoundError、実行中workerも最新
+         *     読み直しでproject不在となり、成果物の再作成やDB更新ができなくなる。これにより
+         *     「削除後にworkerが復活させる」「commit失敗で成果物だけ失う」競合を避ける。
+         */
+        delete: operations["delete_project_api_projects__project_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1683,6 +1692,11 @@ export interface components {
                 number,
                 number
             ];
+            /** Shape Points */
+            shape_points?: [
+                number,
+                number
+            ][] | null;
             /** Shot */
             shot: string;
             /**
@@ -1805,6 +1819,27 @@ export interface components {
              * @enum {integer}
              */
             target_pages: 4 | 8 | 16;
+        };
+        /** ProjectDeletionResponse */
+        ProjectDeletionResponse: {
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            /**
+             * Cleanup State
+             * @default complete
+             * @enum {string}
+             */
+            cleanup_state: "complete" | "pending" | "manual_required";
+            /** Manual Cleanup Path */
+            manual_cleanup_path?: string | null;
+            /**
+             * Generation Stop Failed
+             * @default false
+             */
+            generation_stop_failed: boolean;
         };
         /** ProjectDetail */
         ProjectDetail: {
@@ -2537,6 +2572,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_project_api_projects__project_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDeletionResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDeletionResponse"];
                 };
             };
             /** @description Validation Error */

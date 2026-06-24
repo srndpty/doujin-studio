@@ -10,7 +10,7 @@ from backend.app import database, knowledge, story
 from backend.app.config import Settings
 from backend.app.database import ProjectRecord, create_session_factory
 from backend.app.database import now_utc as db_now_utc
-from backend.app.llm import LLMError, OpenAICompatibleClient
+from backend.app.llm import LLMError, OpenAICompatibleClient, extract_json_object
 from backend.app.main import create_app
 
 
@@ -620,6 +620,80 @@ def test_llm_invalid_json_is_corrected_once(tmp_path: Path) -> None:
     assert stage["status"] == "draft"
     assert stage["data"]["tone"] == "穏やか"
     assert len(llm.calls) == 2, "不正JSONは1回だけ修正要求する"
+
+
+def test_llm_json_missing_comma_is_repaired_locally() -> None:
+    parsed = extract_json_object(
+        '{"pages": [{"page": 1, "panels": []}\n{"page": 2, "panels": []}]}'
+    )
+    assert [page["page"] for page in parsed["pages"]] == [1, 2]
+
+
+def test_script_invalid_json_is_corrected_twice_with_previous_output(tmp_path: Path) -> None:
+    valid_script = json.dumps(
+        {
+            "pages": [
+                {
+                    "page": page,
+                    "layout": "dialogue",
+                    "panels": [
+                        {
+                            "shot": "wide shot",
+                            "camera": "eye level",
+                            "location": "控室",
+                            "visual_prompt": "two idols talking in a dressing room",
+                            "characters": ["美嘉", "莉嘉"],
+                            "dialogue": [{"speaker": "美嘉", "text": "準備できた？"}],
+                            "sfx": [],
+                        },
+                        {
+                            "shot": "close-up",
+                            "camera": "eye level",
+                            "location": "控室",
+                            "visual_prompt": "cheerful younger sister smiling",
+                            "characters": ["莉嘉"],
+                            "dialogue": [{"speaker": "莉嘉", "text": "もちろん！"}],
+                            "sfx": ["ぱっ"],
+                        },
+                    ],
+                }
+                for page in range(1, 5)
+            ]
+        },
+        ensure_ascii=False,
+    )
+    llm = FakeLLM(['{"pages": [', '{"pages" []}', valid_script])
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'script-retry.db'}")
+    with factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p1",
+                title="t",
+                work_name="作品",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+        record = story.create_session(
+            session, project_id="p1", work_name="作品", target_pages=4, instruction="姉妹の日常"
+        )
+        result = asyncio.run(
+            story.generate_llm_stage(
+                llm,
+                record,
+                story.empty_stages(),
+                "script",
+                story.KnowledgeContext(),
+                "",
+            )
+        )
+
+    assert len(result["pages"]) == 4
+    assert len(llm.calls) == 3
+    assert any(message["role"] == "assistant" for message in llm.calls[1])
+    assert llm.calls[2][-2]["content"] == '{"pages" []}'
 
 
 def test_script_numeric_fields_are_normalized() -> None:

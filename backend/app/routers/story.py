@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from .. import knowledge as knowledge_db
 from .. import story as story_module
 from ..database import ProjectRevisionRecord, StoryGenerationSessionRecord, now_utc
-from ..llm import build_llm_client
+from ..llm import resolve_llm_client
 from ..schemas import (
     EmptyMutationResult,
     MangaProject,
@@ -107,7 +107,7 @@ async def generate_story_stage(
     payload: Annotated[StageGenerateRequest | None, Body()] = None,
 ) -> StorySessionResponse:
     settings = request.app.state.settings
-    llm = build_llm_client(settings)
+    llm = await resolve_llm_client(settings)
     with request.app.state.SessionLocal() as session:
         record = session.get(StoryGenerationSessionRecord, session_id)
         if record is None:

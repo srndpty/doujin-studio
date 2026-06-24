@@ -9,7 +9,18 @@ import {
   useRef,
   useState
 } from "react";
-import { Download, FolderOpen, Images, Menu, PanelLeftClose, Plus, RefreshCw, Save, X } from "lucide-react";
+import {
+  Download,
+  FolderOpen,
+  Images,
+  Menu,
+  PanelLeftClose,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+  X
+} from "lucide-react";
 import { api, withRevision } from "./api/client";
 import type { components } from "./api/schema";
 import {
@@ -58,6 +69,7 @@ export type Sfx = {
 export type Panel = {
   panel_id: string;
   bbox: [number, number, number, number];
+  shape_points?: [number, number][] | null;
   shot: string;
   subject_mode?: "character_scene" | "reaction" | "prop_insert" | "hand_insert" | "background";
   role?: string;
@@ -243,6 +255,21 @@ export function App() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(() => {
+    const baseTitle = document.title.replace(/^\(\d+\/\d+\)\s*/, "");
+    if (activeJobIds.length === 0) {
+      document.title = baseTitle;
+      return;
+    }
+    const matched = progress?.label.match(/（(\d+)\/(\d+)コマ/);
+    const current = matched ? Number(matched[1]) : 0;
+    const total = matched ? Number(matched[2]) : activeJobIds.length;
+    document.title = `(${current}/${total}) ${baseTitle}`;
+    return () => {
+      document.title = baseTitle;
+    };
+  }, [activeJobIds.length, progress?.label]);
 
   const currentPage = useMemo(() => {
     return selected?.manga_json.pages.find((page) => page.page === selectedPage) ?? null;
@@ -454,6 +481,38 @@ export function App() {
       setNewProjectOpen(false);
       setActiveTab("story");
       setMessage("プロジェクトを作成しました");
+    });
+  }
+
+  async function deleteProject(project: ProjectSummary) {
+    if (!window.confirm(`プロジェクト「${project.title}」を削除します。生成画像も元に戻せません。`)) return;
+    await runTask(async () => {
+      const result = await api.delete<Schemas["ProjectDeletionResponse"]>(`/api/projects/${project.id}`);
+      if (selectedProjectIdRef.current === project.id) {
+        selectedProjectIdRef.current = null;
+        selectedRef.current = null;
+        setSelected(null);
+        setJsonText("");
+        setPageAssets([]);
+        setProductionStatus(null);
+        setJobHistory([]);
+        setActiveJobIds([]);
+      }
+      await refreshProjects();
+      const notices: string[] = [];
+      if (result.cleanup_state === "manual_required") {
+        notices.push(
+          `プロジェクトは削除済みですが成果物を削除できません。対象フォルダを閉じてから手動削除してください: ${result.manual_cleanup_path ?? "保存先を確認してください"}`
+        );
+      } else if (result.cleanup_state === "pending") {
+        notices.push("プロジェクトは削除済みです。残存ファイルは次回起動時に再回収します");
+      } else {
+        notices.push("プロジェクトを削除しました");
+      }
+      if (result.generation_stop_failed) {
+        notices.push("生成停止に失敗したため、成果物が再出現する可能性があります");
+      }
+      setMessage(notices.join(" / "));
     });
   }
 
@@ -1388,14 +1447,24 @@ export function App() {
             </button>
           </div>
           {projects.map((project) => (
-            <button
+            <div
               key={project.id}
-              className={selected?.id === project.id ? "selected" : ""}
-              onClick={() => void loadProject(project.id)}
+              className={`project-list-item ${selected?.id === project.id ? "selected" : ""}`}
             >
-              <span>{project.title}</span>
-              <small>{project.work_name || "作品名未設定"}</small>
-            </button>
+              <button onClick={() => void loadProject(project.id)}>
+                <span>{project.title}</span>
+                <small>{project.work_name || "作品名未設定"}</small>
+              </button>
+              <button
+                className="project-delete"
+                title={`${project.title}を削除`}
+                aria-label={`${project.title}を削除`}
+                onClick={() => void deleteProject(project)}
+                disabled={busy}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
           ))}
         </div>
       </aside>
@@ -1429,7 +1498,7 @@ export function App() {
           <div className="actions">
             <button
               className="icon-button"
-              title="接続確認"
+              title="ComfyUI接続状態を再検出"
               onClick={() => void refreshComfyStatus()}
               disabled={busy}
             >
@@ -1460,6 +1529,13 @@ export function App() {
 
         <nav className="workspace-tabs">
           <button
+            className={activeTab === "story" ? "active" : ""}
+            onClick={() => setActiveTab("story")}
+            disabled={!selected}
+          >
+            ストーリー生成
+          </button>
+          <button
             className={activeTab === "production" ? "active" : ""}
             onClick={() => setActiveTab("production")}
           >
@@ -1477,13 +1553,6 @@ export function App() {
             onClick={() => setActiveTab("knowledge")}
           >
             作品知識
-          </button>
-          <button
-            className={activeTab === "story" ? "active" : ""}
-            onClick={() => setActiveTab("story")}
-            disabled={!selected}
-          >
-            ストーリー生成
           </button>
         </nav>
 
@@ -1644,6 +1713,15 @@ export function App() {
                 workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node:{" "}
                 {comfyStatus?.workflow_valid ? "OK" : "未検証"}
               </small>
+              {comfyStatus && comfyStatus.backend === "comfyui" && !comfyStatus.workflow_valid ? (
+                <strong className="backend-warning">
+                  警告: ComfyUIのworkflow設定エラーです。修正するまでコマ画像生成は失敗します。
+                </strong>
+              ) : comfyStatus && (comfyStatus.backend !== "comfyui" || !comfyStatus.connected) ? (
+                <strong className="backend-warning">
+                  警告: ComfyUIを使用していません。コマ画像はスタブになります。
+                </strong>
+              ) : null}
             </section>
 
             {productionStatus && (
@@ -2135,19 +2213,23 @@ export function App() {
             <section className="content-grid">
               <div className="preview">
                 <div className="page-workbench">
-                  <div className="tabs">
-                    {(selected?.manga_json.pages ?? []).map(({ page }) => (
-                      <button
-                        key={page}
-                        className={selectedPage === page ? "active" : ""}
-                        onClick={() => setSelectedPage(page)}
-                      >
-                        {page}p{" "}
-                        {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
-                          ? "完了"
-                          : ""}
-                      </button>
-                    ))}
+                  <div className={`tabs ${selected?.manga_json.reading_direction === "ltr" ? "" : "rtl"}`}>
+                    {[...(selected?.manga_json.pages ?? [])]
+                      .sort((a, b) =>
+                        selected?.manga_json.reading_direction === "ltr" ? a.page - b.page : b.page - a.page
+                      )
+                      .map(({ page }) => (
+                        <button
+                          key={page}
+                          className={selectedPage === page ? "active" : ""}
+                          onClick={() => setSelectedPage(page)}
+                        >
+                          {page}p
+                          {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
+                            ? " 完了"
+                            : ""}
+                        </button>
+                      ))}
                   </div>
                   <label className="incomplete-filter">
                     <input

@@ -33,8 +33,11 @@ from backend.app.database import (
 from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
+    AutoImageBackend,
+    ComfyUIImageBackend,
     ComfyUIWorkflowConfig,
     ImageResult,
+    StubImageBackend,
     apply_panel_to_workflow,
     apply_reference_images_to_workflow,
 )
@@ -88,6 +91,9 @@ def make_client(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         export_dir=tmp_path / "exports",
         image_backend=image_backend,
+        # 既定値がautoになったため、unit testはローカルのComfyUI/LM Studio起動状況に
+        # 依存しないようstubへ明示固定する。
+        llm_provider="stub",
         comfyui_base_url="http://127.0.0.1:9",
         comfyui_workflow_path=workflow_path or tmp_path / "missing.workflow_api.json",
     )
@@ -3883,3 +3889,804 @@ class MockComfyUIClient:
 
 def response(url: str, payload: dict) -> httpx.Response:
     return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+
+def test_delete_project_removes_database_records_and_assets(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除対象", "work_name": "作品", "target_pages": 4}
+        )
+        assert created.status_code == 200
+        project_id = created.json()["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"asset")
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 200
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "complete",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not project_dir.exists()
+
+
+def test_polygon_panel_is_clipped_when_rendered(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "変形コマ", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        manga = MangaProject(
+            title="変形コマ",
+            work_name="作品",
+            premise="",
+            target_pages=4,
+            pages=[
+                Page(
+                    page=1,
+                    theme="",
+                    layout_template="polygon",
+                    panels=[
+                        Panel(
+                            panel_id="p01_01",
+                            bbox=(0.1, 0.1, 0.8, 0.8),
+                            shape_points=[(0.2, 0), (1, 0), (0.8, 1), (0, 1)],
+                            shot="変形",
+                        )
+                    ],
+                )
+            ],
+        )
+        assert put_manga(client, project_id, manga.model_dump()).status_code == 200
+        rendered = client.post(mutation_url(client, project_id, "panels/p01_01/render-page")).json()
+        asset = rendered["result"]["page_asset"]
+        with Image.open(tmp_path / "exports" / asset) as image:
+            # 左上は傾斜で切り抜かれ、中央はコマのplaceholder色になる。
+            assert image.getpixel((125, 175)) == (248, 248, 244)
+            assert image.getpixel((600, 850))[:3] == (230, 232, 235)
+
+
+# --- レビュー対応: AutoImageBackendはworkflow不正をstubで隠さずエラー化する ---
+
+
+def _auto_panel() -> Panel:
+    return Panel(panel_id="p01_01", bbox=(0.1, 0.1, 0.8, 0.8), shot="medium")
+
+
+def test_auto_backend_errors_on_missing_workflow_when_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続できているのにworkflowが見つからない設定不備は、stub退避せずエラーにする。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)  # workflow_pathは存在しない
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    # placeholderを成果物として残さない。
+    assert not (export_dir / "proj").exists()
+
+
+def test_auto_backend_errors_on_invalid_workflow_when_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    workflow = sample_workflow()
+    del workflow["9"]  # save prefixノードを欠落させる
+    config = workflow_config(tmp_path)
+    config.workflow_path.write_text(json.dumps(workflow), encoding="utf-8")
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    assert not (export_dir / "proj").exists()
+
+
+# --- レビュー対応: LLM_MODEL指定時の厳密一致と接続エラー保持 ---
+
+
+def _patch_llm_status(monkeypatch: pytest.MonkeyPatch, *, connected: bool, models: list[str]):
+    from backend.app import llm as llm_module
+
+    async def fake_status(self):
+        message = "LLMへ接続できました" if connected else "LLMへ接続できません: boom"
+        return llm_module.LLMStatus(
+            provider="openai_compatible",
+            base_url=self.base_url,
+            model=self.model,
+            connected=connected,
+            available_models=models,
+            message=message,
+        )
+
+    monkeypatch.setattr(llm_module.OpenAICompatibleClient, "status", fake_status)
+    return llm_module
+
+
+def test_resolve_llm_client_auto_falls_back_to_stub_on_model_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a", "loaded-b"])
+    settings = Settings(llm_provider="auto", llm_model="missing-model")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.StubLLMClient)
+
+
+def test_resolve_llm_client_openai_compatible_fails_explicitly_on_model_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="openai_compatible", llm_model="missing-model")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    # 勝手に別モデルへ切り替えず、生成を必ず失敗させる失敗専用clientを返す。
+    assert isinstance(client, llm_module.UnavailableLLMClient)
+    with pytest.raises(llm_module.LLMError):
+        asyncio.run(client.chat([{"role": "user", "content": "x"}]))
+
+
+def test_resolve_llm_client_uses_first_model_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a", "loaded-b"])
+    settings = Settings(llm_provider="auto", llm_model="")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.OpenAICompatibleClient)
+    assert client.model == "loaded-a"
+
+
+def test_get_llm_status_preserves_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=False, models=[])
+    settings = Settings(llm_provider="auto", llm_model="")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    # 接続エラーの原因(boom)を「ロード済みモデルがない」で潰さない。
+    assert "boom" in status.message
+
+
+def test_get_llm_status_reports_unloaded_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="auto", llm_model="missing-model")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    assert "missing-model" in status.message
+
+
+# --- レビュー対応: 削除はDBゲートを先に閉じ、成果物喪失を避ける ---
+
+
+def test_delete_project_blocks_subsequent_generation(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectNotFoundError
+
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        assert client.delete(f"/api/projects/{project_id}").status_code == 200
+        # 削除後はenqueueの入口が閉じ、遅れて来た生成登録を受け付けない。
+        with pytest.raises(ProjectNotFoundError):
+            client.app.state.generation.start(project_id, ["p01_01"], 1, "x", expected_revision=0)
+
+
+def test_delete_project_keeps_assets_when_db_delete_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"asset")
+
+        def boom(session, record):
+            raise RuntimeError("db boom")
+
+        monkeypatch.setattr(client.app.state.repository, "delete", boom)
+        with pytest.raises(RuntimeError):
+            client.delete(f"/api/projects/{project_id}")
+        # DB削除より先に成果物を消さないため、失敗時もレコードと成果物が残る。
+        assert project_dir.exists()
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+
+def test_delete_project_aborts_when_fence_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "keep.png").write_bytes(b"keep")
+        monkeypatch.setattr(projects_router, "write_deletion_fence", lambda *_args: False)
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 503
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        assert (project_dir / "keep.png").read_bytes() == b"keep"
+
+
+# --- レビュー対応: 自動生成の変形コマはslant-rightプリセット定数に揃える ---
+
+
+def test_script_to_manga_uses_slant_right_preset_constants() -> None:
+    from backend.app import story
+    from backend.app.schemas import ScriptStage
+
+    base = MangaProject(title="本")
+    script = ScriptStage.model_validate(
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "layout": "action",
+                    "panels": [
+                        {"shot": "wide", "dialogue": []},
+                        {"shot": "medium", "dialogue": []},
+                    ],
+                }
+            ]
+        }
+    )
+    manga = story.script_to_manga(script, base)
+    first = manga.pages[0].panels[0]
+    assert first.shape_points is not None
+    xs = [round(point[0], 2) for point in first.shape_points]
+    # フロントのshapePreset()がslant-rightと認識できる定数であること。
+    assert xs == [0.12, 1.0, 0.88, 0.0]
+
+
+# --- 追補レビュー対応 ---
+
+
+class _DisconnectedComfyUIClient(MockComfyUIClient):
+    async def get(self, url: str, params: dict | None = None) -> httpx.Response:
+        if url.endswith("/system_stats"):
+            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+        return await super().get(url, params)
+
+
+def test_auto_backend_errors_on_invalid_workflow_even_when_disconnected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続不能でもworkflow不正は設定エラー。stubで隠さずValueErrorにする。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: _DisconnectedComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)  # workflow_pathは存在しない
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    assert not (export_dir / "proj").exists()
+
+
+def test_auto_status_reports_comfyui_config_error_when_workflow_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続済みでworkflow不正なら、get_statusはstub退避ではなくcomfyuiの設定エラーを返す。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    status = asyncio.run(auto.get_status())
+    assert status.backend == "comfyui"
+    assert not status.workflow_valid
+    assert "stub" not in status.message
+
+
+def test_resolve_llm_client_openai_compatible_strict_without_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LLM_MODEL未指定でも、接続不能なopenai_compatibleはstubや空model呼び出しへ流さず、
+    # 失敗専用clientで生成を必ず失敗させる。
+    llm_module = _patch_llm_status(monkeypatch, connected=False, models=[])
+    settings = Settings(llm_provider="openai_compatible", llm_model="")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.UnavailableLLMClient)
+    with pytest.raises(llm_module.LLMError):
+        asyncio.run(client.chat([{"role": "user", "content": "x"}]))
+
+
+def test_delete_project_cancels_running_worker_without_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """削除前にworkerが起動済みでも、DB先行削除後のcancelで例外・孤児・再作成が起きないこと。"""
+    import threading
+
+    started = threading.Event()
+
+    class BarrierBackend:
+        async def generate_panel(self, *args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()  # cancelされるまでブロックする
+
+    monkeypatch.setattr(generation_module, "build_image_backend", lambda settings: BarrierBackend())
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        # workerがgenerate_panelへ入る（=削除前に起動済み）まで待つ。
+        assert started.wait(timeout=5.0)
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code in {200, 202}
+        assert deleted.json()["deleted"] is True
+        # workerをcancelしてもprojectは復活せず、成果物も残らない。
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not (tmp_path / "exports" / project_id).exists()
+
+
+def test_delete_project_cleanup_pending_then_sweep_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "a.png").write_bytes(b"x")
+
+        # rmtreeを無効化し、削除を残留させる（Windowsで画像が開かれている等を模す）。
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "pending",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
+        # DBは消えるが、tombstoneが残留する。
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not project_dir.exists()
+        assert len(list(export_dir.glob("*.deleting-*"))) == 1
+
+        # rmtreeを戻すと、起動時sweepでtombstoneを再回収できる。
+        monkeypatch.undo()
+        projects_router.sweep_deletion_tombstones(export_dir)
+        assert list(export_dir.glob("*.deleting-*")) == []
+
+
+def test_shape_points_rejects_nan() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(float("nan"), 0.0), (1.0, 0.0), (0.5, 1.0)],
+        )
+
+
+def test_shape_points_rejects_zero_area() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)],
+        )
+
+
+def test_shape_points_rejects_self_intersection() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)],
+        )
+
+
+# --- 第3次レビュー対応 ---
+
+
+def _raise_oserror(*args, **kwargs):
+    raise OSError("locked")
+
+
+def test_delete_project_marker_recovers_when_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.replace失敗で元ディレクトリが残ったケースも、起動時sweepで再回収できること。"""
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "a.png").write_bytes(b"x")
+
+        # rename失敗かつrmtree無効を模し、元ディレクトリを残留させる。
+        monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "pending",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": False,
+        }
+        # rename失敗のため元ディレクトリが残り、tombstoneにはならない。markerで記録する。
+        assert project_dir.exists()
+        assert list(export_dir.glob("*.deleting-*")) == []
+        assert len(list(export_dir.glob("*.deletion-pending"))) == 1
+
+        # 復旧後のsweepで元ディレクトリもmarkerも回収される。
+        monkeypatch.undo()
+        projects_router.sweep_deletion_tombstones(export_dir)
+        assert not project_dir.exists()
+        assert list(export_dir.glob("*.deletion-pending")) == []
+
+
+def test_unavailable_llm_client_chat_raises_with_reason() -> None:
+    from backend.app.llm import LLMError, UnavailableLLMClient
+
+    client = UnavailableLLMClient("http://x", "missing", "指定モデルが未ロードです")
+    with pytest.raises(LLMError) as exc:
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+    assert "指定モデルが未ロードです" in str(exc.value)
+
+
+def test_persist_noop_when_project_deleted(tmp_path: Path) -> None:
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    manager = JobManager(factory)
+    job = GenerationJob(project_id="ghost", panel_id="p01_01", candidate_count=1)
+    # 親projectが無い→FK違反だが、削除済みとみなしno-op（例外を投げない）。
+    manager.persist(job)
+    with factory() as session:
+        assert session.get(GenerationJobRecord, job.id) is None
+
+
+def test_persist_reraises_real_integrity_error_when_project_exists(tmp_path: Path) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    with factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p1",
+                title="t",
+                work_name="",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    manager = JobManager(factory)
+    job = GenerationJob(project_id="p1", panel_id="p01_01", candidate_count=1)
+    job.created_at = None  # type: ignore[assignment]  # NOT NULL違反（削除race以外の本物の不整合）
+    with pytest.raises(IntegrityError):
+        manager.persist(job)
+
+
+# --- 第4次レビュー対応 ---
+
+
+def test_sweep_ignores_out_of_root_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """markerに範囲外の絶対パスが入っていても、起動時sweepがそれを削除しないこと。"""
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x", encoding="utf-8")
+    marker = export_dir / "evil.deletion-pending"
+    marker.write_text(str(outside), encoding="utf-8")  # 範囲外の絶対パスを注入
+
+    calls: list[Path] = []
+    real_rmtree = projects_router.shutil.rmtree
+
+    def spy(path, *args, **kwargs):
+        calls.append(Path(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(projects_router.shutil, "rmtree", spy)
+    projects_router.sweep_deletion_tombstones(export_dir)
+
+    assert outside.exists()  # 範囲外ディレクトリは削除されない
+    assert Path(outside) not in calls  # rmtreeも呼ばれない
+    assert marker.exists()  # 不正markerは誤って消さず残す
+
+
+def test_remove_project_dir_orphaned_when_marker_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / "exports" / "p1"
+    project_dir.mkdir(parents=True)
+    (project_dir / "a.png").write_bytes(b"x")
+    # rename失敗・削除失敗・marker書込み失敗が重なると孤児になる。
+    monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+    monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(projects_router, "_write_deletion_marker", lambda *args, **kwargs: False)
+    assert projects_router._remove_project_dir(project_dir) == "orphaned"
+
+
+def test_unlink_marker_keeps_locked_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "m.deletion-pending"
+    marker.write_text("p1", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    # unlink失敗でも例外を投げず、markerを残して次回起動で再試行する。
+    projects_router._unlink_marker(marker)
+    assert marker.exists()
+
+
+def test_get_llm_status_unloaded_model_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 通信は到達していても、指定モデル未ロードなら生成不可。UIの正常判定に使うconnectedはFalse。
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="openai_compatible", llm_model="missing-model")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    assert not status.connected
+    assert "missing-model" in status.message
+
+
+def test_delete_project_reports_manual_cleanup_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "locked.png").write_bytes(b"x")
+
+        monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            projects_router, "_write_deletion_marker", lambda *args, **kwargs: False
+        )
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "manual_required",
+            "manual_cleanup_path": str(project_dir.resolve()),
+            "generation_stop_failed": False,
+        }
+
+
+def test_delete_project_cleans_assets_even_when_job_cancel_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"x")
+        job = GenerationJob(project_id=project_id, panel_id="p01_01", candidate_count=1)
+        client.app.state.job_manager.jobs[job.id] = job
+
+        async def fail_cancel(_job):
+            raise RuntimeError("cancel failed")
+
+        monkeypatch.setattr(client.app.state.generation, "cancel", fail_cancel)
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 202
+        assert deleted.json() == {
+            "deleted": True,
+            "cleanup_state": "complete",
+            "manual_cleanup_path": None,
+            "generation_stop_failed": True,
+        }
+        assert not project_dir.exists()
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+
+
+def test_delete_fence_removes_asset_published_after_cancel_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+    first_cleanup_failed = threading.Event()
+    allow_retry = threading.Event()
+
+    class DelayedBackend:
+        async def generate_panel(self, project_id, panel, export_dir, target_path=None, **kwargs):
+            started.set()
+            await asyncio.to_thread(release.wait)
+            assert target_path is not None
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"late")
+            return ImageResult("stub", "done", target_path, "遅延生成")
+
+    monkeypatch.setattr(generation_module, "build_image_backend", lambda settings: DelayedBackend())
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        created = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        ).json()
+        job_id = created["result"]["id"]
+        assert started.wait(timeout=5.0)
+
+        async def fail_cancel(_job):
+            raise RuntimeError("cancel failed")
+
+        monkeypatch.setattr(client.app.state.generation, "cancel", fail_cancel)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json()["generation_stop_failed"] is True
+
+        project_dir = (tmp_path / "exports" / project_id).resolve()
+        real_rmtree = generation_module.shutil.rmtree
+
+        def fail_once_then_wait(path, *args, **kwargs):
+            if Path(path).resolve() == project_dir:
+                if not first_cleanup_failed.is_set():
+                    first_cleanup_failed.set()
+                    return None
+                allow_retry.wait(timeout=5.0)
+            return real_rmtree(path, *args, **kwargs)
+
+        # DELETE応答後に停止不能workerが通常名directoryへpublishする。worker直後の
+        # cleanupだけ失敗させ、cancelled確定後もfence付き残骸として再試行対象になることを確認する。
+        monkeypatch.setattr(generation_module.shutil, "rmtree", fail_once_then_wait)
+        release.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            job = client.app.state.job_manager.jobs[job_id]
+            if job.status == "cancelled" and first_cleanup_failed.is_set():
+                break
+            time.sleep(0.02)
+
+        assert client.app.state.job_manager.jobs[job_id].status == "cancelled"
+        assert project_dir.exists()
+        assert (tmp_path / "exports" / f"{project_id}.deletion-fence").is_file()
+
+        # 予約された同一process内retryを解放すると残骸が回収される。
+        allow_retry.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and project_dir.exists():
+            time.sleep(0.02)
+        assert not project_dir.exists()
+
+
+def test_sweep_shutdown_timeout_warns_without_cancelling_worker(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import threading
+
+    from backend.app.main import wait_for_sweep_shutdown
+
+    release = threading.Event()
+
+    async def exercise() -> None:
+        task = asyncio.create_task(asyncio.to_thread(release.wait))
+        await wait_for_sweep_shutdown(task, timeout_seconds=0.01)
+        assert not task.done()
+        assert not task.cancelled()
+        release.set()
+        await task
+
+    with caplog.at_level("WARNING", logger="backend.app.main"):
+        asyncio.run(exercise())
+    assert "終了待機時間を超えました" in caplog.text
+
+
+def test_persistent_deletion_fence_sweeps_reappeared_project_dir(tmp_path: Path) -> None:
+    from backend.app.deletion import sweep_deletion_fences, write_deletion_fence
+
+    export_dir = tmp_path / "exports"
+    project_id = "deleted-project"
+    assert write_deletion_fence(export_dir, project_id)
+    reappeared = export_dir / project_id
+    reappeared.mkdir()
+    (reappeared / "late.png").write_bytes(b"late")
+
+    # projectはDBに存在しない（本当に削除済み）→ 遅延publishの成果物を回収する。
+    sweep_deletion_fences(export_dir, lambda _project_id: False)
+
+    assert not reappeared.exists()
+    # fenceは遅延workerや次回起動にも効くよう永続させる。
+    assert (export_dir / f"{project_id}.deletion-fence").is_file()
+
+
+def test_sweep_keeps_assets_when_project_record_exists(tmp_path: Path) -> None:
+    """削除前バックアップを復元して同じIDのprojectが復活した場合、fenceで成果物を消さない。"""
+    from backend.app.deletion import sweep_deletion_fences, write_deletion_fence
+
+    export_dir = tmp_path / "exports"
+    project_id = "restored-project"
+    assert write_deletion_fence(export_dir, project_id)
+    restored = export_dir / project_id
+    restored.mkdir()
+    (restored / "page.png").write_bytes(b"keep")
+
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'restored.db'}")
+    with factory() as session:
+        session.add(
+            ProjectRecord(
+                id=project_id,
+                title="復元済み",
+                work_name="作品",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+
+    def project_exists(candidate_id: str) -> bool:
+        with factory() as session:
+            return session.get(ProjectRecord, candidate_id) is not None
+
+    # ProjectRecordが存在する＝復活済み。fenceは古いので成果物に触れず取り除く。
+    sweep_deletion_fences(export_dir, project_exists)
+
+    assert restored.exists()
+    assert (restored / "page.png").read_bytes() == b"keep"
+    assert not (export_dir / f"{project_id}.deletion-fence").exists()
+
+
+def test_worker_does_not_apply_precommit_fence_to_live_project(tmp_path: Path) -> None:
+    from backend.app.deletion import write_deletion_fence
+
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "生存", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        asset = project_dir / "keep.png"
+        asset.write_bytes(b"keep")
+        assert write_deletion_fence(tmp_path / "exports", project_id)
+
+        outcome = asyncio.run(
+            client.app.state.generation.cleanup_deletion_fenced_assets(project_id)
+        )
+
+        assert outcome == "not_fenced"
+        assert asset.read_bytes() == b"keep"

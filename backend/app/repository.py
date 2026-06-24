@@ -33,6 +33,10 @@ class ProjectRepository:
     def add(self, session: Session, record: ProjectRecord) -> None:
         session.add(record)
 
+    def delete(self, session: Session, record: ProjectRecord) -> None:
+        """プロジェクトと外部キーで関連付いたレコードを削除対象にする。"""
+        session.delete(record)
+
     def create(
         self, session: Session, *, title: str, work_name: str, manga_json: str
     ) -> ProjectRecord:

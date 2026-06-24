@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings
 from .database import create_session_factory
+from .deletion import sweep_deletion_fences
 from .generation_service import GenerationRuntime, GenerationService
 from .jobs import JobManager
 from .mutation import ProjectMutationService
@@ -18,6 +21,22 @@ from .rendering import RenderingService
 from .repository import ProjectRepository
 from .routers import generation, knowledge, projects, story, system
 from .routers.common import register_exception_handlers
+from .routers.projects import sweep_deletion_tombstones
+
+logger = logging.getLogger(__name__)
+SWEEP_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+
+
+async def wait_for_sweep_shutdown(
+    sweep_task: asyncio.Task[None], timeout_seconds: float = SWEEP_SHUTDOWN_TIMEOUT_SECONDS
+) -> None:
+    """sweepの完了を短時間待つ。to_thread実処理はcancel不能なのでshieldして待つ。"""
+    try:
+        await asyncio.wait_for(asyncio.shield(sweep_task), timeout=timeout_seconds)
+    except TimeoutError:
+        logger.warning(
+            "削除残骸のsweepは終了待機時間を超えました。バックグラウンド削除が継続する可能性があります"
+        )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -69,9 +88,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         for job in to_start:
             app.state.job_manager.start(job, app.state.generation.run(job))
+
+        # 前回の削除で消しきれず残った成果物の再回収は、遅いストレージでも起動を
+        # 止めないよう別スレッドのバックグラウンドタスクで行う。
+        session_factory = app.state.SessionLocal
+        repository = app.state.repository
+
+        def _project_exists(project_id: str) -> bool:
+            # 復元でproject IDが復活したらfenceで成果物を消さないよう、生存を確認する。
+            with session_factory() as session:
+                return repository.get(session, project_id) is not None
+
+        async def _background_sweep() -> None:
+            try:
+                await asyncio.to_thread(sweep_deletion_tombstones, app_settings.export_dir)
+                await asyncio.to_thread(
+                    sweep_deletion_fences, app_settings.export_dir, _project_exists
+                )
+            except Exception:
+                logger.exception("削除残骸のsweepに失敗しました")
+
+        sweep_task = asyncio.create_task(_background_sweep())
         try:
             yield
         finally:
+            await wait_for_sweep_shutdown(sweep_task)
             await app.state.job_manager.shutdown()
 
     app = FastAPI(title="Local Doujin Studio", lifespan=lifespan)

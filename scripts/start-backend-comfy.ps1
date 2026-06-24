@@ -1,5 +1,5 @@
 param(
-    [string]$ComfyBaseUrl = "http://127.0.0.1:8001",
+    [string]$ComfyBaseUrl = "http://127.0.0.1:8188",
     [string]$WorkflowPath = "workflows/default.workflow_api.json",
     [int]$Port = 8000,
     # 既定はコード変更を自動反映する開発モード。本番的に起動するなら -NoReload を付ける。

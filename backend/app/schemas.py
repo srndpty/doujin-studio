@@ -1,9 +1,64 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+Point = tuple[float, float]
+
+
+def _orient(a: Point, b: Point, c: Point) -> float:
+    """符号付き外積。(b-a)×(c-a)。"""
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _on_segment(a: Point, b: Point, c: Point) -> bool:
+    """cがa-bと共線である前提で、cがa-bの範囲内にあるか。"""
+    return min(a[0], b[0]) <= c[0] <= max(a[0], b[0]) and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+
+
+def _segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
+    d1 = _orient(p3, p4, p1)
+    d2 = _orient(p3, p4, p2)
+    d3 = _orient(p1, p2, p3)
+    d4 = _orient(p1, p2, p4)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return True
+    if d1 == 0 and _on_segment(p3, p4, p1):
+        return True
+    if d2 == 0 and _on_segment(p3, p4, p2):
+        return True
+    if d3 == 0 and _on_segment(p1, p2, p3):
+        return True
+    if d4 == 0 and _on_segment(p1, p2, p4):
+        return True
+    return False
+
+
+def _polygon_area(points: list[Point]) -> float:
+    n = len(points)
+    total = 0.0
+    for i in range(n):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % n]
+        total += x1 * y2 - x2 * y1
+    return abs(total) / 2.0
+
+
+def _has_self_intersection(points: list[Point]) -> bool:
+    n = len(points)
+    edges = [(points[i], points[(i + 1) % n]) for i in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            # 頂点を共有する隣接辺はスキップする（先頭と末尾の辺も隣接）。
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue
+            if _segments_intersect(edges[i][0], edges[i][1], edges[j][0], edges[j][1]):
+                return True
+    return False
+
 
 # 旧balloon値から新しい吹き出し種別への対応表。
 BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
@@ -200,6 +255,8 @@ class Panel(BaseModel):
 
     panel_id: str
     bbox: tuple[float, float, float, float]
+    # bbox内の相対座標で表す変形コマ。未指定時は長方形。
+    shape_points: list[tuple[float, float]] | None = None
     shot: str
     # コマの主題。prop_insert/hand_insert/backgroundではキャラ同一性を抑制する。
     subject_mode: Literal[
@@ -231,6 +288,29 @@ class Panel(BaseModel):
             raise ValueError("bboxは0から1の範囲に収めてください")
         if width <= 0 or height <= 0:
             raise ValueError("bboxの幅と高さは正の値にしてください")
+        return value
+
+    @field_validator("shape_points")
+    @classmethod
+    def validate_shape_points(
+        cls, value: list[tuple[float, float]] | None
+    ) -> list[tuple[float, float]] | None:
+        if value is None:
+            return None
+        if not 3 <= len(value) <= 12:
+            raise ValueError("shape_pointsは3〜12点で指定してください")
+        if any(not (math.isfinite(x) and math.isfinite(y)) for x, y in value):
+            # NaNは比較をすり抜け、描画時のint(x*width)で例外になるため弾く。
+            raise ValueError("shape_pointsは有限の数値で指定してください")
+        if any(x < 0 or x > 1 or y < 0 or y > 1 for x, y in value):
+            raise ValueError("shape_pointsはbbox内の0から1で指定してください")
+        n = len(value)
+        if any(value[i] == value[(i + 1) % n] for i in range(n)):
+            raise ValueError("shape_pointsに連続する重複点があります")
+        if _polygon_area(value) < 1e-6:
+            raise ValueError("shape_pointsの面積が小さすぎます")
+        if _has_self_intersection(value):
+            raise ValueError("shape_pointsが自己交差しています")
         return value
 
 
@@ -427,6 +507,14 @@ class ProjectSummary(BaseModel):
     revision: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectDeletionResponse(BaseModel):
+    # DBレコードは常に削除済み。成果物掃除と生成停止の結果は独立して通知する。
+    deleted: bool = True
+    cleanup_state: Literal["complete", "pending", "manual_required"] = "complete"
+    manual_cleanup_path: str | None = None
+    generation_stop_failed: bool = False
 
 
 class ProjectDetail(ProjectSummary):
