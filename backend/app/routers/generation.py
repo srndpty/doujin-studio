@@ -11,6 +11,7 @@ from ..generation_service import (
     find_panel_and_page,
     register_generation_candidate,
 )
+from ..generator import suggest_candidate_count
 from ..image_backends import StubImageBackend
 from ..jobs import TERMINAL_JOB_STATUSES, JobManager
 from ..mutation import (
@@ -180,6 +181,13 @@ async def create_batch_generation_jobs(
     if not panels:
         raise HTTPException(status_code=404, detail="生成対象のコマが見つかりません")
     target_ids = [panel.panel_id for panel in panels]
+    # 自動候補数: 見せ場・複数人物コマだけ増やし、candidate_countを下限として尊重する。
+    candidate_counts = None
+    if options.auto_candidates:
+        candidate_counts = {
+            panel.panel_id: max(options.candidate_count, suggest_candidate_count(panel))
+            for panel in panels
+        }
     jobs = request.app.state.generation.start(
         project_id,
         target_ids,
@@ -187,6 +195,7 @@ async def create_batch_generation_jobs(
         "一括生成キューへ登録しました",
         skip_active=True,
         expected_revision=revision,
+        candidate_counts=candidate_counts,
     )
     return to_project_mutation_response(
         request,

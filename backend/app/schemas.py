@@ -64,6 +64,15 @@ def _has_self_intersection(points: list[Point]) -> bool:
 BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
 BalloonKind = Literal["oval", "cloud", "burst", "caption", "none"]
 PositionAnchor = Literal["upper_left", "upper_right", "lower_left", "lower_right", "center"]
+# 台詞の種別。発話の役割を持たせ、吹き出し形状や写植の既定を切り替える。
+DialogueKind = Literal["speech", "monologue", "narration", "shout"]
+# 種別ごとの既定吹き出し形状。balloonが既定(oval)のままのときだけ適用する。
+KIND_DEFAULT_BALLOON: dict[str, str] = {
+    "speech": "oval",
+    "monologue": "cloud",
+    "narration": "caption",
+    "shout": "burst",
+}
 
 
 class BalloonTail(BaseModel):
@@ -93,9 +102,13 @@ class Dialogue(BaseModel):
 
     speaker: str
     text: str = Field(min_length=1, max_length=400)
+    # 発話の種別。balloon/しっぽ/写植の既定を切り替える。
+    kind: DialogueKind = "speech"
     balloon: BalloonKind = "oval"
     position: PositionAnchor = "upper_right"
     box: tuple[float, float, float, float] | None = None
+    # 話者がこのコマに描かれているか。Falseなら画面外台詞（しっぽを出さない）。
+    on_screen: bool = True
     # 縦書きを既定にする（日本語漫画）。
     vertical: bool = True
     font_size: int | None = Field(default=None, ge=10, le=96)
@@ -109,6 +122,20 @@ class Dialogue(BaseModel):
         if isinstance(value, str):
             return BALLOON_MIGRATION.get(value, value)
         return value
+
+    @model_validator(mode="after")
+    def apply_kind_defaults(self) -> "Dialogue":
+        """balloonが既定(oval)のままなら、kindから自然な形状を選ぶ。
+
+        ユーザーがballoonを明示変更していれば尊重する。独白→雲形、
+        ナレーション→矩形、叫び→破裂形を自動選択する（領域3）。
+        """
+        if self.balloon == "oval" and self.kind != "speech":
+            object.__setattr__(self, "balloon", KIND_DEFAULT_BALLOON[self.kind])
+        # 画面外台詞（独白・ナレーションを含む）はしっぽを出さない。
+        if not self.on_screen and self.tail is None:
+            object.__setattr__(self, "tail", BalloonTail(enabled=False))
+        return self
 
     @field_validator("box")
     @classmethod
@@ -250,6 +277,24 @@ class ImageCandidate(BaseModel):
     created_at: datetime
 
 
+class PanelCharacter(BaseModel):
+    """コマ内に描く人物の配置・演技情報（領域1）。
+
+    regional conditioningやしっぽの向き、表情指定の根拠にする。
+    ``characters``(描画ID列)を正本とし、本リストはその補足表現を持つ。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    # コマ内の立ち位置（吹き出しのしっぽや領域分離の基準）。
+    position: PositionAnchor = "center"
+    expression: str = ""
+    action: str = ""
+    # 画面内に描かれるか。Falseは画面外（台詞のみ）。
+    on_screen: bool = True
+
+
 class Panel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -269,6 +314,8 @@ class Panel(BaseModel):
     camera: str = ""
     location_id: str = ""
     characters: list[str] = Field(default_factory=list)
+    # 描画人物の位置・表情・動作・画面内外。charactersと整合する補足情報。
+    character_layout: list[PanelCharacter] = Field(default_factory=list)
     prompt: str = ""
     image_asset: str | None = None
     image_candidates: list[ImageCandidate] = Field(default_factory=list)
@@ -671,6 +718,8 @@ class GenerationJobCreate(BaseModel):
 class BatchGenerationJobCreate(BaseModel):
     page: int | None = Field(default=None, ge=1)
     candidate_count: int = Field(default=1, ge=1, le=4)
+    # trueなら見せ場・複数人物コマの候補数を自動で増やす（candidate_countは下限になる）。
+    auto_candidates: bool = False
 
 
 class GenerationJobResponse(BaseModel):
@@ -894,8 +943,56 @@ class ScriptDialogue(BaseModel):
 
     speaker: str = ""
     text: str = ""
+    # 発話種別（会話/独白/ナレーション/叫び）。未指定はspeech。
+    kind: DialogueKind = "speech"
+    # 話者がこのコマに描かれているか（画面外台詞ならFalse）。
+    on_screen: bool = True
 
     @field_validator("speaker", "text", mode="before")
+    @classmethod
+    def normalize_text(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return value
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def normalize_kind(cls, value):
+        if not value or not isinstance(value, str):
+            return "speech"
+        lowered = value.strip().lower()
+        aliases = {
+            "speech": "speech",
+            "dialogue": "speech",
+            "会話": "speech",
+            "台詞": "speech",
+            "monologue": "monologue",
+            "thought": "monologue",
+            "独白": "monologue",
+            "心の声": "monologue",
+            "narration": "narration",
+            "ナレーション": "narration",
+            "地の文": "narration",
+            "shout": "shout",
+            "叫び": "shout",
+            "絶叫": "shout",
+        }
+        return aliases.get(lowered, "speech")
+
+
+class ScriptSfx(BaseModel):
+    """台本段階の擬音。LLMは文字列でもオブジェクトでも出力しうる。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = ""
+    # handwritten/impact/quiet等の描画プリセット。
+    style: str = ""
+    position: PositionAnchor = "center"
+
+    @field_validator("text", "style", mode="before")
     @classmethod
     def normalize_text(cls, value):
         if value is None:
@@ -914,7 +1011,7 @@ class ScriptPanel(BaseModel):
     visual_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
     dialogue: list[ScriptDialogue] = Field(default_factory=list)
-    sfx: list[str] = Field(default_factory=list)
+    sfx: list[ScriptSfx] = Field(default_factory=list)
 
     @field_validator("shot", "camera", "location", "visual_prompt", mode="before")
     @classmethod
@@ -925,7 +1022,7 @@ class ScriptPanel(BaseModel):
             return str(value)
         return value
 
-    @field_validator("characters", "sfx", mode="before")
+    @field_validator("characters", mode="before")
     @classmethod
     def normalize_str_list(cls, value):
         if value is None:
@@ -936,6 +1033,27 @@ class ScriptPanel(BaseModel):
             text = str(value).strip()
             return [text] if text else []
         return value
+
+    @field_validator("sfx", mode="before")
+    @classmethod
+    def normalize_sfx_list(cls, value):
+        """擬音は文字列・オブジェクト混在を許容し、{text,...}へ正規化する。"""
+        if value is None:
+            return []
+        if isinstance(value, (str, int, float, bool)):
+            value = [value]
+        if not isinstance(value, list):
+            return value
+        items: list = []
+        for item in value:
+            if isinstance(item, dict):
+                if str(item.get("text", "")).strip():
+                    items.append(item)
+            elif isinstance(item, (str, int, float, bool)):
+                text = str(item).strip()
+                if text:
+                    items.append({"text": text})
+        return items
 
 
 class ScriptPage(BaseModel):
@@ -970,6 +1088,8 @@ class StoryStageState(BaseModel):
     data: dict | None = None
     knowledge_ids: list[str] = Field(default_factory=list)
     error: str | None = None
+    # 生成後の編集チェック（review_script等）が出した自動修正・警告メッセージ。
+    warnings: list[str] = Field(default_factory=list)
     updated_at: datetime | None = None
 
 

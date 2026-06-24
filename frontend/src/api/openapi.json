@@ -2817,6 +2817,11 @@
             "minimum": 1.0,
             "title": "Candidate Count",
             "default": 1
+          },
+          "auto_candidates": {
+            "type": "boolean",
+            "title": "Auto Candidates",
+            "default": false
           }
         },
         "type": "object",
@@ -3019,6 +3024,17 @@
             "minLength": 1,
             "title": "Text"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "speech",
+              "monologue",
+              "narration",
+              "shout"
+            ],
+            "title": "Kind",
+            "default": "speech"
+          },
           "balloon": {
             "type": "string",
             "enum": [
@@ -3069,6 +3085,11 @@
               }
             ],
             "title": "Box"
+          },
+          "on_screen": {
+            "type": "boolean",
+            "title": "On Screen",
+            "default": true
           },
           "vertical": {
             "type": "boolean",
@@ -4764,6 +4785,13 @@
             "type": "array",
             "title": "Characters"
           },
+          "character_layout": {
+            "items": {
+              "$ref": "#/components/schemas/PanelCharacter"
+            },
+            "type": "array",
+            "title": "Character Layout"
+          },
           "prompt": {
             "type": "string",
             "title": "Prompt",
@@ -4831,6 +4859,48 @@
           "shot"
         ],
         "title": "Panel"
+      },
+      "PanelCharacter": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "upper_left",
+              "upper_right",
+              "lower_left",
+              "lower_right",
+              "center"
+            ],
+            "title": "Position",
+            "default": "center"
+          },
+          "expression": {
+            "type": "string",
+            "title": "Expression",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "default": ""
+          },
+          "on_screen": {
+            "type": "boolean",
+            "title": "On Screen",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "PanelCharacter",
+        "description": "コマ内に描く人物の配置・演技情報（領域1）。\n\nregional conditioningやしっぽの向き、表情指定の根拠にする。\n``characters``(描画ID列)を正本とし、本リストはその補足表現を持つ。"
       },
       "PanelControlReference": {
         "properties": {
@@ -5976,6 +6046,13 @@
               }
             ],
             "title": "Error"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           },
           "updated_at": {
             "anyOf": [

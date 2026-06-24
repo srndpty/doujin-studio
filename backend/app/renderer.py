@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -10,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from . import typeset
 from .assets import resolve_asset_path
-from .fonts import find_dialogue_font_path, load_label_font
+from .fonts import find_dialogue_font_path, find_sfx_font_path, load_label_font
 from .schemas import Dialogue, MangaProject, Page, Panel, Sfx, TypographySettings
 
 PAGE_SIZE = (1200, 1700)
@@ -18,6 +20,17 @@ PANEL_OUTLINE_WIDTH = 4
 BUBBLE_INNER_PAD = 12
 # 写植が成立する最小フォント（収まらない場合の床）。
 TEXT_FLOOR_SIZE = 18
+
+# 吹き出し形状ごとの「内接テキスト矩形→外形」係数(fx, fy)。
+# bubble = text_block * f + 2*pad で外形を決め、同じtext_areaへ描画する。
+# 楕円/破裂形は矩形を内接させるため√2以上を取り、はみ出しを防ぐ（領域3）。
+SHAPE_INSCRIBE: dict[str, tuple[float, float]] = {
+    "oval": (1.45, 1.45),
+    "burst": (1.95, 1.95),
+    "cloud": (1.30, 1.55),
+    "caption": (1.04, 1.04),
+    "none": (1.02, 1.02),
+}
 
 
 def render_project_pages(
@@ -295,20 +308,50 @@ def _clamp_box(
     return (x0, y0, x0 + w, y0 + h)
 
 
-def resolve_dialogue_layout(
+@dataclass
+class BubbleLayout:
+    """吹き出し外形・内接テキスト矩形・写植レイアウトを一括で保持する。
+
+    収まり判定(layout.fits)と実際の描画(text_area)を同じ計算結果から導き、
+    「判定は通るのに描画でははみ出す」という不一致を防ぐ（領域3）。
+    """
+
+    bubble: tuple[int, int, int, int]
+    text_area: tuple[int, int, int, int]
+    layout: typeset.TextLayout
+
+
+def _centered_area(
+    bubble: tuple[int, int, int, int], block_w: float, block_h: float
+) -> tuple[int, int, int, int]:
+    """吹き出し中心に、テキストブロック(block_w×block_h)ちょうどの矩形を取る。"""
+    bx0, by0, bx1, by1 = bubble
+    cx = (bx0 + bx1) / 2
+    cy = (by0 + by1) / 2
+    return (
+        int(cx - block_w / 2),
+        int(cy - block_h / 2),
+        int(cx + block_w / 2),
+        int(cy + block_h / 2),
+    )
+
+
+def compute_bubble_layout(
     dialogue: Dialogue,
     panel_box: tuple[int, int, int, int],
     typography: TypographySettings,
-) -> tuple[tuple[int, int, int, int], typeset.TextLayout]:
-    """吹き出し枠と写植レイアウトを決める（描画と検査で共通利用）。
+) -> BubbleLayout:
+    """吹き出し外形・内接テキスト矩形・写植を決める（描画と検査で共通利用）。
 
-    吹き出しはコマを埋め尽くさず内容に合わせて最小限の大きさにし、
-    必要に応じてフォントを縮小する。明示的なboxがあればそれを尊重する。
+    収まらない場合は「吹き出し拡張 → フォント縮小」の順で全文保持を試み、
+    最小サイズでも収まらなければ layout.fits=False を返す（出力前エラーの根拠）。
     """
     left, top, right, bottom = panel_box
     pw, ph = right - left, bottom - top
     inset = PANEL_OUTLINE_WIDTH + 4
     bounds = (left + inset, top + inset, right - inset, bottom - inset)
+    bounds_w = max(8, bounds[2] - bounds[0])
+    bounds_h = max(8, bounds[3] - bounds[1])
     font_path = find_dialogue_font_path(typography.primary_font)
     font_path_str = str(font_path) if font_path else None
     vertical = dialogue.vertical
@@ -317,11 +360,27 @@ def resolve_dialogue_layout(
     default_size = max(dialogue.font_size or typography.default_font_size, TEXT_FLOOR_SIZE)
     min_size = max(dialogue.min_font_size or typography.min_font_size, TEXT_FLOOR_SIZE)
     min_size = min(min_size, default_size)
-    # 形状ごとの余白係数（楕円/雲/爆発は内接ぶん広めに取る）。
-    if dialogue.balloon in {"oval", "cloud", "burst"}:
-        shape_x, shape_y = 1.24, 1.18
-    else:
-        shape_x, shape_y = 1.05, 1.05
+    fx, fy = SHAPE_INSCRIBE.get(dialogue.balloon, (1.05, 1.05))
+
+    def fit_in(cap_w: float, cap_h: float) -> typeset.TextLayout | None:
+        for size in range(default_size, min_size - 1, -1):
+            inner_w = (cap_w - pad * 2) / fx
+            inner_h = (cap_h - pad * 2) / fy
+            if inner_w < size or inner_h < size:
+                continue
+            layout = typeset.layout_text(
+                dialogue.text,
+                font_path_str,
+                inner_w,
+                inner_h,
+                vertical,
+                size,
+                size,
+                dialogue.max_lines,
+            )
+            if layout.fits:
+                return layout
+        return None
 
     if dialogue.box:
         # 編集UIなどで指定された枠を尊重し、その中へ収める。
@@ -330,50 +389,41 @@ def resolve_dialogue_layout(
         bubble = _clamp_box(
             (bx, by, bx + int(dialogue.box[2] * pw), by + int(dialogue.box[3] * ph)), bounds
         )
-        inner_w = (bubble[2] - bubble[0]) / shape_x - pad * 2
-        inner_h = (bubble[3] - bubble[1]) / shape_y - pad * 2
-        layout = typeset.layout_text(
-            dialogue.text,
-            font_path_str,
-            max(8, inner_w),
-            max(8, inner_h),
-            vertical,
-            default_size,
-            min_size,
-            dialogue.max_lines,
-        )
-        return bubble, layout
-
-    # 内容に合わせて自動サイズ。コマの一定割合を上限にする。
-    if vertical:
-        cap_w, cap_h = pw * 0.62, ph * 0.84
-    else:
-        cap_w, cap_h = pw * 0.86, ph * 0.58
-    cap_w = min(cap_w, bounds[2] - bounds[0])
-    cap_h = min(cap_h, bounds[3] - bounds[1])
-
-    chosen: typeset.TextLayout | None = None
-    for size in range(default_size, min_size - 1, -1):
-        inner_w = cap_w / shape_x - pad * 2
-        inner_h = cap_h / shape_y - pad * 2
-        if inner_w < size or inner_h < size:
-            continue
+        inner_w = max(8.0, (bubble[2] - bubble[0] - pad * 2) / fx)
+        inner_h = max(8.0, (bubble[3] - bubble[1] - pad * 2) / fy)
         layout = typeset.layout_text(
             dialogue.text,
             font_path_str,
             inner_w,
             inner_h,
             vertical,
-            size,
-            size,
+            default_size,
+            min_size,
             dialogue.max_lines,
         )
-        if layout.fits:
-            chosen = layout
+        return BubbleLayout(bubble, _centered_area(bubble, layout.width, layout.height), layout)
+
+    # 自動サイズ。基準上限→コマ全域の順に「拡張」しながら最大フォントで収める。
+    if vertical:
+        base_w, base_h = pw * 0.62, ph * 0.84
+    else:
+        base_w, base_h = pw * 0.86, ph * 0.58
+    caps = [
+        (min(base_w, bounds_w), min(base_h, bounds_h)),
+        (float(bounds_w), float(bounds_h)),
+    ]
+    chosen: typeset.TextLayout | None = None
+    chosen_cap = caps[-1]
+    for cap_w, cap_h in caps:
+        fitted = fit_in(cap_w, cap_h)
+        if fitted is not None:
+            chosen = fitted
+            chosen_cap = (cap_w, cap_h)
             break
     if chosen is None:
-        inner_w = max(8.0, cap_w / shape_x - pad * 2)
-        inner_h = max(8.0, cap_h / shape_y - pad * 2)
+        cap_w, cap_h = caps[-1]
+        inner_w = max(8.0, (cap_w - pad * 2) / fx)
+        inner_h = max(8.0, (cap_h - pad * 2) / fy)
         chosen = typeset.layout_text(
             dialogue.text,
             font_path_str,
@@ -384,15 +434,26 @@ def resolve_dialogue_layout(
             min_size,
             dialogue.max_lines,
         )
+        chosen_cap = (cap_w, cap_h)
 
-    # 吹き出しを内容ぴったりに縮める。
-    bubble_w = int(min(cap_w, chosen.width * shape_x + pad * 2))
-    bubble_h = int(min(cap_h, chosen.height * shape_y + pad * 2))
+    cap_w, cap_h = chosen_cap
+    bubble_w = int(min(cap_w, chosen.width * fx + pad * 2))
+    bubble_h = int(min(cap_h, chosen.height * fy + pad * 2))
     cx, cy = _anchor_point(dialogue.position, panel_box)
     bubble = _clamp_box(
         (cx - bubble_w // 2, cy - bubble_h // 2, cx + bubble_w // 2, cy + bubble_h // 2), bounds
     )
-    return bubble, chosen
+    return BubbleLayout(bubble, _centered_area(bubble, chosen.width, chosen.height), chosen)
+
+
+def resolve_dialogue_layout(
+    dialogue: Dialogue,
+    panel_box: tuple[int, int, int, int],
+    typography: TypographySettings,
+) -> tuple[tuple[int, int, int, int], typeset.TextLayout]:
+    """後方互換: 吹き出し外形と写植レイアウトのタプルを返す。"""
+    result = compute_bubble_layout(dialogue, panel_box, typography)
+    return result.bubble, result.layout
 
 
 def draw_dialogue(
@@ -402,7 +463,8 @@ def draw_dialogue(
     panel_box: tuple[int, int, int, int],
     typography: TypographySettings,
 ) -> list[str]:
-    bubble, layout = resolve_dialogue_layout(dialogue, panel_box, typography)
+    resolved = compute_bubble_layout(dialogue, panel_box, typography)
+    bubble, area, layout = resolved.bubble, resolved.text_area, resolved.layout
     # 写植フォントもtypography.primary_fontで解決する（レイアウトと描画を一致させる）。
     font_path = find_dialogue_font_path(typography.primary_font)
     font_path_str = str(font_path) if font_path else None
@@ -416,12 +478,6 @@ def draw_dialogue(
     else:
         _draw_balloon_shape(page_image, draw, dialogue, bubble, panel_box)
 
-    area = (
-        bubble[0] + BUBBLE_INNER_PAD,
-        bubble[1] + BUBBLE_INNER_PAD,
-        bubble[2] - BUBBLE_INNER_PAD,
-        bubble[3] - BUBBLE_INNER_PAD,
-    )
     typeset.draw_layout(page_image, layout, font_path_str, area, fill, stroke_width, stroke_fill)
     return [f"{dialogue.speaker}: {message}" for message in warnings]
 
@@ -564,6 +620,55 @@ def _parse_color(value: str) -> tuple[int, int, int]:
     return presets.get(value.lower(), (25, 25, 25))
 
 
+@dataclass(frozen=True)
+class SfxStyleParams:
+    """擬音styleごとの描画パラメータ（文字ごとのゆらぎ量と縁取り補正）。"""
+
+    jitter_pos: float  # 位置ゆらぎ（フォントサイズ比）
+    jitter_rot: float  # 文字ごとの回転（度）
+    jitter_scale: float  # 拡縮ゆらぎ（±割合）
+    outline_boost: int  # styleが上乗せする縁取り幅
+
+
+# 手描き=ゆらぎ大、impact=拡縮と太縁、quiet=ほぼ整列の小さめ。
+SFX_STYLE_PRESETS: dict[str, SfxStyleParams] = {
+    "handwritten": SfxStyleParams(
+        jitter_pos=0.12, jitter_rot=8.0, jitter_scale=0.14, outline_boost=0
+    ),
+    "small_handwritten": SfxStyleParams(
+        jitter_pos=0.07, jitter_rot=5.0, jitter_scale=0.08, outline_boost=0
+    ),
+    "impact": SfxStyleParams(jitter_pos=0.05, jitter_rot=3.0, jitter_scale=0.22, outline_boost=3),
+    "quiet": SfxStyleParams(jitter_pos=0.02, jitter_rot=1.5, jitter_scale=0.04, outline_boost=0),
+}
+_DEFAULT_SFX_STYLE = SFX_STYLE_PRESETS["small_handwritten"]
+
+
+def sfx_style_params(style: str) -> SfxStyleParams:
+    return SFX_STYLE_PRESETS.get(style, _DEFAULT_SFX_STYLE)
+
+
+def _glyph_jitter(
+    seed_key: str, index: int, ch: str, params: SfxStyleParams
+) -> tuple[float, float, float, float]:
+    """文字ごとの(回転, 拡縮, dx, dy)を決定的に求める。
+
+    同じ(style, text, 位置, 文字)なら必ず同じ値になり、再描画で揺れない（領域4）。
+    """
+    digest = hashlib.md5(f"{seed_key}|{index}|{ch}".encode("utf-8")).digest()
+
+    # 4バイトずつ[0,1)へ正規化して符号付きゆらぎへ変換する。
+    def unit(offset: int) -> float:
+        value = int.from_bytes(digest[offset : offset + 4], "big") / 0xFFFFFFFF
+        return value * 2.0 - 1.0
+
+    rot = unit(0) * params.jitter_rot
+    scale = 1.0 + unit(4) * params.jitter_scale
+    dx = unit(8) * params.jitter_pos
+    dy = unit(12) * params.jitter_pos
+    return rot, max(0.4, scale), dx, dy
+
+
 def draw_sfx(page_image: Image.Image, sfx: Sfx, panel_box: tuple[int, int, int, int]) -> None:
     left, top, right, bottom = panel_box
     pw, ph = right - left, bottom - top
@@ -580,53 +685,101 @@ def draw_sfx(page_image: Image.Image, sfx: Sfx, panel_box: tuple[int, int, int, 
     page_image.alpha_composite(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)))
 
 
-def _render_sfx_tile(
-    sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, int, int]
-) -> Image.Image:
-    font_path = find_dialogue_font_path()
-    from PIL import ImageFont
+def sfx_bbox_px(sfx: Sfx, panel_box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """擬音の配置矩形（ページpx）を返す。プリフライトの衝突検出と共通利用する。"""
+    left, top, right, bottom = panel_box
+    pw, ph = right - left, bottom - top
+    fill = _parse_color(sfx.color)
+    stroke = _parse_color(sfx.outline_color)
+    tile = _render_sfx_tile(sfx, fill, stroke)
+    if sfx.rotation:
+        tile = tile.rotate(sfx.rotation, expand=True, resample=Image.BICUBIC)
+    if sfx.box is not None:
+        cx = left + int(sfx.box[0] * pw)
+        cy = top + int(sfx.box[1] * ph)
+    else:
+        cx, cy = _anchor_point(sfx.position, panel_box)
+    x0 = int(cx - tile.width / 2)
+    y0 = int(cy - tile.height / 2)
+    return (x0, y0, x0 + tile.width, y0 + tile.height)
 
-    font = (
-        ImageFont.truetype(str(font_path), sfx.font_size) if font_path else ImageFont.load_default()
-    )
-    pad = sfx.outline_width + 8
-    if sfx.vertical:
-        widths, heights = [], []
-        for ch in sfx.text:
-            bbox = font.getbbox(ch)
-            widths.append(bbox[2] - bbox[0])
-            heights.append(bbox[3] - bbox[1])
-        tile_w = max(widths, default=sfx.font_size) + pad * 2
-        tile_h = sum(int(sfx.font_size * 1.05) for _ in sfx.text) + pad * 2
-        tile = Image.new("RGBA", (int(tile_w), int(tile_h)), (0, 0, 0, 0))
-        td = ImageDraw.Draw(tile)
-        y = pad
-        for ch in sfx.text:
-            td.text(
-                (tile_w / 2, y),
-                ch,
-                font=font,
-                fill=(*fill, 255),
-                anchor="ma",
-                stroke_width=sfx.outline_width,
-                stroke_fill=(*stroke, 255),
-            )
-            y += int(sfx.font_size * 1.05)
-        return tile
-    bbox = font.getbbox(sfx.text)
-    tile_w = (bbox[2] - bbox[0]) + pad * 2
-    tile_h = (bbox[3] - bbox[1]) + pad * 2
-    tile = Image.new("RGBA", (int(tile_w), int(tile_h)), (0, 0, 0, 0))
-    td = ImageDraw.Draw(tile)
-    td.text(
+
+def _make_glyph_tile(
+    font, ch: str, fill: tuple[int, int, int], stroke: tuple[int, int, int], outline_width: int
+) -> Image.Image:
+    pad = outline_width + 6
+    try:
+        bbox = font.getbbox(ch)
+    except Exception:
+        bbox = (0, 0, len(ch) * 10, 16)
+    w = max(1, bbox[2] - bbox[0]) + pad * 2
+    h = max(1, bbox[3] - bbox[1]) + pad * 2
+    tile = Image.new("RGBA", (int(w), int(h)), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).text(
         (pad - bbox[0], pad - bbox[1]),
-        sfx.text,
+        ch,
         font=font,
         fill=(*fill, 255),
-        stroke_width=sfx.outline_width,
+        stroke_width=outline_width,
         stroke_fill=(*stroke, 255),
     )
     return tile
+
+
+def _render_sfx_tile(
+    sfx: Sfx, fill: tuple[int, int, int], stroke: tuple[int, int, int]
+) -> Image.Image:
+    """styleに応じて文字ごとにゆらぎを与えた擬音タイルを作る。
+
+    手描き風では各文字へ決定的な傾き・拡縮・ずれを加える。styleが整列系(quiet)なら
+    ゆらぎはごく小さくなる。フォントは擬音用→台詞用の順で解決する。
+    """
+    from PIL import ImageFont
+
+    font_path = find_sfx_font_path()
+    font = (
+        ImageFont.truetype(str(font_path), sfx.font_size) if font_path else ImageFont.load_default()
+    )
+    params = sfx_style_params(sfx.style)
+    outline_width = sfx.outline_width + params.outline_boost
+    chars = [ch for ch in sfx.text if ch != "\n"]
+    if not chars:
+        return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+
+    seed_key = f"{sfx.style}|{sfx.text}"
+    cell = sfx.font_size
+    advance = int(cell * 1.05)
+    # ゆらぎや拡縮を受け止める余白。
+    margin = int(cell * (0.9 + params.jitter_scale + params.jitter_pos))
+    count = len(chars)
+    if sfx.vertical:
+        canvas_w = int(cell * 1.6) + margin * 2
+        canvas_h = advance * count + margin * 2
+    else:
+        canvas_w = advance * count + margin * 2
+        canvas_h = int(cell * 1.6) + margin * 2
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+
+    for index, ch in enumerate(chars):
+        rot, scale, dx, dy = _glyph_jitter(seed_key, index, ch, params)
+        glyph = _make_glyph_tile(font, ch, fill, stroke, outline_width)
+        if abs(scale - 1.0) > 1e-3:
+            glyph = glyph.resize(
+                (max(1, int(glyph.width * scale)), max(1, int(glyph.height * scale))),
+                resample=Image.BICUBIC,
+            )
+        if abs(rot) > 1e-3:
+            glyph = glyph.rotate(rot, expand=True, resample=Image.BICUBIC)
+        if sfx.vertical:
+            center_x = canvas_w / 2 + dx * cell
+            center_y = margin + advance * (index + 0.5) + dy * cell
+        else:
+            center_x = margin + advance * (index + 0.5) + dx * cell
+            center_y = canvas_h / 2 + dy * cell
+        canvas.alpha_composite(
+            glyph, (int(center_x - glyph.width / 2), int(center_y - glyph.height / 2))
+        )
+    return canvas
 
 
 def draw_page_number(draw: ImageDraw.ImageDraw, page_number: int, reading_direction: str) -> None:

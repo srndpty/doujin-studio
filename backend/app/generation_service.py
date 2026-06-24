@@ -347,6 +347,7 @@ class GenerationService:
         skip_active: bool = False,
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
+        candidate_counts: dict[str, int] | None = None,
     ) -> EnqueuedJobs:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
 
@@ -399,10 +400,15 @@ class GenerationService:
                 jobs: list[GenerationJob] = []
                 for panel_id in panel_ids:
                     panel = panels[panel_id]
+                    panel_count = candidate_count
+                    if candidate_counts is not None:
+                        panel_count = max(
+                            1, min(4, candidate_counts.get(panel_id, candidate_count))
+                        )
                     job = GenerationJob(
                         project_id=project_id,
                         panel_id=panel_id,
-                        candidate_count=candidate_count,
+                        candidate_count=panel_count,
                         epoch=record.generation_epoch,
                         status="queued",
                         message=message,
@@ -468,6 +474,7 @@ class GenerationService:
         skip_active: bool = False,
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
+        candidate_counts: dict[str, int] | None = None,
     ) -> EnqueuedJobs:
         """ジョブ登録後、メモリ登録とTask起動までをGenerationServiceへ集約する。"""
         runtime = self.require_runtime()
@@ -479,6 +486,7 @@ class GenerationService:
             skip_active=skip_active,
             expected_epoch=expected_epoch,
             expected_revision=expected_revision,
+            candidate_counts=candidate_counts,
         )
         for job in jobs:
             runtime.jobs.register_in_memory(job)
