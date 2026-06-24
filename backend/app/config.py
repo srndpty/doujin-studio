@@ -11,7 +11,8 @@ class Settings:
     export_dir: Path = Path("exports")
     knowledge_dir: Path = Path("data/knowledge")
     # autoはComfyUIへ接続できるときだけ実生成し、利用不能時はstubでMVPを維持する。
-    image_backend: str = "stub"
+    # from_envのfallbackと既定値を揃える（Settings()直接生成・CLI・埋め込みでも同じ挙動にする）。
+    image_backend: str = "auto"
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_workflow_path: Path = Path("workflows/default.workflow_api.json")
     comfyui_timeout_seconds: float = 120.0
@@ -25,7 +26,7 @@ class Settings:
     # ワークフロー不正やノード不足などの設定不備は退避せずエラーにする。
     comfyui_fallback_to_stub: bool = True
     # autoはLM Studioのロード済みモデルを都度検出し、無ければstubへ退避する。
-    llm_provider: str = "stub"
+    llm_provider: str = "auto"
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     llm_model: str = ""
     llm_timeout_seconds: float = 180.0

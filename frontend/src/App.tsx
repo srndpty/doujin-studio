@@ -2208,6 +2208,9 @@ export function App() {
                           onClick={() => setSelectedPage(page)}
                         >
                           {page}p
+                          {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
+                            ? " 完了"
+                            : ""}
                         </button>
                       ))}
                   </div>

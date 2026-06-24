@@ -1,7 +1,10 @@
 """プロジェクト編集・画像アップロード・描画・出力のHTTPルーター。"""
 
+import asyncio
+import os
 import shutil
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -84,10 +87,46 @@ def get_project(project_id: str, request: Request) -> ProjectDetail:
     )
 
 
+def _remove_project_dir(project_dir: Path) -> None:
+    """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeし、
+    Windowsで開かれたファイル等の削除失敗でも例外を投げない（DBは既に整合済み）。"""
+    if not project_dir.exists():
+        return
+    tombstone = project_dir.with_name(f"{project_dir.name}.deleting-{uuid.uuid4().hex}")
+    try:
+        os.replace(project_dir, tombstone)
+        target = tombstone
+    except OSError:
+        # 退避に失敗（開かれたファイル等）してもそのまま削除を試みる。
+        target = project_dir
+    shutil.rmtree(target, ignore_errors=True)
+
+
 @router.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
-    """進行中の生成を止め、DBレコードとプロジェクト成果物を削除する。"""
+    """DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
+    進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
+
+    DBレコードを削除した時点で、enqueueはProjectNotFoundError、実行中workerも最新
+    読み直しでproject不在となり、成果物の再作成やDB更新ができなくなる。これにより
+    「削除後にworkerが復活させる」「commit失敗で成果物だけ失う」競合を避ける。
+    """
     record = load_project_record(request, project_id)
+    export_dir = request.app.state.settings.export_dir.resolve()
+    project_dir = (export_dir / project_id).resolve()
+    if project_dir.parent != export_dir:
+        raise HTTPException(status_code=400, detail="プロジェクト保存先が不正です")
+
+    # 1) 先にDBレコードを削除・commitして、新規生成の入口を閉じる。
+    with request.app.state.SessionLocal() as session:
+        current = request.app.state.repository.get(session, record.id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        request.app.state.repository.delete(session, current)
+        session.commit()
+
+    # 2) 入口を閉じた後に進行中ジョブを掃き出す。直前にenqueueされたジョブも確実に止め、
+    #    ComfyUI promptとローカルTaskの終了まで待ってから成果物を消す。
     manager = request.app.state.job_manager
     active_jobs = [
         job
@@ -97,19 +136,8 @@ async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
     for job in active_jobs:
         await request.app.state.generation.cancel(job)
 
-    export_dir = request.app.state.settings.export_dir.resolve()
-    project_dir = (export_dir / project_id).resolve()
-    if project_dir.parent != export_dir:
-        raise HTTPException(status_code=400, detail="プロジェクト保存先が不正です")
-    if project_dir.exists():
-        shutil.rmtree(project_dir)
-
-    with request.app.state.SessionLocal() as session:
-        current = request.app.state.repository.get(session, record.id)
-        if current is None:
-            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
-        request.app.state.repository.delete(session, current)
-        session.commit()
+    # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
+    await asyncio.to_thread(_remove_project_dir, project_dir)
     return {"deleted": True}
 
 

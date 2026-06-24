@@ -278,6 +278,14 @@ class AutoImageBackend:
         on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
     ) -> ImageResult:
         status = await self.comfyui.get_status()
+        # 接続できていればworkflow不正・ノード不足は設定エラーとして表面化させる。
+        # 黙ってstubにすると、placeholderが成果物として残り診断できなくなる。
+        if status.connected and not status.workflow_valid:
+            if not status.workflow_exists:
+                raise ValueError(f"workflow_api.jsonが見つかりません: {status.workflow_path}")
+            raise ValueError(
+                f"workflow設定ノードが不足しています: {', '.join(status.missing_nodes)}"
+            )
         if status.connected and status.workflow_valid:
             return await self.comfyui.generate_panel(
                 project_id,
@@ -287,6 +295,7 @@ class AutoImageBackend:
                 progress_callback=progress_callback,
                 on_prompt_id=on_prompt_id,
             )
+        # 接続不能時のみstubへ退避する（MVPを止めない）。
         result = await self.stub.generate_panel(
             project_id,
             panel,

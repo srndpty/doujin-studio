@@ -805,7 +805,9 @@ def script_to_manga(
             gen_w, gen_h = compute_generation_size(panel_bbox)
             shape_points = None
             if family in {"action", "reveal"} and index == 0:
-                shape_points = [(0.08, 0.0), (1.0, 0.0), (0.92, 1.0), (0.0, 1.0)]
+                # フロントのslant-rightプリセット定数(0.12/0.88)に揃える。ずれると
+                # 編集画面のshapePreset()が右傾斜を認識できず「台形」と表示されてしまう。
+                shape_points = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
             panels.append(
                 Panel(
                     panel_id=panel_id,

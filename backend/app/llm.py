@@ -128,6 +128,23 @@ def build_llm_client(settings: Settings):
     return StubLLMClient()
 
 
+def _select_model(settings: Settings, status: LLMStatus) -> tuple[str | None, str]:
+    """接続済み前提で採用モデルを決める。(モデル or None=stub退避相当, 理由) を返す。
+
+    LLM_MODELが非空なら厳密一致を必須にする。typo・アンロード・入替で勝手に別モデルへ
+    切り替えると、品質・文体・JSON追従性が予告なく変わるため、不一致はstub退避/明示失敗にする。
+    LLM_MODELが空のときだけREADMEどおりロード済み先頭を採用する。
+    """
+    if settings.llm_model:
+        if settings.llm_model in status.available_models:
+            return settings.llm_model, status.message
+        loaded = ", ".join(status.available_models) or "なし"
+        return None, f"指定モデル {settings.llm_model} が未ロードです（ロード済み: {loaded}）"
+    if status.available_models:
+        return status.available_models[0], status.message
+    return None, "ロード済みモデルがありません"
+
+
 async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompatibleClient:
     """現在ロードされているモデルを解決する。
 
@@ -144,15 +161,18 @@ async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompat
         json_mode=settings.llm_json_mode,
     )
     status = await probe.status()
-    if not status.connected or not status.available_models:
+    if not status.connected:
+        # openai_compatibleでmodel指定済みなら、実呼び出しで接続エラーを表面化させる。
         if provider == "openai_compatible" and settings.llm_model:
             return probe
         return StubLLMClient()
-    model = (
-        settings.llm_model
-        if settings.llm_model in status.available_models
-        else status.available_models[0]
-    )
+    model, _reason = _select_model(settings, status)
+    if model is None:
+        # 指定モデル未ロード/ロード済みなし。openai_compatibleは明示的に失敗させ、
+        # autoはstubへ退避する。
+        if provider == "openai_compatible":
+            return probe
+        return StubLLMClient()
     return OpenAICompatibleClient(
         base_url=settings.llm_base_url,
         model=model,
@@ -162,18 +182,56 @@ async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompat
 
 
 async def get_llm_status(settings: Settings) -> LLMStatus:
-    client = await resolve_llm_client(settings)
-    status = await client.status()
-    if isinstance(client, StubLLMClient) and settings.llm_provider.lower() == "auto":
+    provider = settings.llm_provider.lower()
+    if provider not in {"auto", "openai_compatible"}:
+        return await StubLLMClient().status()
+    probe = OpenAICompatibleClient(
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        json_mode=settings.llm_json_mode,
+    )
+    status = await probe.status()
+    if not status.connected:
+        # 接続エラーの原因をそのまま残す（「ロード済みモデルがない」で潰さない）。
+        if provider == "auto":
+            return LLMStatus(
+                provider="stub",
+                base_url=settings.llm_base_url,
+                model="stub",
+                connected=False,
+                available_models=[],
+                message=f"{status.message} / スタブLLMを使用します。LLMなしで全工程を確認できます",
+            )
+        return status
+    model, reason = _select_model(settings, status)
+    if model is None:
+        if provider == "auto":
+            return LLMStatus(
+                provider="stub",
+                base_url=settings.llm_base_url,
+                model="stub",
+                connected=False,
+                available_models=status.available_models,
+                message=f"{reason} / スタブLLMを使用します。LLMなしで全工程を確認できます",
+            )
+        # openai_compatibleは失敗予定。未ロードを明示して原因を残す。
         return LLMStatus(
-            provider="stub",
+            provider=probe.provider,
             base_url=settings.llm_base_url,
-            model="stub",
-            connected=False,
-            available_models=[],
-            message="ロード済みモデルがないためスタブLLMを使用します。LLMなしで全工程を確認できます",
+            model=settings.llm_model,
+            connected=status.connected,
+            available_models=status.available_models,
+            message=reason,
         )
-    return status
+    return LLMStatus(
+        provider=probe.provider,
+        base_url=settings.llm_base_url,
+        model=model,
+        connected=status.connected,
+        available_models=status.available_models,
+        message=reason,
+    )
 
 
 def extract_json_object(content: str) -> dict:

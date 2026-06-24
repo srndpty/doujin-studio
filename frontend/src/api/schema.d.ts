@@ -137,7 +137,12 @@ export interface paths {
         post?: never;
         /**
          * Delete Project
-         * @description 進行中の生成を止め、DBレコードとプロジェクト成果物を削除する。
+         * @description DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
+         *     進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
+         *
+         *     DBレコードを削除した時点で、enqueueはProjectNotFoundError、実行中workerも最新
+         *     読み直しでproject不在となり、成果物の再作成やDB更新ができなくなる。これにより
+         *     「削除後にworkerが復活させる」「commit失敗で成果物だけ失う」競合を避ける。
          */
         delete: operations["delete_project_api_projects__project_id__delete"];
         options?: never;

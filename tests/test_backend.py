@@ -33,8 +33,11 @@ from backend.app.database import (
 from backend.app.database import now_utc as db_now_utc
 from backend.app.generator import DEFAULT_COMMON_NEGATIVE_PROMPT, DEFAULT_COMMON_POSITIVE_PROMPT
 from backend.app.image_backends import (
+    AutoImageBackend,
+    ComfyUIImageBackend,
     ComfyUIWorkflowConfig,
     ImageResult,
+    StubImageBackend,
     apply_panel_to_workflow,
     apply_reference_images_to_workflow,
 )
@@ -3938,3 +3941,181 @@ def test_polygon_panel_is_clipped_when_rendered(tmp_path: Path) -> None:
             # 左上は傾斜で切り抜かれ、中央はコマのplaceholder色になる。
             assert image.getpixel((125, 175)) == (248, 248, 244)
             assert image.getpixel((600, 850))[:3] == (230, 232, 235)
+
+
+# --- レビュー対応: AutoImageBackendはworkflow不正をstubで隠さずエラー化する ---
+
+
+def _auto_panel() -> Panel:
+    return Panel(panel_id="p01_01", bbox=(0.1, 0.1, 0.8, 0.8), shot="medium")
+
+
+def test_auto_backend_errors_on_missing_workflow_when_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続できているのにworkflowが見つからない設定不備は、stub退避せずエラーにする。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)  # workflow_pathは存在しない
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    # placeholderを成果物として残さない。
+    assert not (export_dir / "proj").exists()
+
+
+def test_auto_backend_errors_on_invalid_workflow_when_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    workflow = sample_workflow()
+    del workflow["9"]  # save prefixノードを欠落させる
+    config = workflow_config(tmp_path)
+    config.workflow_path.write_text(json.dumps(workflow), encoding="utf-8")
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    assert not (export_dir / "proj").exists()
+
+
+# --- レビュー対応: LLM_MODEL指定時の厳密一致と接続エラー保持 ---
+
+
+def _patch_llm_status(monkeypatch: pytest.MonkeyPatch, *, connected: bool, models: list[str]):
+    from backend.app import llm as llm_module
+
+    async def fake_status(self):
+        message = "LLMへ接続できました" if connected else "LLMへ接続できません: boom"
+        return llm_module.LLMStatus(
+            provider="openai_compatible",
+            base_url=self.base_url,
+            model=self.model,
+            connected=connected,
+            available_models=models,
+            message=message,
+        )
+
+    monkeypatch.setattr(llm_module.OpenAICompatibleClient, "status", fake_status)
+    return llm_module
+
+
+def test_resolve_llm_client_auto_falls_back_to_stub_on_model_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a", "loaded-b"])
+    settings = Settings(llm_provider="auto", llm_model="missing-model")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.StubLLMClient)
+
+
+def test_resolve_llm_client_openai_compatible_fails_explicitly_on_model_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="openai_compatible", llm_model="missing-model")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    # 勝手に別モデルへ切り替えず、指定モデルのまま実呼び出しで失敗させる。
+    assert isinstance(client, llm_module.OpenAICompatibleClient)
+    assert client.model == "missing-model"
+
+
+def test_resolve_llm_client_uses_first_model_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a", "loaded-b"])
+    settings = Settings(llm_provider="auto", llm_model="")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.OpenAICompatibleClient)
+    assert client.model == "loaded-a"
+
+
+def test_get_llm_status_preserves_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=False, models=[])
+    settings = Settings(llm_provider="auto", llm_model="")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    # 接続エラーの原因(boom)を「ロード済みモデルがない」で潰さない。
+    assert "boom" in status.message
+
+
+def test_get_llm_status_reports_unloaded_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="auto", llm_model="missing-model")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    assert "missing-model" in status.message
+
+
+# --- レビュー対応: 削除はDBゲートを先に閉じ、成果物喪失を避ける ---
+
+
+def test_delete_project_blocks_subsequent_generation(tmp_path: Path) -> None:
+    from backend.app.mutation import ProjectNotFoundError
+
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        assert client.delete(f"/api/projects/{project_id}").status_code == 200
+        # 削除後はenqueueの入口が閉じ、遅れて来た生成登録を受け付けない。
+        with pytest.raises(ProjectNotFoundError):
+            client.app.state.generation.start(project_id, ["p01_01"], 1, "x", expected_revision=0)
+
+
+def test_delete_project_keeps_assets_when_db_delete_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"asset")
+
+        def boom(session, record):
+            raise RuntimeError("db boom")
+
+        monkeypatch.setattr(client.app.state.repository, "delete", boom)
+        with pytest.raises(RuntimeError):
+            client.delete(f"/api/projects/{project_id}")
+        # DB削除より先に成果物を消さないため、失敗時もレコードと成果物が残る。
+        assert project_dir.exists()
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+
+# --- レビュー対応: 自動生成の変形コマはslant-rightプリセット定数に揃える ---
+
+
+def test_script_to_manga_uses_slant_right_preset_constants() -> None:
+    from backend.app import story
+    from backend.app.schemas import ScriptStage
+
+    base = MangaProject(title="本")
+    script = ScriptStage.model_validate(
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "layout": "action",
+                    "panels": [
+                        {"shot": "wide", "dialogue": []},
+                        {"shot": "medium", "dialogue": []},
+                    ],
+                }
+            ]
+        }
+    )
+    manga = story.script_to_manga(script, base)
+    first = manga.pages[0].panels[0]
+    assert first.shape_points is not None
+    xs = [round(point[0], 2) for point in first.shape_points]
+    # フロントのshapePreset()がslant-rightと認識できる定数であること。
+    assert xs == [0.12, 1.0, 0.88, 0.0]
