@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
-from ..deletion import write_deletion_fence
+from ..deletion import remove_deletion_fence, write_deletion_fence
 from ..generator import generate_four_page_name
 from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
 from ..rendering import (
@@ -202,17 +202,28 @@ async def delete_project(
     if project_dir.parent != export_dir:
         raise HTTPException(status_code=400, detail="プロジェクト保存先が不正です")
 
-    # 1) 先にDBレコードを削除・commitして、新規生成の入口を閉じる。
+    # 1) DBレコードを削除し、commitと原子的に有効化するためcommit直前にfenceを作る。
+    #    commit成功時のみfenceが残り、commit失敗時はrollbackしてfenceも取り消す。
+    #    これによりDB削除とfence作成の間でクラッシュしても整合する（fence先行・commit後も
+    #    fence済みのまま）。万一fenceだけ残ってprojectが生きていても、起動時sweepがDB存在を
+    #    確認して成果物を消さずfenceだけ片付ける。
     with request.app.state.SessionLocal() as session:
         current = request.app.state.repository.get(session, record.id)
         if current is None:
             raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         request.app.state.repository.delete(session, current)
-        session.commit()
-
-    # DB削除後すぐに通常名directory用の永続fenceを作る。cancel不能workerは生成前後に
-    # fenceを確認し、遅延publishした成果物を回収する。
-    fence_written = write_deletion_fence(export_dir, project_id)
+        fence_written = write_deletion_fence(export_dir, project_id)
+        if not fence_written:
+            session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail="削除fenceを作成できないため、プロジェクトを削除しませんでした",
+            )
+        try:
+            session.commit()
+        except Exception:
+            remove_deletion_fence(export_dir, project_id)
+            raise
 
     # 2) 入口を閉じた後に進行中ジョブを掃き出す。個別cancelが失敗しても残りを止め、
     #    finallyで成果物掃除へ必ず進む。
@@ -252,9 +263,6 @@ async def delete_project(
     else:
         cleanup_state = "manual_required"
     if cleanup_state != "complete" or cancel_failed:
-        response.status_code = status.HTTP_202_ACCEPTED
-    if cancel_failed and not fence_written:
-        cleanup_state = "manual_required"
         response.status_code = status.HTTP_202_ACCEPTED
     return ProjectDeletionResponse(
         deleted=True,

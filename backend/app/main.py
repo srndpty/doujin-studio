@@ -91,10 +91,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # 前回の削除で消しきれず残った成果物の再回収は、遅いストレージでも起動を
         # 止めないよう別スレッドのバックグラウンドタスクで行う。
+        session_factory = app.state.SessionLocal
+        repository = app.state.repository
+
+        def _project_exists(project_id: str) -> bool:
+            # 復元でproject IDが復活したらfenceで成果物を消さないよう、生存を確認する。
+            with session_factory() as session:
+                return repository.get(session, project_id) is not None
+
         async def _background_sweep() -> None:
             try:
                 await asyncio.to_thread(sweep_deletion_tombstones, app_settings.export_dir)
-                await asyncio.to_thread(sweep_deletion_fences, app_settings.export_dir)
+                await asyncio.to_thread(
+                    sweep_deletion_fences, app_settings.export_dir, _project_exists
+                )
             except Exception:
                 logger.exception("削除残骸のsweepに失敗しました")
 

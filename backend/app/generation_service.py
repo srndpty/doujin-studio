@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import shutil
 import uuid
 from asyncio import CancelledError
@@ -39,6 +40,8 @@ from .schemas import ImageCandidate, MangaProject, Page, Panel
 
 if TYPE_CHECKING:
     from .rendering import RenderingService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -264,6 +267,7 @@ class GenerationService:
         self.repository = repository or (
             runtime.repository if runtime is not None else ProjectRepository()
         )
+        self.deletion_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
 
     def require_runtime(self) -> GenerationRuntime:
         if self.runtime is None:
@@ -271,18 +275,66 @@ class GenerationService:
         return self.runtime
 
     def is_deletion_fenced(self, project_id: str) -> bool:
-        return project_is_deletion_fenced(self.export_dir, project_id)
-
-    def cleanup_deletion_fenced_assets(self, project_id: str) -> bool:
-        """削除fenceがあるprojectの遅延publish成果物を通常名ディレクトリごと回収する。"""
-        if not self.is_deletion_fenced(project_id):
+        if not project_is_deletion_fenced(self.export_dir, project_id):
             return False
+        # filesystem fenceはDB commit直前に作るため、commit前・rollback後・バックアップ
+        # 復元後はprojectが生存しうる。DB不在と組み合わせたときだけ削除fenceを有効にする。
+        with self.session_factory() as session:
+            return self.repository.get(session, project_id) is None
+
+    def _cleanup_deletion_fenced_assets_sync(
+        self, project_id: str
+    ) -> Literal["not_fenced", "removed", "pending"]:
+        """削除fenceがあるprojectの遅延publish成果物を通常名ディレクトリごと回収する。
+
+        not_fenced=fence無し、removed=回収済み、pending=削除しきれず残存（開かれた
+        ファイル等）。pendingでもjobは破棄対象だが、孤児assetは次回起動sweepで再回収する。
+        """
+        if not self.is_deletion_fenced(project_id):
+            return "not_fenced"
         export_dir = self.export_dir.resolve()
         project_dir = (export_dir / project_id).resolve()
         if project_dir.parent != export_dir:
-            return False
+            return "pending"
         shutil.rmtree(project_dir, ignore_errors=True)
-        return True
+        if project_dir.exists():
+            logger.warning(
+                "削除fence成果物を回収できませんでした（次回起動で再試行）: %s", project_dir
+            )
+            return "pending"
+        return "removed"
+
+    async def cleanup_deletion_fenced_assets(
+        self, project_id: str
+    ) -> Literal["not_fenced", "removed", "pending"]:
+        """filesystem削除をevent loop外で実行する。"""
+        return await asyncio.to_thread(self._cleanup_deletion_fenced_assets_sync, project_id)
+
+    def schedule_deletion_cleanup_retry(self, project_id: str) -> None:
+        """同一process中の遅延publish残骸を短い間隔で再回収する。"""
+        current = self.deletion_cleanup_tasks.get(project_id)
+        if current is not None and not current.done():
+            return
+
+        async def retry() -> None:
+            for delay in (0.1, 0.5, 1.0):
+                await asyncio.sleep(delay)
+                outcome = await self.cleanup_deletion_fenced_assets(project_id)
+                if outcome != "pending":
+                    return
+            logger.warning(
+                "削除fence成果物を同一process中に回収できませんでした（次回起動で再試行）: %s",
+                project_id,
+            )
+
+        task = asyncio.create_task(retry())
+        self.deletion_cleanup_tasks[project_id] = task
+
+        def discard(completed: asyncio.Task[None]) -> None:
+            if self.deletion_cleanup_tasks.get(project_id) is completed:
+                self.deletion_cleanup_tasks.pop(project_id, None)
+
+        task.add_done_callback(discard)
 
     def enqueue(
         self,
@@ -621,7 +673,10 @@ class GenerationService:
             }
 
             for candidate_index in range(job.candidate_count):
-                if self.cleanup_deletion_fenced_assets(job.project_id):
+                cleanup = await self.cleanup_deletion_fenced_assets(job.project_id)
+                if cleanup != "not_fenced":
+                    if cleanup == "pending":
+                        self.schedule_deletion_cleanup_retry(job.project_id)
                     manager.update(
                         job,
                         status="cancelled",
@@ -678,7 +733,10 @@ class GenerationService:
                     candidate_assets[Path(result.asset_path).resolve()] = True
                 # cancel不能workerが削除後に通常名ディレクトリを再作成しても、永続fenceを
                 # 見て公開済みassetとディレクトリを回収する。
-                if self.cleanup_deletion_fenced_assets(job.project_id):
+                cleanup = await self.cleanup_deletion_fenced_assets(job.project_id)
+                if cleanup != "not_fenced":
+                    if cleanup == "pending":
+                        self.schedule_deletion_cleanup_retry(job.project_id)
                     manager.update(
                         job,
                         status="cancelled",
@@ -803,7 +861,9 @@ class GenerationService:
         except ProjectNotFoundError:
             # DB削除と同時確定したfenceを確認し、backendが遅延publishした通常名directoryも回収する。
             runtime.rendering.cleanup_published_assets(job.project_id, candidate_assets)
-            self.cleanup_deletion_fenced_assets(job.project_id)
+            cleanup = await self.cleanup_deletion_fenced_assets(job.project_id)
+            if cleanup == "pending":
+                self.schedule_deletion_cleanup_retry(job.project_id)
             manager.update(
                 job,
                 status="cancelled",

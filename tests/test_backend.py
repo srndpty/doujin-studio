@@ -4100,6 +4100,26 @@ def test_delete_project_keeps_assets_when_db_delete_fails(
         assert client.get(f"/api/projects/{project_id}").status_code == 200
 
 
+def test_delete_project_aborts_when_fence_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "keep.png").write_bytes(b"keep")
+        monkeypatch.setattr(projects_router, "write_deletion_fence", lambda *_args: False)
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 503
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        assert (project_dir / "keep.png").read_bytes() == b"keep"
+
+
 # --- レビュー対応: 自動生成の変形コマはslant-rightプリセット定数に揃える ---
 
 
@@ -4508,6 +4528,8 @@ def test_delete_fence_removes_asset_published_after_cancel_failure(
 
     started = threading.Event()
     release = threading.Event()
+    first_cleanup_failed = threading.Event()
+    allow_retry = threading.Event()
 
     class DelayedBackend:
         async def generate_panel(self, project_id, panel, export_dir, target_path=None, **kwargs):
@@ -4537,18 +4559,38 @@ def test_delete_fence_removes_asset_published_after_cancel_failure(
         assert deleted.status_code == 202
         assert deleted.json()["generation_stop_failed"] is True
 
-        # DELETE応答後に停止不能workerが通常名directoryへpublishする。
+        project_dir = (tmp_path / "exports" / project_id).resolve()
+        real_rmtree = generation_module.shutil.rmtree
+
+        def fail_once_then_wait(path, *args, **kwargs):
+            if Path(path).resolve() == project_dir:
+                if not first_cleanup_failed.is_set():
+                    first_cleanup_failed.set()
+                    return None
+                allow_retry.wait(timeout=5.0)
+            return real_rmtree(path, *args, **kwargs)
+
+        # DELETE応答後に停止不能workerが通常名directoryへpublishする。worker直後の
+        # cleanupだけ失敗させ、cancelled確定後もfence付き残骸として再試行対象になることを確認する。
+        monkeypatch.setattr(generation_module.shutil, "rmtree", fail_once_then_wait)
         release.set()
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             job = client.app.state.job_manager.jobs[job_id]
-            if job.status == "cancelled" and not (tmp_path / "exports" / project_id).exists():
+            if job.status == "cancelled" and first_cleanup_failed.is_set():
                 break
             time.sleep(0.02)
 
         assert client.app.state.job_manager.jobs[job_id].status == "cancelled"
-        assert not (tmp_path / "exports" / project_id).exists()
+        assert project_dir.exists()
         assert (tmp_path / "exports" / f"{project_id}.deletion-fence").is_file()
+
+        # 予約された同一process内retryを解放すると残骸が回収される。
+        allow_retry.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and project_dir.exists():
+            time.sleep(0.02)
+        assert not project_dir.exists()
 
 
 def test_sweep_shutdown_timeout_warns_without_cancelling_worker(
@@ -4583,8 +4625,68 @@ def test_persistent_deletion_fence_sweeps_reappeared_project_dir(tmp_path: Path)
     reappeared.mkdir()
     (reappeared / "late.png").write_bytes(b"late")
 
-    sweep_deletion_fences(export_dir)
+    # projectはDBに存在しない（本当に削除済み）→ 遅延publishの成果物を回収する。
+    sweep_deletion_fences(export_dir, lambda _project_id: False)
 
     assert not reappeared.exists()
     # fenceは遅延workerや次回起動にも効くよう永続させる。
     assert (export_dir / f"{project_id}.deletion-fence").is_file()
+
+
+def test_sweep_keeps_assets_when_project_record_exists(tmp_path: Path) -> None:
+    """削除前バックアップを復元して同じIDのprojectが復活した場合、fenceで成果物を消さない。"""
+    from backend.app.deletion import sweep_deletion_fences, write_deletion_fence
+
+    export_dir = tmp_path / "exports"
+    project_id = "restored-project"
+    assert write_deletion_fence(export_dir, project_id)
+    restored = export_dir / project_id
+    restored.mkdir()
+    (restored / "page.png").write_bytes(b"keep")
+
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'restored.db'}")
+    with factory() as session:
+        session.add(
+            ProjectRecord(
+                id=project_id,
+                title="復元済み",
+                work_name="作品",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+
+    def project_exists(candidate_id: str) -> bool:
+        with factory() as session:
+            return session.get(ProjectRecord, candidate_id) is not None
+
+    # ProjectRecordが存在する＝復活済み。fenceは古いので成果物に触れず取り除く。
+    sweep_deletion_fences(export_dir, project_exists)
+
+    assert restored.exists()
+    assert (restored / "page.png").read_bytes() == b"keep"
+    assert not (export_dir / f"{project_id}.deletion-fence").exists()
+
+
+def test_worker_does_not_apply_precommit_fence_to_live_project(tmp_path: Path) -> None:
+    from backend.app.deletion import write_deletion_fence
+
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "生存", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        asset = project_dir / "keep.png"
+        asset.write_bytes(b"keep")
+        assert write_deletion_fence(tmp_path / "exports", project_id)
+
+        outcome = asyncio.run(
+            client.app.state.generation.cleanup_deletion_fenced_assets(project_id)
+        )
+
+        assert outcome == "not_fenced"
+        assert asset.read_bytes() == b"keep"
