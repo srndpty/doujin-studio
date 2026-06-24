@@ -388,6 +388,7 @@ def build_stage_messages(
     context: KnowledgeContext,
     instruction: str,
     retry_error: str | None = None,
+    previous_output: str | None = None,
     directive: str | None = None,
 ) -> list[dict]:
     system = (
@@ -414,19 +415,27 @@ def build_stage_messages(
         parts.append("# 参考情報（任意で活用する）\n" + context.reference_text)
     if upstream:
         parts.append("# 承認済みの前段階\n" + "\n\n".join(upstream))
-    if retry_error:
-        parts.append(
-            "前回の出力は検証に失敗しました。次のエラーを修正し、有効なJSONのみを再出力してください:\n"
-            + retry_error
-        )
     if directive:
         parts.append(
             "前回の出力には次の問題がありました。修正して再出力してください:\n" + directive
         )
-    return [
+    messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
+    if retry_error:
+        if previous_output:
+            messages.append({"role": "assistant", "content": previous_output})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "上記の出力は検証に失敗しました。内容を維持したまま次のエラーを修正し、"
+                    "完全で有効なJSONオブジェクトのみを再出力してください:\n" + retry_error
+                ),
+            }
+        )
+    return messages
 
 
 PANELING_DIRECTIVE = (
@@ -456,15 +465,16 @@ async def generate_llm_stage(
             record, stages, stage, context, instruction, directive=directive
         )
         last_error: Exception | None = None
-        for retry in range(2):
+        max_attempts = 3 if stage == "script" else 2
+        for retry in range(max_attempts):
             content = await llm.chat(messages, want_json=True)
             try:
                 parsed = extract_json_object(content)
                 return validate_stage_data(stage, parsed, record.target_pages)
             except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 last_error = exc
-                if retry == 0:
-                    # Pydantic検証失敗時はエラー内容付きで1回だけ修正要求する。
+                if retry < max_attempts - 1:
+                    # 長いコマ台本は2回、それ以外は1回だけ元出力付きで修正要求する。
                     messages = build_stage_messages(
                         record,
                         stages,
@@ -472,6 +482,7 @@ async def generate_llm_stage(
                         context,
                         instruction,
                         retry_error=str(exc),
+                        previous_output=content,
                         directive=directive,
                     )
                 else:
@@ -792,10 +803,14 @@ def script_to_manga(
                 )
             panel_bbox = layout[index]
             gen_w, gen_h = compute_generation_size(panel_bbox)
+            shape_points = None
+            if family in {"action", "reveal"} and index == 0:
+                shape_points = [(0.08, 0.0), (1.0, 0.0), (0.92, 1.0), (0.0, 1.0)]
             panels.append(
                 Panel(
                     panel_id=panel_id,
                     bbox=panel_bbox,
+                    shape_points=shape_points,
                     shot=script_panel.shot or "コマ",
                     role=role,
                     emphasis=layout_engine.derive_emphasis(role),

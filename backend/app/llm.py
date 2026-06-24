@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 import httpx
+from json_repair import repair_json
 
 from .config import Settings
 
@@ -127,8 +128,52 @@ def build_llm_client(settings: Settings):
     return StubLLMClient()
 
 
+async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompatibleClient:
+    """現在ロードされているモデルを解決する。
+
+    auto（またはmodel未指定のopenai_compatible）はリクエストごとに/modelsを確認するため、
+    バックエンド再起動なしでLM Studioのモデルロードを反映できる。
+    """
+    provider = settings.llm_provider.lower()
+    if provider not in {"auto", "openai_compatible"}:
+        return StubLLMClient()
+    probe = OpenAICompatibleClient(
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        json_mode=settings.llm_json_mode,
+    )
+    status = await probe.status()
+    if not status.connected or not status.available_models:
+        if provider == "openai_compatible" and settings.llm_model:
+            return probe
+        return StubLLMClient()
+    model = (
+        settings.llm_model
+        if settings.llm_model in status.available_models
+        else status.available_models[0]
+    )
+    return OpenAICompatibleClient(
+        base_url=settings.llm_base_url,
+        model=model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        json_mode=settings.llm_json_mode,
+    )
+
+
 async def get_llm_status(settings: Settings) -> LLMStatus:
-    return await build_llm_client(settings).status()
+    client = await resolve_llm_client(settings)
+    status = await client.status()
+    if isinstance(client, StubLLMClient) and settings.llm_provider.lower() == "auto":
+        return LLMStatus(
+            provider="stub",
+            base_url=settings.llm_base_url,
+            model="stub",
+            connected=False,
+            available_models=[],
+            message="ロード済みモデルがないためスタブLLMを使用します。LLMなしで全工程を確認できます",
+        )
+    return status
 
 
 def extract_json_object(content: str) -> dict:
@@ -140,11 +185,21 @@ def extract_json_object(content: str) -> dict:
         if text.lstrip().lower().startswith("json"):
             text = text.lstrip()[4:]
     text = text.strip()
+    candidate = text
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as original_error:
+        # ローカルLLMの長い出力では、内容が揃っていても配列要素間のカンマなどが
+        # 抜けることがある。再問い合わせ前に決定的な構文修復を行い、その後の
+        # Pydantic検証でスキーマ・ページ数・型を必ず再検査する。
+        try:
+            parsed = repair_json(candidate, return_objects=True)
+        except Exception:
+            raise original_error from None
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM応答はJSONオブジェクトにしてください")
+    return parsed

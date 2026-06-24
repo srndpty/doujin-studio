@@ -211,7 +211,7 @@ def stop_comfyui_generation(settings: Settings, prompt_id: str | None) -> Remote
     対象promptが実行中だと確認できたときだけ使う。キュー待ちならprompt_id指定でqueueから
     削除する。対象が見当たらなければ無関係な生成を巻き込まないよう何もしない。
     """
-    if settings.image_backend.lower() != "comfyui" or not prompt_id:
+    if settings.image_backend.lower() not in {"comfyui", "auto"} or not prompt_id:
         return "not_requested"
     base = settings.comfyui_base_url.rstrip("/")
     try:

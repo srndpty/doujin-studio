@@ -363,9 +363,14 @@ label {
 
 .tabs {
   display: flex;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.tabs.rtl {
+  justify-content: flex-end;
 }
 
 .incomplete-filter {
@@ -1011,19 +1016,52 @@ button.primary {
   margin-top: 24px;
 }
 
-.project-list > button {
+.project-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 4px;
+  margin-top: 4px;
+  border-radius: 6px;
+}
+
+.project-list-item > button:first-child {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
   border-color: transparent;
   background: transparent;
   color: #e5ebec;
+  text-align: left;
 }
 
-.project-list > button:hover {
+.project-list-item:hover,
+.project-list-item.selected {
   background: #303a3e;
 }
 
-.project-list > button.selected {
+.project-list-item.selected {
   background: #dcebed;
   color: #153d43;
+}
+
+.project-list-item.selected > button:first-child {
+  color: #153d43;
+}
+
+.project-list-item .project-delete {
+  align-self: center;
+  border-color: transparent;
+  background: transparent;
+  color: #b9c5c8;
+  padding: 7px;
+}
+
+.project-list-item.selected .project-delete {
+  color: #8b3028;
+}
+
+.backend-warning {
+  color: #9e2f24;
 }
 
 .workspace {

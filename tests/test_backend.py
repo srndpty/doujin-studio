@@ -3883,3 +3883,58 @@ class MockComfyUIClient:
 
 def response(url: str, payload: dict) -> httpx.Response:
     return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+
+def test_delete_project_removes_database_records_and_assets(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除対象", "work_name": "作品", "target_pages": 4}
+        )
+        assert created.status_code == 200
+        project_id = created.json()["project"]["id"]
+        project_dir = tmp_path / "exports" / project_id
+        project_dir.mkdir(parents=True)
+        (project_dir / "generated.png").write_bytes(b"asset")
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": True}
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not project_dir.exists()
+
+
+def test_polygon_panel_is_clipped_when_rendered(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "変形コマ", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        manga = MangaProject(
+            title="変形コマ",
+            work_name="作品",
+            premise="",
+            target_pages=4,
+            pages=[
+                Page(
+                    page=1,
+                    theme="",
+                    layout_template="polygon",
+                    panels=[
+                        Panel(
+                            panel_id="p01_01",
+                            bbox=(0.1, 0.1, 0.8, 0.8),
+                            shape_points=[(0.2, 0), (1, 0), (0.8, 1), (0, 1)],
+                            shot="変形",
+                        )
+                    ],
+                )
+            ],
+        )
+        assert put_manga(client, project_id, manga.model_dump()).status_code == 200
+        rendered = client.post(mutation_url(client, project_id, "panels/p01_01/render-page")).json()
+        asset = rendered["result"]["page_asset"]
+        with Image.open(tmp_path / "exports" / asset) as image:
+            # 左上は傾斜で切り抜かれ、中央はコマのplaceholder色になる。
+            assert image.getpixel((125, 175)) == (248, 248, 244)
+            assert image.getpixel((600, 850))[:3] == (230, 232, 235)

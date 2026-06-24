@@ -101,7 +101,15 @@ export function StoryPanel<ProjectType>({
   }
 
   async function refreshSessions() {
-    setSessions(await api.get<SessionSummary[]>(`/api/projects/${projectId}/story-sessions`));
+    const next = await api.get<SessionSummary[]>(`/api/projects/${projectId}/story-sessions`);
+    setSessions(next);
+    return next;
+  }
+
+  async function refreshLlm() {
+    const status = await api.get<LlmStatus>("/api/llm/status");
+    setLlm(status);
+    return status;
   }
 
   async function refreshRevisions() {
@@ -109,10 +117,7 @@ export function StoryPanel<ProjectType>({
   }
 
   useEffect(() => {
-    void api
-      .get<LlmStatus>("/api/llm/status")
-      .then(setLlm)
-      .catch(() => setLlm(null));
+    void refreshLlm().catch(() => setLlm(null));
     void api
       .get<LocalKnowledgeWork[]>("/api/knowledge/local-works")
       .then((works) => {
@@ -128,14 +133,24 @@ export function StoryPanel<ProjectType>({
 
   useEffect(() => {
     setSession(null);
-    void refreshSessions();
+    let cancelled = false;
+    void refreshSessions().then(async (items) => {
+      if (cancelled || items.length === 0) return;
+      const latest = await api.get<StorySession>(`/api/story-sessions/${items[0].id}`);
+      if (!cancelled && latest.project_id === projectId) syncDrafts(latest);
+    });
     void refreshRevisions();
+    return () => {
+      cancelled = true;
+    };
     // プロジェクトIDが変わったときだけ再取得する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   function syncDrafts(next: StorySession) {
     setSession(next);
+    setInstruction(next.instruction);
+    setTargetPages(next.target_pages);
     setDrafts({
       brief: JSON.stringify(next.stages.brief.data ?? {}, null, 2),
       plot: JSON.stringify(next.stages.plot.data ?? {}, null, 2),
@@ -176,6 +191,7 @@ export function StoryPanel<ProjectType>({
   async function generateStage(stage: StageName) {
     if (!session) return;
     await run(async () => {
+      await refreshLlm();
       setMessage(`${stage}を生成中…`);
       const next = await api.post<StorySession>(
         `/api/story-sessions/${session.id}/stages/${stage}/generate`,
@@ -253,12 +269,18 @@ export function StoryPanel<ProjectType>({
     <section className="story-panel">
       <div className="panel-message">{message}</div>
       {llm && (
-        <div className={`llm-band ${llm.connected ? "ok" : "ng"}`}>
+        <div className={`llm-band ${llm.provider !== "stub" && llm.connected ? "ok" : "ng"}`}>
           <strong>
             LLM: {llm.provider}
             {llm.model ? ` / ${llm.model}` : ""}
           </strong>
           <span>{llm.message}</span>
+          {(llm.provider === "stub" || !llm.connected) && (
+            <strong>警告: スタブ生成では実LLMの品質を確認できません。</strong>
+          )}
+          <button disabled={busy} onClick={() => void refreshLlm()}>
+            ロード済みモデルを再検出
+          </button>
         </div>
       )}
 

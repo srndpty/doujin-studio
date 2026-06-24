@@ -1,5 +1,6 @@
 """プロジェクト編集・画像アップロード・描画・出力のHTTPルーター。"""
 
+import shutil
 import uuid
 from typing import Annotated
 
@@ -81,6 +82,35 @@ def get_project(project_id: str, request: Request) -> ProjectDetail:
     return to_detail(
         load_project_record(request, project_id), request.app.state.settings.export_dir
     )
+
+
+@router.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
+    """進行中の生成を止め、DBレコードとプロジェクト成果物を削除する。"""
+    record = load_project_record(request, project_id)
+    manager = request.app.state.job_manager
+    active_jobs = [
+        job
+        for job in list(manager.jobs.values())
+        if job.project_id == project_id and job.status not in {"done", "error", "cancelled"}
+    ]
+    for job in active_jobs:
+        await request.app.state.generation.cancel(job)
+
+    export_dir = request.app.state.settings.export_dir.resolve()
+    project_dir = (export_dir / project_id).resolve()
+    if project_dir.parent != export_dir:
+        raise HTTPException(status_code=400, detail="プロジェクト保存先が不正です")
+    if project_dir.exists():
+        shutil.rmtree(project_dir)
+
+    with request.app.state.SessionLocal() as session:
+        current = request.app.state.repository.get(session, record.id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        request.app.state.repository.delete(session, current)
+        session.commit()
+    return {"deleted": True}
 
 
 @router.post(

@@ -26,6 +26,38 @@ const SNAP = 0.01; // 1%グリッドへスナップ
 const LAYOUT_FAMILIES = ["establish", "dialogue", "reveal", "action", "punchline", "silent", "montage"];
 const BALLOON_KINDS = ["oval", "cloud", "burst", "caption", "none"];
 
+function shapePointsForPreset(preset: string): [number, number][] | null {
+  if (preset === "slant-right")
+    return [
+      [0.12, 0],
+      [1, 0],
+      [0.88, 1],
+      [0, 1]
+    ];
+  if (preset === "slant-left")
+    return [
+      [0, 0],
+      [0.88, 0],
+      [1, 1],
+      [0.12, 1]
+    ];
+  if (preset === "trapezoid")
+    return [
+      [0.12, 0],
+      [0.88, 0],
+      [1, 1],
+      [0, 1]
+    ];
+  return null;
+}
+
+function shapePreset(points: [number, number][] | null | undefined): string {
+  if (!points) return "rectangle";
+  if (points[0]?.[0] === 0.12 && points[1]?.[0] === 1) return "slant-right";
+  if (points[0]?.[0] === 0 && points[1]?.[0] === 0.88) return "slant-left";
+  return "trapezoid";
+}
+
 type Point = [number, number];
 type PreflightIssue = { level: "error" | "warning"; code: string; message: string };
 
@@ -422,21 +454,41 @@ export function PageEditor({
         </fieldset>
 
         {selectedPanel && selection?.kind === "panel" && (
-          <CropControls
-            panel={selectedPanel}
-            onChange={(generation) =>
-              mutatePage((target) => {
-                const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
-                if (p) p.generation = { ...p.generation, ...generation };
-              })
-            }
-            onSubjectMode={(mode) =>
-              mutatePage((target) => {
-                const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
-                if (p) p.subject_mode = mode;
-              })
-            }
-          />
+          <>
+            <fieldset>
+              <legend>コマ形状</legend>
+              <select
+                value={shapePreset(selectedPanel.shape_points)}
+                onChange={(event) =>
+                  mutatePage((target) => {
+                    const panel = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                    if (panel) panel.shape_points = shapePointsForPreset(event.target.value);
+                  })
+                }
+              >
+                <option value="rectangle">長方形</option>
+                <option value="slant-right">右傾斜</option>
+                <option value="slant-left">左傾斜</option>
+                <option value="trapezoid">台形</option>
+              </select>
+              <small className="hint">変形コマも外接bboxをドラッグして移動・拡縮できます。</small>
+            </fieldset>
+            <CropControls
+              panel={selectedPanel}
+              onChange={(generation) =>
+                mutatePage((target) => {
+                  const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                  if (p) p.generation = { ...p.generation, ...generation };
+                })
+              }
+              onSubjectMode={(mode) =>
+                mutatePage((target) => {
+                  const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                  if (p) p.subject_mode = mode;
+                })
+              }
+            />
+          </>
         )}
 
         {selection?.kind === "dialogue" && selectedPanel?.dialogue[selection.index] && (
@@ -548,6 +600,7 @@ function PanelNode(props: PanelNodeProps) {
   const [px, py, pw, ph] = panel.bbox.map(
     (value: number, i: number) => value * (i % 2 === 0 ? PAGE_W : PAGE_H)
   );
+  const polygonPoints = panel.shape_points?.flatMap(([x, y]) => [px + x * pw, py + y * ph]) ?? [];
 
   const handleTransform = (node: Konva.Rect) => {
     const scaleX = node.scaleX();
@@ -591,7 +644,24 @@ function PanelNode(props: PanelNodeProps) {
 
   return (
     <Group>
-      <Group clipX={px} clipY={py} clipWidth={pw} clipHeight={ph}>
+      <Group
+        clipX={panel.shape_points ? undefined : px}
+        clipY={panel.shape_points ? undefined : py}
+        clipWidth={panel.shape_points ? undefined : pw}
+        clipHeight={panel.shape_points ? undefined : ph}
+        clipFunc={
+          panel.shape_points
+            ? (context) => {
+                context.beginPath();
+                panel.shape_points?.forEach(([x, y], index) => {
+                  if (index === 0) context.moveTo(px + x * pw, py + y * ph);
+                  else context.lineTo(px + x * pw, py + y * ph);
+                });
+                context.closePath();
+              }
+            : undefined
+        }
+      >
         {panel.generation.fit_mode === "contain" && (
           <Rect x={px} y={py} width={pw} height={ph} fill="#f5f5f2" listening={false} />
         )}
@@ -611,7 +681,7 @@ function PanelNode(props: PanelNodeProps) {
         y={py}
         width={pw}
         height={ph}
-        stroke={selected ? "#2b6cff" : "#141414"}
+        stroke={panel.shape_points ? "transparent" : selected ? "#2b6cff" : "#141414"}
         strokeWidth={selected ? 6 : 4}
         draggable
         onClick={onSelect}
@@ -625,7 +695,17 @@ function PanelNode(props: PanelNodeProps) {
           ])
         }
         onTransformEnd={(event) => handleTransform(event.target as Konva.Rect)}
+        fill="rgba(0,0,0,0.001)"
       />
+      {panel.shape_points && (
+        <Line
+          points={polygonPoints}
+          closed
+          stroke={selected ? "#2b6cff" : "#141414"}
+          strokeWidth={selected ? 6 : 4}
+          listening={false}
+        />
+      )}
       <Group>
         <Rect
           x={px + 8}

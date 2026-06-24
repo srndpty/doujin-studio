@@ -200,6 +200,8 @@ class Panel(BaseModel):
 
     panel_id: str
     bbox: tuple[float, float, float, float]
+    # bbox内の相対座標で表す変形コマ。未指定時は長方形。
+    shape_points: list[tuple[float, float]] | None = None
     shot: str
     # コマの主題。prop_insert/hand_insert/backgroundではキャラ同一性を抑制する。
     subject_mode: Literal[
@@ -231,6 +233,19 @@ class Panel(BaseModel):
             raise ValueError("bboxは0から1の範囲に収めてください")
         if width <= 0 or height <= 0:
             raise ValueError("bboxの幅と高さは正の値にしてください")
+        return value
+
+    @field_validator("shape_points")
+    @classmethod
+    def validate_shape_points(
+        cls, value: list[tuple[float, float]] | None
+    ) -> list[tuple[float, float]] | None:
+        if value is None:
+            return None
+        if not 3 <= len(value) <= 12:
+            raise ValueError("shape_pointsは3〜12点で指定してください")
+        if any(x < 0 or x > 1 or y < 0 or y > 1 for x, y in value):
+            raise ValueError("shape_pointsはbbox内の0から1で指定してください")
         return value
 
 
