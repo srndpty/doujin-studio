@@ -12,7 +12,13 @@ from PIL import Image
 from . import layout_engine
 from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
-from .renderer import PAGE_SIZE, _panel_box_px, resolve_dialogue_layout, sfx_bbox_px
+from .renderer import (
+    PAGE_SIZE,
+    TEXT_FLOOR_SIZE,
+    _panel_box_px,
+    resolve_dialogue_layout,
+    sfx_bbox_px,
+)
 from .schemas import Character, MangaProject, Page, Panel, PreflightIssue
 
 # 重なり・縦横比などの許容しきい値。
@@ -58,10 +64,14 @@ def preflight_page(
 
 def _check_dialogue_fit(manga: MangaProject, page: Page) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
-    default_size = manga.typography.default_font_size
     for panel in page.panels:
         box = _panel_box_px(panel)
         for dialogue in panel.dialogue:
+            # 縮小判定は台詞ごとの要求サイズ基準にする（font_sizeを明示的に小さくした
+            # 台詞を「縮小された」と誤判定しない）。
+            requested_size = max(
+                dialogue.font_size or manga.typography.default_font_size, TEXT_FLOOR_SIZE
+            )
             _bubble, layout = resolve_dialogue_layout(dialogue, box, manga.typography)
             if not layout.fits:
                 # 最小サイズでも全文が収まらない＝文字切れ。商用品質では出力前エラーにする（領域3）。
@@ -74,7 +84,7 @@ def _check_dialogue_fit(manga: MangaProject, page: Page) -> list[PreflightIssue]
                         panel_id=panel.panel_id,
                     )
                 )
-            elif layout.font_size < default_size:
+            elif layout.font_size < requested_size:
                 # 収まってはいるがフォント縮小が必要なほど窮屈。警告として知らせる。
                 issues.append(
                     PreflightIssue(

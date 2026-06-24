@@ -37,6 +37,19 @@ def test_dialogue_kind_selects_balloon() -> None:
     assert Dialogue(speaker="a", text="……", kind="monologue", balloon="oval").balloon == "oval"
 
 
+def test_saved_json_kind_change_updates_balloon() -> None:
+    # 保存済みJSON（balloonが常に含まれる）の再編集でkindを変えると、既定形状へ追従する。
+    payload = Dialogue(speaker="a", text="本文").model_dump()
+    assert payload["balloon"] == "oval" and payload["balloon_auto"] is True
+    payload["kind"] = "narration"
+    assert Dialogue.model_validate(payload).balloon == "caption"
+    # 明示指定（balloon_auto=False）は再編集でも保持される。
+    manual = Dialogue(speaker="a", text="本文", kind="monologue", balloon="oval").model_dump()
+    assert manual["balloon_auto"] is False
+    manual["kind"] = "narration"
+    assert Dialogue.model_validate(manual).balloon == "oval"
+
+
 def test_offscreen_dialogue_disables_tail() -> None:
     line = Dialogue(speaker="a", text="画面外の声", on_screen=False)
     assert line.tail is not None and line.tail.enabled is False
@@ -75,6 +88,18 @@ def test_preflight_dialogue_clipped_is_error() -> None:
     assert any(i.code == "dialogue_clipped" and i.level == "error" for i in issues)
 
 
+def test_explicitly_small_dialogue_is_not_flagged_as_shrunk() -> None:
+    # font_sizeを明示的に小さくした台詞は、縮小なしで描けるなら警告にならない（Low回帰）。
+    panel = _single_panel(Dialogue(speaker="a", text="やあ", font_size=20))
+    manga = MangaProject(
+        title="t",
+        typography=TypographySettings(default_font_size=32),
+        pages=[Page(page=1, theme="t", layout_template="o", panels=[panel])],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    assert not any(i.code == "dialogue_overflow" for i in issues)
+
+
 # --- 領域4: 擬音styleプリセットと決定的ゆらぎ ---
 
 
@@ -90,6 +115,15 @@ def test_sfx_render_is_deterministic_and_style_varies() -> None:
     )
     # styleごとに視覚差がある（ゆらぎ量が違うのでバイト列が一致しない）。
     assert first.tobytes() != quiet.tobytes()
+
+
+def test_sfx_newline_is_preserved_as_break() -> None:
+    fill, stroke = (20, 20, 20), (255, 255, 255)
+    one_line = renderer._render_sfx_tile(Sfx(text="ドンバン", font_size=60), fill, stroke)
+    two_lines = renderer._render_sfx_tile(Sfx(text="ドン\nバン", font_size=60), fill, stroke)
+    # 横書きで改行が行区切りとして保持され、2行のタイルは1行より縦に高く・横に狭くなる。
+    assert two_lines.height > one_line.height
+    assert two_lines.width < one_line.width
 
 
 def test_sfx_style_presets_differ() -> None:

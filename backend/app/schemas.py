@@ -105,6 +105,10 @@ class Dialogue(BaseModel):
     # 発話の種別。balloon/しっぽ/写植の既定を切り替える。
     kind: DialogueKind = "speech"
     balloon: BalloonKind = "oval"
+    # balloonをkindから自動選択するか。Falseなら利用者が明示指定した形状を保持する。
+    # この由来フラグにより、保存済みJSONの再編集（balloonが常に含まれる）でも、
+    # kind変更で既定形状へ追従できる。
+    balloon_auto: bool = True
     position: PositionAnchor = "upper_right"
     box: tuple[float, float, float, float] | None = None
     # 話者がこのコマに描かれているか。Falseなら画面外台詞（しっぽを出さない）。
@@ -125,12 +129,24 @@ class Dialogue(BaseModel):
 
     @model_validator(mode="after")
     def apply_kind_defaults(self) -> "Dialogue":
-        """balloonが既定(oval)のままなら、kindから自然な形状を選ぶ。
+        """balloon_autoなら、kindから自然な形状を選ぶ（会話→楕円/独白→雲形/
+        ナレーション→矩形/叫び→破裂形）。
 
-        ユーザーがballoonを明示指定していれば（ovalを含め）尊重する。独白→雲形、
-        ナレーション→矩形、叫び→破裂形を自動選択する（領域3）。
+        balloon_autoの確定規則:
+        - balloon_autoが入力に明示されていればそれに従う（保存済みJSONの再編集を含む）。
+        - balloon_autoが無くballoonが明示されていれば、利用者の手動指定とみなしFalse。
+        - どちらも無ければ自動(True)。
+        これにより「明示ovalの尊重」と「kind変更で既定形状へ追従」を両立する（領域3）。
         """
-        if "balloon" not in self.model_fields_set and self.kind != "speech":
+        fields = self.model_fields_set
+        if "balloon_auto" in fields:
+            auto = self.balloon_auto
+        elif "balloon" in fields:
+            auto = False
+        else:
+            auto = True
+        object.__setattr__(self, "balloon_auto", auto)
+        if auto:
             object.__setattr__(self, "balloon", KIND_DEFAULT_BALLOON[self.kind])
         # 画面外台詞（独白・ナレーションを含む）はしっぽを出さない。
         if not self.on_screen and self.tail is None:
@@ -278,12 +294,13 @@ class ImageCandidate(BaseModel):
 
 
 class PanelCharacter(BaseModel):
-    """コマ内に描く人物の配置・演技情報（領域1）。
+    """コマ内に描く人物への大まかな配置・演技ヒント（領域1）。
 
-    regional conditioningやしっぽの向き、表情指定の根拠にする。
-    ``characters``(描画ID列)を「実際に描く人物」の正本とし、本リストはその
-    補足表現を持つ（IDは必ずcharactersの部分集合）。画面外の台詞は
-    ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。
+    通常promptでは人物ごとのブロック（位置語＋外見＋表情＋動作）の近接配置と、
+    吹き出しのしっぽの向きに使う。あくまでヒントであり、厳密な人物配置・領域分離は
+    ComfyUIのregional conditioning workflowが必要。``characters``(描画ID列)を
+    「実際に描く人物」の正本とし、本リストはその補足（IDは必ずcharactersの部分集合）。
+    画面外の台詞は ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。
     """
 
     model_config = ConfigDict(extra="forbid")

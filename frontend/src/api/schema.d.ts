@@ -980,6 +980,11 @@ export interface components {
              */
             balloon: "oval" | "cloud" | "burst" | "caption" | "none";
             /**
+             * Balloon Auto
+             * @default true
+             */
+            balloon_auto: boolean;
+            /**
              * Position
              * @default upper_right
              * @enum {string}
@@ -1766,12 +1771,13 @@ export interface components {
         };
         /**
          * PanelCharacter
-         * @description コマ内に描く人物の配置・演技情報（領域1）。
+         * @description コマ内に描く人物への大まかな配置・演技ヒント（領域1）。
          *
-         *     regional conditioningやしっぽの向き、表情指定の根拠にする。
-         *     ``characters``(描画ID列)を「実際に描く人物」の正本とし、本リストはその
-         *     補足表現を持つ（IDは必ずcharactersの部分集合）。画面外の台詞は
-         *     ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。
+         *     通常promptでは人物ごとのブロック（位置語＋外見＋表情＋動作）の近接配置と、
+         *     吹き出しのしっぽの向きに使う。あくまでヒントであり、厳密な人物配置・領域分離は
+         *     ComfyUIのregional conditioning workflowが必要。``characters``(描画ID列)を
+         *     「実際に描く人物」の正本とし、本リストはその補足（IDは必ずcharactersの部分集合）。
+         *     画面外の台詞は ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。
          */
         PanelCharacter: {
             /** Id */

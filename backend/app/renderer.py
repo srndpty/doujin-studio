@@ -743,7 +743,8 @@ def _render_sfx_tile(
     """styleに応じて文字ごとにゆらぎを与えた擬音タイルを作る。
 
     手描き風では各文字へ決定的な傾き・拡縮・ずれを加える。styleが整列系(quiet)なら
-    ゆらぎはごく小さくなる。フォントは擬音用→台詞用の順で解決する。
+    ゆらぎはごく小さくなる。改行は区切りとして保持し、縦書きなら列、横書きなら行を
+    分ける。フォントは擬音用→台詞用の順で解決する。
     """
     from PIL import ImageFont
 
@@ -753,43 +754,51 @@ def _render_sfx_tile(
     )
     params = sfx_style_params(sfx.style)
     outline_width = sfx.outline_width + params.outline_boost
-    chars = [ch for ch in sfx.text if ch != "\n"]
-    if not chars:
+    # 改行を区切りとして保持する（縦書き=列、横書き=行）。空セグメントは無視する。
+    segments = [list(segment) for segment in sfx.text.split("\n")]
+    segments = [segment for segment in segments if segment]
+    if not segments:
         return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 
     seed_key = f"{sfx.style}|{sfx.text}"
     cell = sfx.font_size
     advance = int(cell * 1.05)
+    band = int(cell * 1.3)  # 列幅(縦書き)／行高(横書き)
     # ゆらぎや拡縮を受け止める余白。
     margin = int(cell * (0.9 + params.jitter_scale + params.jitter_pos))
-    count = len(chars)
+    longest = max(len(segment) for segment in segments)
+    line_count = len(segments)
     if sfx.vertical:
-        canvas_w = int(cell * 1.6) + margin * 2
-        canvas_h = advance * count + margin * 2
+        canvas_w = band * line_count + margin * 2
+        canvas_h = advance * longest + margin * 2
     else:
-        canvas_w = advance * count + margin * 2
-        canvas_h = int(cell * 1.6) + margin * 2
+        canvas_w = advance * longest + margin * 2
+        canvas_h = band * line_count + margin * 2
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
 
-    for index, ch in enumerate(chars):
-        rot, scale, dx, dy = _glyph_jitter(seed_key, index, ch, params)
-        glyph = _make_glyph_tile(font, ch, fill, stroke, outline_width)
-        if abs(scale - 1.0) > 1e-3:
-            glyph = glyph.resize(
-                (max(1, int(glyph.width * scale)), max(1, int(glyph.height * scale))),
-                resample=Image.BICUBIC,
+    # 文字インデックスはセグメントを跨いで連番にし、ゆらぎの決定性を保つ。
+    glyph_index = 0
+    for line_index, segment in enumerate(segments):
+        for char_index, ch in enumerate(segment):
+            rot, scale, dx, dy = _glyph_jitter(seed_key, glyph_index, ch, params)
+            glyph_index += 1
+            glyph = _make_glyph_tile(font, ch, fill, stroke, outline_width)
+            if abs(scale - 1.0) > 1e-3:
+                glyph = glyph.resize(
+                    (max(1, int(glyph.width * scale)), max(1, int(glyph.height * scale))),
+                    resample=Image.BICUBIC,
+                )
+            if abs(rot) > 1e-3:
+                glyph = glyph.rotate(rot, expand=True, resample=Image.BICUBIC)
+            if sfx.vertical:
+                center_x = margin + band * (line_index + 0.5) + dx * cell
+                center_y = margin + advance * (char_index + 0.5) + dy * cell
+            else:
+                center_x = margin + advance * (char_index + 0.5) + dx * cell
+                center_y = margin + band * (line_index + 0.5) + dy * cell
+            canvas.alpha_composite(
+                glyph, (int(center_x - glyph.width / 2), int(center_y - glyph.height / 2))
             )
-        if abs(rot) > 1e-3:
-            glyph = glyph.rotate(rot, expand=True, resample=Image.BICUBIC)
-        if sfx.vertical:
-            center_x = canvas_w / 2 + dx * cell
-            center_y = margin + advance * (index + 0.5) + dy * cell
-        else:
-            center_x = margin + advance * (index + 0.5) + dx * cell
-            center_y = canvas_h / 2 + dy * cell
-        canvas.alpha_composite(
-            glyph, (int(center_x - glyph.width / 2), int(center_y - glyph.height / 2))
-        )
     return canvas
 
 
