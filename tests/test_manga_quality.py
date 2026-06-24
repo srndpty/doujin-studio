@@ -29,6 +29,8 @@ def test_dialogue_kind_selects_balloon() -> None:
     assert Dialogue(speaker="a", text="うわっ", kind="shout").balloon == "burst"
     # 明示的に指定したballoonは尊重する（kindに上書きされない）。
     assert Dialogue(speaker="a", text="…", kind="monologue", balloon="caption").balloon == "caption"
+    # ovalを明示指定した独白は、cloudへ書き換えずovalのまま保持する。
+    assert Dialogue(speaker="a", text="……", kind="monologue", balloon="oval").balloon == "oval"
 
 
 def test_offscreen_dialogue_disables_tail() -> None:
@@ -163,46 +165,73 @@ def test_classify_subject_mode() -> None:
     )
 
 
-def test_offscreen_narration_speaker_not_drawn() -> None:
+def test_offscreen_narration_panel_does_not_get_page_characters() -> None:
+    # 同一ページに人物コマと「背景＋画面外ナレーション」コマを置き、後者へページ人物が
+    # 再混入しないこと（人物LoRA混入の防止）を検証する。
     base = MangaProject(
         title="t",
         characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
     )
+    character_panel = ScriptPanel(
+        shot="bust",
+        visual_prompt="a girl talking",
+        characters=["美嘉"],
+        dialogue=[ScriptDialogue(speaker="美嘉", text="やあ", kind="speech")],
+    )
+    narration_panel = ScriptPanel(
+        shot="背景",
+        visual_prompt="empty room, scenery",
+        characters=[],
+        dialogue=[
+            ScriptDialogue(
+                speaker="美嘉",
+                text="あの日のことを思い出す",
+                kind="narration",
+                on_screen=False,
+            )
+        ],
+    )
     script = ScriptStage(
         pages=[
-            ScriptPage(
-                page=page,
-                panels=[
-                    ScriptPanel(
-                        shot="背景",
-                        visual_prompt="empty room, scenery",
-                        characters=[],
-                        dialogue=[
-                            ScriptDialogue(
-                                speaker="美嘉",
-                                text="あの日のことを思い出す",
-                                kind="narration",
-                                on_screen=False,
-                            )
-                        ],
-                    )
-                ],
-            )
-            for page in range(1, 5)
+            ScriptPage(page=page, panels=[character_panel, narration_panel]) for page in range(1, 5)
         ]
     )
-    manga = story.script_to_manga(script, base)
-    panel = manga.pages[0].panels[0]
-    # ナレーション話者は描画人物に含めない（画面外台詞を許可）。
-    assert panel.characters == []
-    assert panel.dialogue[0].kind == "narration"
-    assert panel.dialogue[0].on_screen is False
+    # ページ構成の登場人物（フォールバック候補）を渡しても再混入しないこと。
+    manga = story.script_to_manga(script, base, page_characters={1: ["美嘉"]})
+    person, narration = manga.pages[0].panels
+    assert person.characters == ["mika"]
+    assert narration.subject_mode == "background"
+    assert narration.characters == []
+    assert narration.dialogue[0].kind == "narration"
+    assert narration.dialogue[0].on_screen is False
 
 
 # --- 領域2: 生成後の編集チェック ---
 
 
-def test_review_script_moves_onomatopoeia_and_removes_misused_sfx() -> None:
+def test_review_script_keeps_named_speaker_dialogue() -> None:
+    # 話者付きの自然な台詞（純カタカナ）は擬音へ移動せず内容を保持する。
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "panels": [
+                    {
+                        "characters": ["美嘉"],
+                        "dialogue": [{"speaker": "美嘉", "text": "ハイ！", "kind": "speech"}],
+                        "sfx": [],
+                    }
+                ],
+            }
+        ]
+    }
+    fixed, _warnings = story.review_script(data)
+    panel = fixed["pages"][0]["panels"][0]
+    assert panel["dialogue"][0]["text"] == "ハイ！"
+    assert panel["sfx"] == []
+
+
+def test_review_script_moves_anonymous_onomatopoeia_and_fixes_kinds() -> None:
     data = {
         "pages": [
             {
@@ -211,7 +240,7 @@ def test_review_script_moves_onomatopoeia_and_removes_misused_sfx() -> None:
                     {
                         "characters": ["美嘉"],
                         "dialogue": [
-                            {"speaker": "美嘉", "text": "ドカーン", "kind": "speech"},
+                            {"speaker": "", "text": "ドカーン", "kind": "speech"},
                             {"speaker": "美嘉", "text": "（やってしまった）", "kind": "speech"},
                             {"speaker": "美嘉", "text": "やめろ！！", "kind": "speech"},
                         ],
@@ -224,7 +253,7 @@ def test_review_script_moves_onomatopoeia_and_removes_misused_sfx() -> None:
     fixed, warnings = story.review_script(data)
     panel = fixed["pages"][0]["panels"][0]
     texts = [line["text"] for line in panel["dialogue"]]
-    assert "ドカーン" not in texts  # 擬音は台詞から除去
+    assert "ドカーン" not in texts  # 話者のない擬音は台詞から除去
     assert any(s["text"] == "ドカーン" for s in panel["sfx"])  # 擬音欄へ移動
     monologue = next(line for line in panel["dialogue"] if line["text"] == "（やってしまった）")
     assert monologue["kind"] == "monologue"

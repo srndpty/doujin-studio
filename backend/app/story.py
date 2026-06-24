@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -304,12 +305,14 @@ async def generate_stage(
 
     # 台本段階は生成後に1回だけ編集チェックを掛け、自動修正と警告を残す（領域2）。
     if stage == "script" and data is not None:
+        original_data = copy.deepcopy(data)
         data, review_warnings = review_script(data)
         try:
             data = validate_stage_data(stage, data, record.target_pages)
         except (ValidationError, ValueError) as exc:
-            # 編集チェックで壊れることは想定しないが、壊れたら修正前の妥当性を優先する。
+            # 編集チェックで壊れることは想定しないが、壊れたら修正前データへ戻す。
             error = error or str(exc)
+            data = original_data
             review_warnings = []
 
     stages[stage]["data"] = data
@@ -532,11 +535,16 @@ def review_script(data: dict) -> tuple[dict, list[str]]:
                 text = str(line.get("text", "")).strip()
                 if not text:
                     continue
-                # 1) 擬音が台詞欄に入っている → sfxへ移す。
+                # 1) 擬音らしき台詞。話者のない匿名行だけ自動でsfxへ移し、
+                #    話者付き（自然な台詞の可能性）は内容を保持して警告に留める。
                 if _ONOMATOPOEIA_RE.match(text):
-                    sfx.append({"text": text, "style": "handwritten"})
-                    warnings.append(f"{label}: 擬音「{text}」を台詞から擬音へ移しました")
-                    continue
+                    if not str(line.get("speaker", "")).strip():
+                        sfx.append({"text": text, "style": "handwritten"})
+                        warnings.append(f"{label}: 話者のない擬音「{text}」を擬音欄へ移しました")
+                        continue
+                    warnings.append(
+                        f"{label}: 台詞「{text}」は擬音の可能性があります（擬音欄への移動を検討）"
+                    )
                 # 2) 独白を通常会話で書いている → kindをmonologueへ。
                 if _looks_like_monologue(text) and line.get("kind", "speech") == "speech":
                     line["kind"] = "monologue"
@@ -911,9 +919,13 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
     """コマ台本から主題モードを推定する（領域1）。
 
     手元・小物・背景コマを検出し、人物LoRA/参照を注入しない非人物モードへ振り分ける。
-    台詞があるコマは人物コマとみなして誤分類を避ける。
+    画面内の会話・叫び話者がいるコマは人物コマとみなす（画面外ナレーションだけの
+    背景コマは非人物のまま扱い、ページ人物の再混入を防ぐ）。
     """
-    if script_panel.dialogue:
+    has_visible_speaker = any(
+        line.on_screen and line.kind in {"speech", "shout"} for line in script_panel.dialogue
+    )
+    if has_visible_speaker:
         return "character_scene"
     haystack = " ".join(
         [script_panel.shot, script_panel.camera, script_panel.visual_prompt]

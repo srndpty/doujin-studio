@@ -230,6 +230,8 @@ export function App() {
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [assetVersion, setAssetVersion] = useState(0);
   const [candidateCount, setCandidateCount] = useState(1);
+  // 一括生成で見せ場・複数人物コマの候補数を自動的に増やす（candidateCountは下限）。
+  const [autoCandidates, setAutoCandidates] = useState(false);
   const [activeJobIds, setActiveJobIds] = useState<string[]>([]);
   const [productionStatus, setProductionStatus] = useState<ProductionStatus | null>(null);
   const [jobHistory, setJobHistory] = useState<GenerationJob[]>([]);
@@ -717,7 +719,8 @@ export function App() {
         withRevision(`/api/projects/${projectId}/generation-jobs`, saved.revision),
         {
           page: selectedPage,
-          candidate_count: candidateCount
+          candidate_count: candidateCount,
+          auto_candidates: autoCandidates
         }
       );
       const batchAdopted = await adoptMutationResponse(batchResponse);
@@ -771,7 +774,7 @@ export function App() {
       const projectId = saved.id;
       const batchResponse = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
         withRevision(`/api/projects/${projectId}/generation-jobs`, saved.revision),
-        { candidate_count: candidateCount }
+        { candidate_count: candidateCount, auto_candidates: autoCandidates }
       );
       const batchAdopted = await adoptMutationResponse(batchResponse);
       if (!batchAdopted.applied || !batchAdopted.project) return;
@@ -2646,6 +2649,18 @@ export function App() {
                             </option>
                           ))}
                         </select>
+                      </label>
+                      <label
+                        className="auto-candidates-toggle"
+                        title="一括生成で、見せ場・複数人物コマだけ候補数を最大4件へ自動的に増やします（上の件数が下限）"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={autoCandidates}
+                          onChange={(event) => setAutoCandidates(event.target.checked)}
+                          disabled={busy}
+                        />
+                        見せ場・複数人物は候補を自動で増やす
                       </label>
                     </div>
                     {currentPanel.image_candidates.length > 0 ? (

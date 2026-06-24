@@ -127,10 +127,10 @@ class Dialogue(BaseModel):
     def apply_kind_defaults(self) -> "Dialogue":
         """balloonが既定(oval)のままなら、kindから自然な形状を選ぶ。
 
-        ユーザーがballoonを明示変更していれば尊重する。独白→雲形、
+        ユーザーがballoonを明示指定していれば（ovalを含め）尊重する。独白→雲形、
         ナレーション→矩形、叫び→破裂形を自動選択する（領域3）。
         """
-        if self.balloon == "oval" and self.kind != "speech":
+        if "balloon" not in self.model_fields_set and self.kind != "speech":
             object.__setattr__(self, "balloon", KIND_DEFAULT_BALLOON[self.kind])
         # 画面外台詞（独白・ナレーションを含む）はしっぽを出さない。
         if not self.on_screen and self.tail is None:
