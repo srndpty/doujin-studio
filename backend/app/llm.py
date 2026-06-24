@@ -246,12 +246,13 @@ async def get_llm_status(settings: Settings) -> LLMStatus:
                 available_models=status.available_models,
                 message=f"{reason} / スタブLLMを使用します。LLMなしで全工程を確認できます",
             )
-        # openai_compatibleは失敗予定。未ロードを明示して原因を残す。
+        # openai_compatibleは生成が必ず失敗する。通信は到達していてもUIの正常判定
+        # (provider!=="stub" && connected)を緑にしないよう、connected=Falseで返す。
         return LLMStatus(
             provider=probe.provider,
             base_url=settings.llm_base_url,
             model=settings.llm_model,
-            connected=status.connected,
+            connected=False,
             available_models=status.available_models,
             message=reason,
         )

@@ -4359,3 +4359,68 @@ def test_persist_reraises_real_integrity_error_when_project_exists(tmp_path: Pat
     job.created_at = None  # type: ignore[assignment]  # NOT NULL違反（削除race以外の本物の不整合）
     with pytest.raises(IntegrityError):
         manager.persist(job)
+
+
+# --- 第4次レビュー対応 ---
+
+
+def test_sweep_ignores_out_of_root_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """markerに範囲外の絶対パスが入っていても、起動時sweepがそれを削除しないこと。"""
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x", encoding="utf-8")
+    marker = export_dir / "evil.deletion-pending"
+    marker.write_text(str(outside), encoding="utf-8")  # 範囲外の絶対パスを注入
+
+    calls: list[Path] = []
+    real_rmtree = projects_router.shutil.rmtree
+
+    def spy(path, *args, **kwargs):
+        calls.append(Path(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(projects_router.shutil, "rmtree", spy)
+    projects_router.sweep_deletion_tombstones(export_dir)
+
+    assert outside.exists()  # 範囲外ディレクトリは削除されない
+    assert Path(outside) not in calls  # rmtreeも呼ばれない
+    assert marker.exists()  # 不正markerは誤って消さず残す
+
+
+def test_remove_project_dir_orphaned_when_marker_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = tmp_path / "exports" / "p1"
+    project_dir.mkdir(parents=True)
+    (project_dir / "a.png").write_bytes(b"x")
+    # rename失敗・削除失敗・marker書込み失敗が重なると孤児になる。
+    monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+    monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(projects_router, "_write_deletion_marker", lambda *args, **kwargs: False)
+    assert projects_router._remove_project_dir(project_dir) == "orphaned"
+
+
+def test_unlink_marker_keeps_locked_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "m.deletion-pending"
+    marker.write_text("p1", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    # unlink失敗でも例外を投げず、markerを残して次回起動で再試行する。
+    projects_router._unlink_marker(marker)
+    assert marker.exists()
+
+
+def test_get_llm_status_unloaded_model_not_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 通信は到達していても、指定モデル未ロードなら生成不可。UIの正常判定に使うconnectedはFalse。
+    llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
+    settings = Settings(llm_provider="openai_compatible", llm_model="missing-model")
+    status = asyncio.run(llm_module.get_llm_status(settings))
+    assert not status.connected
+    assert "missing-model" in status.message

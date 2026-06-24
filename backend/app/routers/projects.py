@@ -1,11 +1,12 @@
 """プロジェクト編集・画像アップロード・描画・出力のHTTPルーター。"""
 
 import asyncio
+import logging
 import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 
@@ -57,6 +58,7 @@ from .common import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/api/projects", response_model=ProjectMutationResponse[EmptyMutationResult])
@@ -91,25 +93,42 @@ def get_project(project_id: str, request: Request) -> ProjectDetail:
 DELETION_TOMBSTONE_GLOB = "*.deleting-*"
 DELETION_MARKER_GLOB = "*.deletion-pending"
 
+# 成果物削除の結果。removed=完全削除、pending=tombstone/markerで自動再回収予定、
+# orphaned=残骸も再回収手段も用意できず手動対応が必要。
+RemovalOutcome = Literal["removed", "pending", "orphaned"]
 
-def _write_deletion_marker(export_dir: Path, residual: Path) -> None:
-    """残骸の絶対パスをmarkerへ記録し、起動時sweepで再回収できるようにする。"""
+
+def _write_deletion_marker(export_dir: Path, residual: Path) -> bool:
+    """残骸ディレクトリ名をmarkerへ記録する。書込み成否を返す。
+
+    任意パスの再帰削除を避けるため、保存するのはexport直下の単一ディレクトリ名のみ。
+    起動時sweepは ``export_dir / name`` を再構成し、範囲外なら削除しない。
+    """
     marker = export_dir / f"{residual.name}.deletion-pending"
     try:
-        marker.write_text(str(residual), encoding="utf-8")
+        marker.write_text(residual.name, encoding="utf-8")
+        return True
     except OSError:
-        pass
+        return False
 
 
-def _remove_project_dir(project_dir: Path) -> bool:
+def _unlink_marker(marker: Path) -> None:
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        # locked等で消せない場合はmarkerを残し、次回起動で再試行する。
+        logger.warning("削除markerを片付けられませんでした: %s", marker)
+
+
+def _remove_project_dir(project_dir: Path) -> RemovalOutcome:
     """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeする。
 
-    完全に消えたらTrue、Windowsで開かれたファイル等で残留したらFalseを返す。
     rename成功後の残骸はtombstone名でglob回収できる。renameごと失敗して元ディレクトリが
-    残った場合はtombstone名にならないため、markerへ元パスを記録して起動時に再試行する。
+    残った場合はtombstone名にならないため、markerへ名前を記録して起動時に再試行する。
+    marker書込みも失敗したら自動再回収できない孤児としてorphanedを返す。
     """
     if not project_dir.exists():
-        return True
+        return "removed"
     tombstone = project_dir.with_name(f"{project_dir.name}.deleting-{uuid.uuid4().hex}")
     renamed = False
     try:
@@ -121,29 +140,42 @@ def _remove_project_dir(project_dir: Path) -> bool:
         target = project_dir
     shutil.rmtree(target, ignore_errors=True)
     if not target.exists():
-        return True
-    if not renamed:
-        _write_deletion_marker(project_dir.parent, target)
-    return False
+        return "removed"
+    if renamed:
+        # tombstone名で残存。起動時globで再回収できる。
+        return "pending"
+    if _write_deletion_marker(project_dir.parent, target):
+        return "pending"
+    logger.error("成果物を削除できず、再回収markerも作成できませんでした: %s", target)
+    return "orphaned"
 
 
 def sweep_deletion_tombstones(export_dir: Path) -> None:
     """削除に失敗して残った成果物を再回収する（起動時に呼ぶ）。
 
     markerに記録された残骸（rename失敗の元ディレクトリ含む）と、marker無しで残った
-    tombstone（プロセスクラッシュ時の保険）の双方を掃除する。
+    tombstone（プロセスクラッシュ時の保険）の双方を掃除する。markerはexport直下の
+    単一ディレクトリ名のみを指す前提で検証し、範囲外を指すmarkerは削除しない。
     """
     if not export_dir.exists():
         return
+    root = export_dir.resolve()
     for marker in export_dir.glob(DELETION_MARKER_GLOB):
         try:
-            residual = Path(marker.read_text(encoding="utf-8").strip())
+            name = marker.read_text(encoding="utf-8").strip()
         except OSError:
+            continue
+        if not name or name in {".", ".."} or name != Path(name).name:
+            logger.warning("不正な削除markerを無視します: %s", marker)
+            continue
+        residual = root / name
+        if residual.resolve().parent != root:
+            logger.warning("範囲外の削除markerを無視します: %s", marker)
             continue
         if residual.exists():
             shutil.rmtree(residual, ignore_errors=True)
         if not residual.exists():
-            marker.unlink(missing_ok=True)
+            _unlink_marker(marker)
     for tombstone in export_dir.glob(DELETION_TOMBSTONE_GLOB):
         shutil.rmtree(tombstone, ignore_errors=True)
 
@@ -189,12 +221,12 @@ async def delete_project(
         await request.app.state.generation.cancel(job)
 
     # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
-    #    削除しきれず残留した場合は202で明示し、次回起動のsweepで再回収する。
-    cleaned = await asyncio.to_thread(_remove_project_dir, project_dir)
-    if not cleaned:
-        response.status_code = status.HTTP_202_ACCEPTED
-        return ProjectDeletionResponse(deleted=True, cleanup_pending=True)
-    return ProjectDeletionResponse(deleted=True, cleanup_pending=False)
+    #    removed=完全削除、pending=自動再回収予定(202)、orphaned=手動対応必要(202+errorログ)。
+    outcome = await asyncio.to_thread(_remove_project_dir, project_dir)
+    if outcome == "removed":
+        return ProjectDeletionResponse(deleted=True, cleanup_pending=False)
+    response.status_code = status.HTTP_202_ACCEPTED
+    return ProjectDeletionResponse(deleted=True, cleanup_pending=True)
 
 
 @router.post(

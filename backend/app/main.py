@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from .routers import generation, knowledge, projects, story, system
 from .routers.common import register_exception_handlers
 from .routers.projects import sweep_deletion_tombstones
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings.from_env()
@@ -29,8 +33,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app_settings.export_dir.mkdir(parents=True, exist_ok=True)
         app_settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
         Path("data").mkdir(parents=True, exist_ok=True)
-        # 前回の削除で消しきれずに残ったtombstoneを起動時に再回収する。
-        sweep_deletion_tombstones(app_settings.export_dir)
         app.state.settings = app_settings
         app.state.SessionLocal = create_session_factory(app_settings.database_url)
         app.state.repository = ProjectRepository()
@@ -72,9 +74,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         for job in to_start:
             app.state.job_manager.start(job, app.state.generation.run(job))
+
+        # 前回の削除で消しきれず残った成果物の再回収は、遅いストレージでも起動を
+        # 止めないよう別スレッドのバックグラウンドタスクで行う。
+        async def _background_sweep() -> None:
+            try:
+                await asyncio.to_thread(sweep_deletion_tombstones, app_settings.export_dir)
+            except Exception:
+                logger.exception("削除残骸のsweepに失敗しました")
+
+        sweep_task = asyncio.create_task(_background_sweep())
         try:
             yield
         finally:
+            sweep_task.cancel()
+            await asyncio.gather(sweep_task, return_exceptions=True)
             await app.state.job_manager.shutdown()
 
     app = FastAPI(title="Local Doujin Studio", lifespan=lifespan)
