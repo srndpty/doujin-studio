@@ -1820,6 +1820,19 @@ export interface components {
              */
             target_pages: 4 | 8 | 16;
         };
+        /** ProjectDeletionResponse */
+        ProjectDeletionResponse: {
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            /**
+             * Cleanup Pending
+             * @default false
+             */
+            cleanup_pending: boolean;
+        };
         /** ProjectDetail */
         ProjectDetail: {
             /** Id */
@@ -2581,9 +2594,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: boolean;
-                    };
+                    "application/json": components["schemas"]["ProjectDeletionResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDeletionResponse"];
                 };
             };
             /** @description Validation Error */

@@ -251,14 +251,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "boolean"
-                  },
-                  "title": "Response Delete Project Api Projects  Project Id  Delete"
+                  "$ref": "#/components/schemas/ProjectDeletionResponse"
                 }
               }
             }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeletionResponse"
+                }
+              }
+            },
+            "description": "Accepted"
           },
           "422": {
             "description": "Validation Error",
@@ -5015,6 +5021,22 @@
           "title"
         ],
         "title": "ProjectCreate"
+      },
+      "ProjectDeletionResponse": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "default": true
+          },
+          "cleanup_pending": {
+            "type": "boolean",
+            "title": "Cleanup Pending",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ProjectDeletionResponse"
       },
       "ProjectDetail": {
         "properties": {

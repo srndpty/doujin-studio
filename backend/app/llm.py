@@ -43,6 +43,34 @@ class StubLLMClient:
         )
 
 
+class UnavailableLLMClient:
+    """外部LLMを使えないと確定したときのクライアント（接続不能・指定モデル未ロード等）。
+
+    明示的にopenai_compatibleを要求した利用者へ黙ってstub生成を返さないため、chat()は
+    保存済みの理由を含むLLMErrorを必ず送出する。statusも未接続として理由を残す。
+    """
+
+    provider = "openai_compatible"
+
+    def __init__(self, base_url: str, model: str, reason: str) -> None:
+        self.base_url = base_url
+        self.model = model
+        self.reason = reason
+
+    async def chat(self, messages: list[dict], want_json: bool = True) -> str:
+        raise LLMError(self.reason)
+
+    async def status(self) -> LLMStatus:
+        return LLMStatus(
+            provider=self.provider,
+            base_url=self.base_url,
+            model=self.model,
+            connected=False,
+            available_models=[],
+            message=self.reason,
+        )
+
+
 class OpenAICompatibleClient:
     """OpenAI互換のchat completions APIへ接続するクライアント。"""
 
@@ -145,7 +173,9 @@ def _select_model(settings: Settings, status: LLMStatus) -> tuple[str | None, st
     return None, "ロード済みモデルがありません"
 
 
-async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompatibleClient:
+async def resolve_llm_client(
+    settings: Settings,
+) -> StubLLMClient | OpenAICompatibleClient | UnavailableLLMClient:
     """現在ロードされているモデルを解決する。
 
     auto（またはmodel未指定のopenai_compatible）はリクエストごとに/modelsを確認するため、
@@ -163,16 +193,16 @@ async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompat
     status = await probe.status()
     if not status.connected:
         # 明示的に外部LLMを要求したopenai_compatibleは、LLM_MODELの有無に関わらず
-        # stubへ落とさず、実呼び出しで接続エラーを表面化させる。stub退避はauto専用。
+        # stubへ落とさず、生成を必ず失敗させる。stub退避はauto専用。
         if provider == "openai_compatible":
-            return probe
+            return UnavailableLLMClient(settings.llm_base_url, settings.llm_model, status.message)
         return StubLLMClient()
-    model, _reason = _select_model(settings, status)
+    model, reason = _select_model(settings, status)
     if model is None:
-        # 指定モデル未ロード/ロード済みなし。openai_compatibleは明示的に失敗させ、
-        # autoはstubへ退避する。
+        # 指定モデル未ロード/ロード済みなし。openai_compatibleは空modelで誤ったモデルへ
+        # 流れないよう失敗専用clientを返し、autoはstubへ退避する。
         if provider == "openai_compatible":
-            return probe
+            return UnavailableLLMClient(settings.llm_base_url, settings.llm_model, reason)
         return StubLLMClient()
     return OpenAICompatibleClient(
         base_url=settings.llm_base_url,

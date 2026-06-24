@@ -4026,9 +4026,10 @@ def test_resolve_llm_client_openai_compatible_fails_explicitly_on_model_mismatch
     llm_module = _patch_llm_status(monkeypatch, connected=True, models=["loaded-a"])
     settings = Settings(llm_provider="openai_compatible", llm_model="missing-model")
     client = asyncio.run(llm_module.resolve_llm_client(settings))
-    # 勝手に別モデルへ切り替えず、指定モデルのまま実呼び出しで失敗させる。
-    assert isinstance(client, llm_module.OpenAICompatibleClient)
-    assert client.model == "missing-model"
+    # 勝手に別モデルへ切り替えず、生成を必ず失敗させる失敗専用clientを返す。
+    assert isinstance(client, llm_module.UnavailableLLMClient)
+    with pytest.raises(llm_module.LLMError):
+        asyncio.run(client.chat([{"role": "user", "content": "x"}]))
 
 
 def test_resolve_llm_client_uses_first_model_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4171,11 +4172,14 @@ def test_auto_status_reports_comfyui_config_error_when_workflow_invalid(
 def test_resolve_llm_client_openai_compatible_strict_without_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # LLM_MODEL未指定でも、接続不能なopenai_compatibleはstubへ落とさず失敗させる。
+    # LLM_MODEL未指定でも、接続不能なopenai_compatibleはstubや空model呼び出しへ流さず、
+    # 失敗専用clientで生成を必ず失敗させる。
     llm_module = _patch_llm_status(monkeypatch, connected=False, models=[])
     settings = Settings(llm_provider="openai_compatible", llm_model="")
     client = asyncio.run(llm_module.resolve_llm_client(settings))
-    assert isinstance(client, llm_module.OpenAICompatibleClient)
+    assert isinstance(client, llm_module.UnavailableLLMClient)
+    with pytest.raises(llm_module.LLMError):
+        asyncio.run(client.chat([{"role": "user", "content": "x"}]))
 
 
 def test_delete_project_cancels_running_worker_without_orphan(
@@ -4274,3 +4278,84 @@ def test_shape_points_rejects_self_intersection() -> None:
             shot="x",
             shape_points=[(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)],
         )
+
+
+# --- 第3次レビュー対応 ---
+
+
+def _raise_oserror(*args, **kwargs):
+    raise OSError("locked")
+
+
+def test_delete_project_marker_recovers_when_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.replace失敗で元ディレクトリが残ったケースも、起動時sweepで再回収できること。"""
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "a.png").write_bytes(b"x")
+
+        # rename失敗かつrmtree無効を模し、元ディレクトリを残留させる。
+        monkeypatch.setattr(projects_router.os, "replace", _raise_oserror)
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json() == {"deleted": True, "cleanup_pending": True}
+        # rename失敗のため元ディレクトリが残り、tombstoneにはならない。markerで記録する。
+        assert project_dir.exists()
+        assert list(export_dir.glob("*.deleting-*")) == []
+        assert len(list(export_dir.glob("*.deletion-pending"))) == 1
+
+        # 復旧後のsweepで元ディレクトリもmarkerも回収される。
+        monkeypatch.undo()
+        projects_router.sweep_deletion_tombstones(export_dir)
+        assert not project_dir.exists()
+        assert list(export_dir.glob("*.deletion-pending")) == []
+
+
+def test_unavailable_llm_client_chat_raises_with_reason() -> None:
+    from backend.app.llm import LLMError, UnavailableLLMClient
+
+    client = UnavailableLLMClient("http://x", "missing", "指定モデルが未ロードです")
+    with pytest.raises(LLMError) as exc:
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+    assert "指定モデルが未ロードです" in str(exc.value)
+
+
+def test_persist_noop_when_project_deleted(tmp_path: Path) -> None:
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    manager = JobManager(factory)
+    job = GenerationJob(project_id="ghost", panel_id="p01_01", candidate_count=1)
+    # 親projectが無い→FK違反だが、削除済みとみなしno-op（例外を投げない）。
+    manager.persist(job)
+    with factory() as session:
+        assert session.get(GenerationJobRecord, job.id) is None
+
+
+def test_persist_reraises_real_integrity_error_when_project_exists(tmp_path: Path) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'jobs.db'}")
+    with factory() as session:
+        session.add(
+            ProjectRecord(
+                id="p1",
+                title="t",
+                work_name="",
+                manga_json="{}",
+                created_at=db_now_utc(),
+                updated_at=db_now_utc(),
+            )
+        )
+        session.commit()
+    manager = JobManager(factory)
+    job = GenerationJob(project_id="p1", panel_id="p01_01", candidate_count=1)
+    job.created_at = None  # type: ignore[assignment]  # NOT NULL違反（削除race以外の本物の不整合）
+    with pytest.raises(IntegrityError):
+        manager.persist(job)

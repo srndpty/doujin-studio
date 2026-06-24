@@ -487,7 +487,7 @@ export function App() {
   async function deleteProject(project: ProjectSummary) {
     if (!window.confirm(`プロジェクト「${project.title}」を削除します。生成画像も元に戻せません。`)) return;
     await runTask(async () => {
-      await api.delete<{ deleted: boolean }>(`/api/projects/${project.id}`);
+      const result = await api.delete<Schemas["ProjectDeletionResponse"]>(`/api/projects/${project.id}`);
       if (selectedProjectIdRef.current === project.id) {
         selectedProjectIdRef.current = null;
         selectedRef.current = null;
@@ -499,7 +499,11 @@ export function App() {
         setActiveJobIds([]);
       }
       await refreshProjects();
-      setMessage("プロジェクトを削除しました");
+      setMessage(
+        result.cleanup_pending
+          ? "プロジェクトは削除済みです。残存ファイルは次回起動時に再回収します"
+          : "プロジェクトを削除しました"
+      );
     });
   }
 
@@ -1700,11 +1704,15 @@ export function App() {
                 workflow: {comfyStatus?.workflow_exists ? "あり" : "なし"} / node:{" "}
                 {comfyStatus?.workflow_valid ? "OK" : "未検証"}
               </small>
-              {(comfyStatus?.backend !== "comfyui" || !comfyStatus.connected) && (
+              {comfyStatus && comfyStatus.backend === "comfyui" && !comfyStatus.workflow_valid ? (
+                <strong className="backend-warning">
+                  警告: ComfyUIのworkflow設定エラーです。修正するまでコマ画像生成は失敗します。
+                </strong>
+              ) : comfyStatus && (comfyStatus.backend !== "comfyui" || !comfyStatus.connected) ? (
                 <strong className="backend-warning">
                   警告: ComfyUIを使用していません。コマ画像はスタブになります。
                 </strong>
-              )}
+              ) : null}
             </section>
 
             {productionStatus && (

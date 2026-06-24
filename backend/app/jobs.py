@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -10,7 +11,9 @@ from typing import Literal, cast
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from .database import GenerationJobRecord
+from .database import GenerationJobRecord, ProjectRecord
+
+logger = logging.getLogger(__name__)
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
 TERMINAL_JOB_STATUSES = {"done", "error", "cancelled"}
@@ -271,9 +274,23 @@ class JobManager:
             try:
                 session.commit()
             except IntegrityError:
-                # プロジェクト削除後の停止処理など、親(projects)が無い場合はFK違反になる。
-                # ジョブレコードはcascadeで既に消えており永続化対象がないため、no-opにする。
                 session.rollback()
+                # 親(projects)が削除済みのときだけ、cascadeでjob recordも消えており
+                # 永続化対象が無いためno-opにする。親が残っているIntegrityErrorは
+                # 一意/check制約違反など本物の不整合なので、隠さずログして再送出する。
+                if self._project_exists(job.project_id):
+                    logger.error(
+                        "ジョブ永続化でIntegrityErrorが発生しました job_id=%s project_id=%s",
+                        job.id,
+                        job.project_id,
+                    )
+                    raise
+
+    def _project_exists(self, project_id: str) -> bool:
+        if self.session_factory is None:
+            return False
+        with self.session_factory() as session:
+            return session.get(ProjectRecord, project_id) is not None
 
     async def wait_for_change(
         self, job_id: str, revision: int, timeout: float = 15.0

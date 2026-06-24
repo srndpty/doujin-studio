@@ -35,6 +35,7 @@ from ..schemas import (
     PanelPageRenderResult,
     PreflightResponse,
     ProjectCreate,
+    ProjectDeletionResponse,
     ProjectDetail,
     ProjectMutationResponse,
     ProjectProductionStatus,
@@ -88,37 +89,73 @@ def get_project(project_id: str, request: Request) -> ProjectDetail:
 
 
 DELETION_TOMBSTONE_GLOB = "*.deleting-*"
+DELETION_MARKER_GLOB = "*.deletion-pending"
+
+
+def _write_deletion_marker(export_dir: Path, residual: Path) -> None:
+    """残骸の絶対パスをmarkerへ記録し、起動時sweepで再回収できるようにする。"""
+    marker = export_dir / f"{residual.name}.deletion-pending"
+    try:
+        marker.write_text(str(residual), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _remove_project_dir(project_dir: Path) -> bool:
     """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeする。
 
     完全に消えたらTrue、Windowsで開かれたファイル等で残留したらFalseを返す。
-    残留分はtombstone名になるため、起動時のsweep_deletion_tombstonesで再回収できる。
+    rename成功後の残骸はtombstone名でglob回収できる。renameごと失敗して元ディレクトリが
+    残った場合はtombstone名にならないため、markerへ元パスを記録して起動時に再試行する。
     """
     if not project_dir.exists():
         return True
     tombstone = project_dir.with_name(f"{project_dir.name}.deleting-{uuid.uuid4().hex}")
+    renamed = False
     try:
         os.replace(project_dir, tombstone)
+        renamed = True
         target = tombstone
     except OSError:
         # 退避に失敗（開かれたファイル等）してもそのまま削除を試みる。
         target = project_dir
     shutil.rmtree(target, ignore_errors=True)
-    return not target.exists()
+    if not target.exists():
+        return True
+    if not renamed:
+        _write_deletion_marker(project_dir.parent, target)
+    return False
 
 
 def sweep_deletion_tombstones(export_dir: Path) -> None:
-    """削除に失敗して残ったtombstoneディレクトリを再回収する（起動時に呼ぶ）。"""
+    """削除に失敗して残った成果物を再回収する（起動時に呼ぶ）。
+
+    markerに記録された残骸（rename失敗の元ディレクトリ含む）と、marker無しで残った
+    tombstone（プロセスクラッシュ時の保険）の双方を掃除する。
+    """
     if not export_dir.exists():
         return
+    for marker in export_dir.glob(DELETION_MARKER_GLOB):
+        try:
+            residual = Path(marker.read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+        if residual.exists():
+            shutil.rmtree(residual, ignore_errors=True)
+        if not residual.exists():
+            marker.unlink(missing_ok=True)
     for tombstone in export_dir.glob(DELETION_TOMBSTONE_GLOB):
         shutil.rmtree(tombstone, ignore_errors=True)
 
 
-@router.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str, request: Request, response: Response) -> dict[str, bool]:
+@router.delete(
+    "/api/projects/{project_id}",
+    response_model=ProjectDeletionResponse,
+    responses={202: {"model": ProjectDeletionResponse}},
+)
+async def delete_project(
+    project_id: str, request: Request, response: Response
+) -> ProjectDeletionResponse:
     """DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
     進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
 
@@ -156,8 +193,8 @@ async def delete_project(project_id: str, request: Request, response: Response) 
     cleaned = await asyncio.to_thread(_remove_project_dir, project_dir)
     if not cleaned:
         response.status_code = status.HTTP_202_ACCEPTED
-        return {"deleted": True, "cleanup_pending": True}
-    return {"deleted": True, "cleanup_pending": False}
+        return ProjectDeletionResponse(deleted=True, cleanup_pending=True)
+    return ProjectDeletionResponse(deleted=True, cleanup_pending=False)
 
 
 @router.post(

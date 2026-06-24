@@ -509,6 +509,12 @@ class ProjectSummary(BaseModel):
     updated_at: datetime
 
 
+class ProjectDeletionResponse(BaseModel):
+    # DBレコードは常に削除済み。cleanup_pendingは成果物が消しきれず次回起動で再回収する状態。
+    deleted: bool = True
+    cleanup_pending: bool = False
+
+
 class ProjectDetail(ProjectSummary):
     manga_json: MangaProject
 
