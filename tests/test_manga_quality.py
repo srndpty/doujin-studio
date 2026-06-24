@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.app import preflight, renderer, story
 from backend.app.generator import suggest_candidate_count
+from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import _panel_box_px, compute_bubble_layout
 from backend.app.schemas import (
     Character,
@@ -11,6 +14,7 @@ from backend.app.schemas import (
     MangaProject,
     Page,
     Panel,
+    PanelCharacter,
     ScriptDialogue,
     ScriptPage,
     ScriptPanel,
@@ -163,6 +167,34 @@ def test_classify_subject_mode() -> None:
         )
         == "character_scene"
     )
+    # 人物を明示した無言の引き絵は、background語を含んでも人物コマとして尊重する。
+    assert (
+        story.classify_subject_mode(
+            ScriptPanel(
+                shot="引き", visual_prompt="wide shot of a room, background", characters=["美嘉"]
+            )
+        )
+        == "character_scene"
+    )
+
+
+def test_named_silent_wide_shot_keeps_characters() -> None:
+    # 人物名あり＋background語の無言コマで、台本指定の人物が消えないこと（Medium回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="引き",
+        visual_prompt="wide shot of a town, background, scenery",
+        characters=["美嘉"],
+        dialogue=[],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base, page_characters={1: ["美嘉"]})
+    drawn = manga.pages[0].panels[0]
+    assert drawn.subject_mode == "character_scene"
+    assert drawn.characters == ["mika"]
 
 
 def test_offscreen_narration_panel_does_not_get_page_characters() -> None:
@@ -259,8 +291,9 @@ def test_review_script_moves_anonymous_onomatopoeia_and_fixes_kinds() -> None:
     assert monologue["kind"] == "monologue"
     shout = next(line for line in panel["dialogue"] if line["text"] == "やめろ！！")
     assert shout["kind"] == "shout"
-    assert all(s["text"] != "トドメ" for s in panel["sfx"])  # 場面非対応の擬音は削除
-    assert warnings
+    # 場面非対応らしき擬音は削除せず保持し、警告だけ出す（不可逆な本文削除をしない）。
+    assert any(s["text"] == "トドメ" for s in panel["sfx"])
+    assert any("トドメ" in warning for warning in warnings)
 
 
 # --- 領域5: 候補数の自動提案 ---
@@ -279,3 +312,40 @@ def test_suggest_candidate_count() -> None:
     assert suggest_candidate_count(plain) == 2
     assert suggest_candidate_count(showcase) == 4
     assert suggest_candidate_count(plain) <= suggest_candidate_count(showcase)
+    # base=candidate_countを下限にすると、通常コマは増えず見せ場だけ増える（UI説明と一致）。
+    assert suggest_candidate_count(plain, base=1) == 1
+    assert suggest_candidate_count(showcase, base=1) == 4
+
+
+# --- 領域1: character_layoutの整合検証とプロンプト反映 ---
+
+
+def test_character_layout_must_subset_characters() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.05, 0.05, 0.9, 0.9),
+            shot="t",
+            characters=["mika"],
+            character_layout=[PanelCharacter(id="rika")],  # charactersに無いID
+        )
+
+
+def test_character_layout_feeds_prompt() -> None:
+    manga = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0.05, 0.05, 0.9, 0.9),
+        shot="t",
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika", expression="smiling", action="waving hand")],
+    )
+    positive, _negative = compose_panel_prompts(manga, panel)
+    # character_layoutの表情・動作がプロンプトへ反映される（死んだ状態ではない）。
+    assert "smiling" in positive
+    assert "waving hand" in positive

@@ -35,6 +35,7 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
         positive_parts.append(SUBJECT_MODE_POSITIVE.get(panel.subject_mode, ""))
         negative_parts.append(INSERT_NEGATIVE_PROMPT)
     else:
+        layout_by_id = {entry.id: entry for entry in panel.character_layout}
         for character_id in panel.characters:
             character = characters_by_id.get(character_id)
             if character is None:
@@ -46,6 +47,10 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
                     character.outfit_prompt,
                 ]
             )
+            # character_layoutの表情・動作をプロンプトへ反映する（人物ごとの演技指定）。
+            entry = layout_by_id.get(character_id)
+            if entry is not None:
+                positive_parts.extend([entry.expression, entry.action])
             negative_parts.append(character.negative_prompt)
 
     positive_parts.append(panel.generation.prompt or panel.prompt)

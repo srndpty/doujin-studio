@@ -337,6 +337,22 @@ class Panel(BaseModel):
             raise ValueError("bboxの幅と高さは正の値にしてください")
         return value
 
+    @model_validator(mode="after")
+    def validate_character_layout(self) -> "Panel":
+        """character_layoutを描画人物(characters)と整合させる。
+
+        IDはcharactersの部分集合で重複なし。lookupや領域分離の破綻を防ぐ。
+        """
+        ids = [entry.id for entry in self.character_layout]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"{self.panel_id}のcharacter_layoutにID重複があります")
+        unknown = [character_id for character_id in ids if character_id not in self.characters]
+        if unknown:
+            raise ValueError(
+                f"{self.panel_id}のcharacter_layoutが描画人物に無いIDを参照: {', '.join(unknown)}"
+            )
+        return self
+
     @field_validator("shape_points")
     @classmethod
     def validate_shape_points(

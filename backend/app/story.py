@@ -555,7 +555,7 @@ def review_script(data: dict) -> tuple[dict, list[str]]:
                     line["kind"] = "shout"
                     warnings.append(f"{label}: 強い語気の台詞を叫びに変更しました")
                 kept_dialogue.append(line)
-            # 4) 場面非対応の擬音を除去する。
+            # 4) 場面非対応の擬音は、単語一致だけで内容を判断できないため削除せず警告に留める。
             cleaned_sfx: list[dict] = []
             for item in sfx:
                 sfx_text = (
@@ -566,8 +566,9 @@ def review_script(data: dict) -> tuple[dict, list[str]]:
                 if not sfx_text:
                     continue
                 if sfx_text in _SFX_WORD_BLOCKLIST:
-                    warnings.append(f"{label}: 場面と対応しない擬音「{sfx_text}」を削除しました")
-                    continue
+                    warnings.append(
+                        f"{label}: 擬音「{sfx_text}」は場面と対応しない可能性があります（要確認）"
+                    )
                 cleaned_sfx.append(item if isinstance(item, dict) else {"text": sfx_text})
             panel["dialogue"] = kept_dialogue
             panel["sfx"] = cleaned_sfx
@@ -919,9 +920,12 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
     """コマ台本から主題モードを推定する（領域1）。
 
     手元・小物・背景コマを検出し、人物LoRA/参照を注入しない非人物モードへ振り分ける。
-    画面内の会話・叫び話者がいるコマは人物コマとみなす（画面外ナレーションだけの
-    背景コマは非人物のまま扱い、ページ人物の再混入を防ぐ）。
+    台本が人物を明示したコマ（charactersは「実際に描かれる人物だけ」の契約）と、
+    画面内の会話・叫び話者がいるコマは人物コマとして最優先で尊重する。画面外
+    ナレーションだけの背景コマは非人物のまま扱い、ページ人物の再混入を防ぐ。
     """
+    if script_panel.characters:
+        return "character_scene"
     has_visible_speaker = any(
         line.on_screen and line.kind in {"speech", "shout"} for line in script_panel.dialogue
     )
