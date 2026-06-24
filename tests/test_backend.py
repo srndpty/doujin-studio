@@ -91,6 +91,9 @@ def make_client(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         export_dir=tmp_path / "exports",
         image_backend=image_backend,
+        # 既定値がautoになったため、unit testはローカルのComfyUI/LM Studio起動状況に
+        # 依存しないようstubへ明示固定する。
+        llm_provider="stub",
         comfyui_base_url="http://127.0.0.1:9",
         comfyui_workflow_path=workflow_path or tmp_path / "missing.workflow_api.json",
     )
@@ -3902,7 +3905,7 @@ def test_delete_project_removes_database_records_and_assets(tmp_path: Path) -> N
         deleted = client.delete(f"/api/projects/{project_id}")
 
         assert deleted.status_code == 200
-        assert deleted.json() == {"deleted": True}
+        assert deleted.json() == {"deleted": True, "cleanup_pending": False}
         assert client.get(f"/api/projects/{project_id}").status_code == 404
         assert not project_dir.exists()
 
@@ -4119,3 +4122,155 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
     xs = [round(point[0], 2) for point in first.shape_points]
     # フロントのshapePreset()がslant-rightと認識できる定数であること。
     assert xs == [0.12, 1.0, 0.88, 0.0]
+
+
+# --- 追補レビュー対応 ---
+
+
+class _DisconnectedComfyUIClient(MockComfyUIClient):
+    async def get(self, url: str, params: dict | None = None) -> httpx.Response:
+        if url.endswith("/system_stats"):
+            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+        return await super().get(url, params)
+
+
+def test_auto_backend_errors_on_invalid_workflow_even_when_disconnected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続不能でもworkflow不正は設定エラー。stubで隠さずValueErrorにする。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: _DisconnectedComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)  # workflow_pathは存在しない
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    export_dir = tmp_path / "exports"
+    with pytest.raises(ValueError):
+        asyncio.run(auto.generate_panel("proj", _auto_panel(), export_dir))
+    assert not (export_dir / "proj").exists()
+
+
+def test_auto_status_reports_comfyui_config_error_when_workflow_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 接続済みでworkflow不正なら、get_statusはstub退避ではなくcomfyuiの設定エラーを返す。
+    monkeypatch.setattr(
+        "backend.app.image_backends.httpx.AsyncClient",
+        lambda *args, **kwargs: MockComfyUIClient(),
+    )
+    config = workflow_config(tmp_path)
+    comfy = ComfyUIImageBackend("http://comfy", workflow_config=config, timeout_seconds=5.0)
+    auto = AutoImageBackend(comfy, StubImageBackend())
+    status = asyncio.run(auto.get_status())
+    assert status.backend == "comfyui"
+    assert not status.workflow_valid
+    assert "stub" not in status.message
+
+
+def test_resolve_llm_client_openai_compatible_strict_without_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LLM_MODEL未指定でも、接続不能なopenai_compatibleはstubへ落とさず失敗させる。
+    llm_module = _patch_llm_status(monkeypatch, connected=False, models=[])
+    settings = Settings(llm_provider="openai_compatible", llm_model="")
+    client = asyncio.run(llm_module.resolve_llm_client(settings))
+    assert isinstance(client, llm_module.OpenAICompatibleClient)
+
+
+def test_delete_project_cancels_running_worker_without_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """削除前にworkerが起動済みでも、DB先行削除後のcancelで例外・孤児・再作成が起きないこと。"""
+    import threading
+
+    started = threading.Event()
+
+    class BarrierBackend:
+        async def generate_panel(self, *args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()  # cancelされるまでブロックする
+
+    monkeypatch.setattr(generation_module, "build_image_backend", lambda settings: BarrierBackend())
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        response = client.post(
+            mutation_url(client, project_id, "panels/p01_01/generation-jobs"),
+            json={"candidate_count": 1},
+        )
+        assert response.status_code == 200
+        # workerがgenerate_panelへ入る（=削除前に起動済み）まで待つ。
+        assert started.wait(timeout=5.0)
+
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code in {200, 202}
+        assert deleted.json()["deleted"] is True
+        # workerをcancelしてもprojectは復活せず、成果物も残らない。
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not (tmp_path / "exports" / project_id).exists()
+
+
+def test_delete_project_cleanup_pending_then_sweep_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export_dir = tmp_path / "exports"
+    with make_client(tmp_path) as client:
+        created = client.post(
+            "/api/projects", json={"title": "削除", "work_name": "作品", "target_pages": 4}
+        ).json()
+        project_id = created["project"]["id"]
+        project_dir = export_dir / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+        (project_dir / "a.png").write_bytes(b"x")
+
+        # rmtreeを無効化し、削除を残留させる（Windowsで画像が開かれている等を模す）。
+        monkeypatch.setattr(projects_router.shutil, "rmtree", lambda *args, **kwargs: None)
+        deleted = client.delete(f"/api/projects/{project_id}")
+        assert deleted.status_code == 202
+        assert deleted.json() == {"deleted": True, "cleanup_pending": True}
+        # DBは消えるが、tombstoneが残留する。
+        assert client.get(f"/api/projects/{project_id}").status_code == 404
+        assert not project_dir.exists()
+        assert len(list(export_dir.glob("*.deleting-*"))) == 1
+
+        # rmtreeを戻すと、起動時sweepでtombstoneを再回収できる。
+        monkeypatch.undo()
+        projects_router.sweep_deletion_tombstones(export_dir)
+        assert list(export_dir.glob("*.deleting-*")) == []
+
+
+def test_shape_points_rejects_nan() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(float("nan"), 0.0), (1.0, 0.0), (0.5, 1.0)],
+        )
+
+
+def test_shape_points_rejects_zero_area() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)],
+        )
+
+
+def test_shape_points_rejects_self_intersection() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.1, 0.1, 0.8, 0.8),
+            shot="x",
+            shape_points=[(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)],
+        )

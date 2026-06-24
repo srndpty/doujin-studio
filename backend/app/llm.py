@@ -162,8 +162,9 @@ async def resolve_llm_client(settings: Settings) -> StubLLMClient | OpenAICompat
     )
     status = await probe.status()
     if not status.connected:
-        # openai_compatibleでmodel指定済みなら、実呼び出しで接続エラーを表面化させる。
-        if provider == "openai_compatible" and settings.llm_model:
+        # 明示的に外部LLMを要求したopenai_compatibleは、LLM_MODELの有無に関わらず
+        # stubへ落とさず、実呼び出しで接続エラーを表面化させる。stub退避はauto専用。
+        if provider == "openai_compatible":
             return probe
         return StubLLMClient()
     model, _reason = _select_model(settings, status)

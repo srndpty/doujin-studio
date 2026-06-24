@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 
 from .. import layout_engine
 from .. import preflight as preflight_module
@@ -87,11 +87,17 @@ def get_project(project_id: str, request: Request) -> ProjectDetail:
     )
 
 
-def _remove_project_dir(project_dir: Path) -> None:
-    """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeし、
-    Windowsで開かれたファイル等の削除失敗でも例外を投げない（DBは既に整合済み）。"""
+DELETION_TOMBSTONE_GLOB = "*.deleting-*"
+
+
+def _remove_project_dir(project_dir: Path) -> bool:
+    """成果物ディレクトリを削除する。tombstoneへos.replaceしてからrmtreeする。
+
+    完全に消えたらTrue、Windowsで開かれたファイル等で残留したらFalseを返す。
+    残留分はtombstone名になるため、起動時のsweep_deletion_tombstonesで再回収できる。
+    """
     if not project_dir.exists():
-        return
+        return True
     tombstone = project_dir.with_name(f"{project_dir.name}.deleting-{uuid.uuid4().hex}")
     try:
         os.replace(project_dir, tombstone)
@@ -100,10 +106,19 @@ def _remove_project_dir(project_dir: Path) -> None:
         # 退避に失敗（開かれたファイル等）してもそのまま削除を試みる。
         target = project_dir
     shutil.rmtree(target, ignore_errors=True)
+    return not target.exists()
+
+
+def sweep_deletion_tombstones(export_dir: Path) -> None:
+    """削除に失敗して残ったtombstoneディレクトリを再回収する（起動時に呼ぶ）。"""
+    if not export_dir.exists():
+        return
+    for tombstone in export_dir.glob(DELETION_TOMBSTONE_GLOB):
+        shutil.rmtree(tombstone, ignore_errors=True)
 
 
 @router.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
+async def delete_project(project_id: str, request: Request, response: Response) -> dict[str, bool]:
     """DBレコードを先に削除して新規ジョブ登録とworkerのpublishを止め、その後に
     進行中ジョブを停止・待機してから成果物を別スレッドで削除する。
 
@@ -137,8 +152,12 @@ async def delete_project(project_id: str, request: Request) -> dict[str, bool]:
         await request.app.state.generation.cancel(job)
 
     # 3) 同期rmtreeはイベントループを止めるため別スレッドで削除する。
-    await asyncio.to_thread(_remove_project_dir, project_dir)
-    return {"deleted": True}
+    #    削除しきれず残留した場合は202で明示し、次回起動のsweepで再回収する。
+    cleaned = await asyncio.to_thread(_remove_project_dir, project_dir)
+    if not cleaned:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"deleted": True, "cleanup_pending": True}
+    return {"deleted": True, "cleanup_pending": False}
 
 
 @router.post(

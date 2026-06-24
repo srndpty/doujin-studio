@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, cast
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from .database import GenerationJobRecord
@@ -267,7 +268,12 @@ class JobManager:
             record.prompt_id = job.prompt_id
             record.generation_input_hash = job.generation_input_hash
             record.updated_at = job.updated_at
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # プロジェクト削除後の停止処理など、親(projects)が無い場合はFK違反になる。
+                # ジョブレコードはcascadeで既に消えており永続化対象がないため、no-opにする。
+                session.rollback()
 
     async def wait_for_change(
         self, job_id: str, revision: int, timeout: float = 15.0

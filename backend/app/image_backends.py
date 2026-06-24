@@ -278,15 +278,16 @@ class AutoImageBackend:
         on_prompt_id: Callable[[str], Awaitable[None]] | None = None,
     ) -> ImageResult:
         status = await self.comfyui.get_status()
-        # 接続できていればworkflow不正・ノード不足は設定エラーとして表面化させる。
-        # 黙ってstubにすると、placeholderが成果物として残り診断できなくなる。
-        if status.connected and not status.workflow_valid:
+        # workflow不正・ノード不足は接続状態に関わらず設定エラーとして表面化させる。
+        # 接続不能を理由に黙ってstubへ退避すると、設定不備がplaceholderの裏に隠れて
+        # 診断できなくなるため、判定はworkflow_validを先に行う。
+        if not status.workflow_valid:
             if not status.workflow_exists:
                 raise ValueError(f"workflow_api.jsonが見つかりません: {status.workflow_path}")
             raise ValueError(
                 f"workflow設定ノードが不足しています: {', '.join(status.missing_nodes)}"
             )
-        if status.connected and status.workflow_valid:
+        if status.connected:
             return await self.comfyui.generate_panel(
                 project_id,
                 panel,
@@ -295,7 +296,7 @@ class AutoImageBackend:
                 progress_callback=progress_callback,
                 on_prompt_id=on_prompt_id,
             )
-        # 接続不能時のみstubへ退避する（MVPを止めない）。
+        # workflowは正しいがComfyUIへ接続できないときだけstubへ退避する（MVPを止めない）。
         result = await self.stub.generate_panel(
             project_id,
             panel,
@@ -313,8 +314,13 @@ class AutoImageBackend:
 
     async def get_status(self) -> ComfyUIStatus:
         status = await self.comfyui.get_status()
-        if status.connected and status.workflow_valid:
+        # workflow不正は実生成がValueErrorになる設定エラー。stub退避とは表示せず、
+        # comfyuiの設定エラー（statusのworkflowメッセージ）をそのまま見せて実行結果と一致させる。
+        if not status.workflow_valid:
             return status
+        if status.connected:
+            return status
+        # workflowは正しいが接続不能。実際にstubへfallbackするのでstubとして表示する。
         return ComfyUIStatus(
             backend="stub",
             base_url=status.base_url,
