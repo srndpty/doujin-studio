@@ -155,6 +155,29 @@ def test_sfx_newline_is_preserved_as_break() -> None:
     assert two_lines.width < one_line.width
 
 
+def test_sfx_jitter_differs_by_position() -> None:
+    # 同じ文字列でも位置が違えばゆらぎが変わる（複製した印象にならない）。
+    fill, stroke = (20, 20, 20), (255, 255, 255)
+    upper = renderer._render_sfx_tile(
+        Sfx(text="ドン", position="upper_left", font_size=60), fill, stroke
+    )
+    lower = renderer._render_sfx_tile(
+        Sfx(text="ドン", position="lower_right", font_size=60), fill, stroke
+    )
+    assert upper.size == lower.size  # タイル寸法は同じ
+    assert upper.tobytes() != lower.tobytes()  # ゆらぎは異なる
+
+
+def test_render_refreshes_sfx_font_cache() -> None:
+    # 描画の入口で擬音フォントの探索キャッシュが破棄される（実行中の追加が反映される）。
+    from backend.app.fonts import find_sfx_font_path
+
+    find_sfx_font_path("dummy-preferred")
+    assert find_sfx_font_path.cache_info().currsize >= 1
+    renderer._refresh_sfx_font_cache()
+    assert find_sfx_font_path.cache_info().currsize == 0
+
+
 def test_sfx_style_presets_differ() -> None:
     assert (
         renderer.sfx_style_params("handwritten").jitter_rot

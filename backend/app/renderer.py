@@ -33,6 +33,15 @@ SHAPE_INSCRIBE: dict[str, tuple[float, float]] = {
 }
 
 
+def _refresh_sfx_font_cache() -> None:
+    """擬音フォントの探索キャッシュを破棄する。
+
+    利用者が登録ディレクトリ(~/.doujin-studio/fonts/sfx)へフォントを追加した直後でも、
+    再描画で反映されるよう、描画の入口でキャッシュを更新する。
+    """
+    find_sfx_font_path.cache_clear()
+
+
 def render_project_pages(
     project_id: str,
     manga: MangaProject,
@@ -40,6 +49,7 @@ def render_project_pages(
     *,
     output_dir: Path | None = None,
 ) -> tuple[list[Path], list[str]]:
+    _refresh_sfx_font_cache()
     pages_dir = output_dir or export_dir / project_id / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     assets: list[Path] = []
@@ -59,6 +69,7 @@ def render_project_page(
     *,
     output_dir: Path | None = None,
 ) -> tuple[Path, list[str]]:
+    _refresh_sfx_font_cache()
     pages_dir = output_dir or export_dir / project_id / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
     page = next((item for item in manga.pages if item.page == page_number), None)
@@ -779,7 +790,8 @@ def _render_sfx_tile(
     if not segments:
         return Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 
-    seed_key = f"{sfx.style}|{sfx.text}"
+    # seedに位置・box・縦横も含め、同じ文字列を別位置へ置いてもゆらぎが複製されないようにする。
+    seed_key = f"{sfx.style}|{sfx.text}|{sfx.position}|{sfx.box}|{sfx.vertical}"
     cell = sfx.font_size
     advance = int(cell * 1.05)
     band = int(cell * 1.3)  # 列幅(縦書き)／行高(横書き)
