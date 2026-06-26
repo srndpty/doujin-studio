@@ -976,6 +976,20 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
     return sfx_list
 
 
+# 人物解決の警告に付ける安定prefix。再適用時にこの種別だけ再計算・置換する。
+UNRESOLVED_CHARACTER_PREFIX = "[未解決の人物] "
+
+
+def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
+    """既存warningsのうち未解決人物カテゴリだけを置換する。
+
+    安定prefixの警告を毎回作り直すことで、誤字を直して再適用すれば古い警告が消え、
+    他カテゴリ（編集チェック等）の警告は保持される。
+    """
+    kept = [warning for warning in existing if not warning.startswith(UNRESOLVED_CHARACTER_PREFIX)]
+    return kept + unresolved
+
+
 def script_to_manga(
     script: ScriptStage,
     base: MangaProject,
@@ -1005,15 +1019,21 @@ def script_to_manga(
             )
             subject_mode = classify_subject_mode(script_panel)
             non_character = subject_mode in {"prop_insert", "hand_insert", "background"}
-            # 明示された人物名（characters/directive）が登録キャラに解決できない場合は、
-            # 黙って人物なしコマにせず警告として残す（表記揺れ・誤字の検知）。
+            # 明示された人物名（characters/directive/画面内話者）が登録キャラに解決できない
+            # 場合は、黙って人物なしコマにせず警告として残す（表記揺れ・誤字の検知）。
             if warnings is not None:
-                explicit_names = list(script_panel.characters) + [
-                    directive.name for directive in script_panel.character_directives
+                explicit_names = [
+                    *script_panel.characters,
+                    *(directive.name for directive in script_panel.character_directives),
+                    *(
+                        line.speaker
+                        for line in script_panel.dialogue
+                        if line.speaker and line.on_screen and line.kind in {"speech", "shout"}
+                    ),
                 ]
                 for name in explicit_names:
                     if name and match_character_id(name, base.characters) is None:
-                        message = f"{panel_id}: 人物「{name}」を登録キャラクターに解決できません"
+                        message = f"{UNRESOLVED_CHARACTER_PREFIX}{panel_id}: 「{name}」を登録キャラクターに解決できません"
                         if message not in warnings:
                             warnings.append(message)
             # コマ明記の登場人物 + 人物別ディレクションの名前に、画面内の会話/叫び話者だけを
@@ -1167,9 +1187,11 @@ def apply_session(
     unresolved: list[str] = []
     manga = script_to_manga(script, base, page_characters, warnings=unresolved)
     # 解決不能な人物名は台本段階の警告として残し、StoryPanelで利用者に知らせる。
-    if unresolved:
-        existing = list(stages["script"].get("warnings") or [])
-        stages["script"]["warnings"] = existing + [w for w in unresolved if w not in existing]
+    # 安定prefixの警告だけを毎回再計算・置換し、修正後の再適用で古い誤字警告を消す。
+    existing = list(stages["script"].get("warnings") or [])
+    updated = merge_unresolved_warnings(existing, unresolved)
+    if updated != existing:
+        stages["script"]["warnings"] = updated
         save_stages(session, record, stages)
     return manga
 

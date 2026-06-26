@@ -553,6 +553,41 @@ def test_script_to_manga_warns_on_unresolved_character() -> None:
     assert any("美香" in warning for warning in warnings)
 
 
+def test_unresolved_on_screen_speaker_is_warned() -> None:
+    # 画面内のspeech話者が誤字で解決できない場合も警告対象に含める（Medium回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="bust",
+        visual_prompt="a girl",
+        characters=[],
+        dialogue=[ScriptDialogue(speaker="美香", text="やあ", kind="speech", on_screen=True)],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    warnings: list[str] = []
+    story.script_to_manga(script, base, warnings=warnings)
+    assert any("美香" in warning for warning in warnings)
+
+
+def test_merge_unresolved_warnings_replaces_stale_category() -> None:
+    # 古い未解決警告は再計算で置換され、解決後は残らない。他カテゴリは保持する（Low回帰）。
+    prefix = story.UNRESOLVED_CHARACTER_PREFIX
+    existing = [
+        f"{prefix}p01_01: 「美香」を登録キャラクターに解決できません",
+        "1ページ コマ1: 別カテゴリの警告",
+    ]
+    # 解決済み（unresolved空）なら誤字警告は消え、他カテゴリは残る。
+    assert story.merge_unresolved_warnings(existing, []) == ["1ページ コマ1: 別カテゴリの警告"]
+    # 別の誤字が残る場合はその新警告へ置換される。
+    fresh = [f"{prefix}p02_01: 「莉香」を登録キャラクターに解決できません"]
+    assert story.merge_unresolved_warnings(existing, fresh) == [
+        "1ページ コマ1: 別カテゴリの警告",
+        *fresh,
+    ]
+
+
 def test_review_script_no_false_warning_for_directive_only_page() -> None:
     # character_directivesだけで人物を指定した無台詞ページに誤警告を出さない（Low回帰）。
     data = {

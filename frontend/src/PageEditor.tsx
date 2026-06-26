@@ -25,6 +25,13 @@ const SNAP = 0.01; // 1%グリッドへスナップ
 
 const LAYOUT_FAMILIES = ["establish", "dialogue", "reveal", "action", "punchline", "silent", "montage"];
 const BALLOON_KINDS = ["oval", "cloud", "burst", "caption", "none"];
+// kind→既定の吹き出し形状（バックエンドのKIND_DEFAULT_BALLOONと一致させる）。
+const KIND_DEFAULT_BALLOON: Record<string, string> = {
+  speech: "oval",
+  monologue: "cloud",
+  narration: "caption",
+  shout: "burst"
+};
 
 function shapePointsForPreset(preset: string): [number, number][] | null {
   if (preset === "slant-right")
@@ -1139,7 +1146,17 @@ function BalloonControls({
         <input
           type="checkbox"
           checked={dialogue.balloon_auto ?? false}
-          onChange={(event) => onChange({ balloon_auto: event.target.checked })}
+          onChange={(event) =>
+            onChange(
+              event.target.checked
+                ? {
+                    balloon_auto: true,
+                    // ON時は現在のkind既定形状へ即更新し、表示・プレビューのずれを防ぐ。
+                    balloon: KIND_DEFAULT_BALLOON[dialogue.kind ?? "speech"] ?? "oval"
+                  }
+                : { balloon_auto: false }
+            )
+          }
         />
         形状をkindに自動追従
       </label>
