@@ -722,7 +722,8 @@ def test_script_numeric_fields_are_normalized() -> None:
     assert first["panels"][0]["shot"] == "1"
     assert first["panels"][0]["camera"] == "2"
     assert first["panels"][0]["dialogue"][0]["text"] == "3"
-    assert first["panels"][0]["sfx"] == ["4"]
+    # 擬音は構造化（{text, style, position}）され、文字列・数値はtextへ正規化される。
+    assert first["panels"][0]["sfx"][0]["text"] == "4"
 
 
 def test_script_prompt_explains_shot_as_string() -> None:

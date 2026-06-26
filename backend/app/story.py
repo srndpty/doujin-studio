@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
 
@@ -30,7 +32,10 @@ from .schemas import (
     PageOutline,
     PagesStage,
     Panel,
+    PanelCharacter,
     PlotStage,
+    ScriptCharacter,
+    ScriptPanel,
     ScriptStage,
     Sfx,
     StorySessionResponse,
@@ -81,6 +86,7 @@ def empty_stages() -> dict:
             "data": None,
             "knowledge_ids": [],
             "error": None,
+            "warnings": [],
             "updated_at": None,
         }
         for name in STAGE_ORDER
@@ -285,6 +291,7 @@ async def generate_stage(
     context = build_context(session, settings, record.work_name, stage_query(stage, record, stages))
 
     error: str | None = None
+    review_warnings: list[str] = []
     try:
         if isinstance(llm, StubLLMClient):
             data = generate_stub_stage(session, record, stages, stage)
@@ -297,9 +304,22 @@ async def generate_stage(
         error = str(exc)
         data = None
 
+    # 台本段階は生成後に1回だけ編集チェックを掛け、自動修正と警告を残す（領域2）。
+    if stage == "script" and data is not None:
+        original_data = copy.deepcopy(data)
+        data, review_warnings = review_script(data)
+        try:
+            data = validate_stage_data(stage, data, record.target_pages)
+        except (ValidationError, ValueError) as exc:
+            # 編集チェックで壊れることは想定しないが、壊れたら修正前データへ戻す。
+            error = error or str(exc)
+            data = original_data
+            review_warnings = []
+
     stages[stage]["data"] = data
     stages[stage]["knowledge_ids"] = context.knowledge_ids
     stages[stage]["error"] = error
+    stages[stage]["warnings"] = review_warnings
     stages[stage]["status"] = "draft" if data is not None else "empty"
     stages[stage]["updated_at"] = now_utc().isoformat()
     invalidate_downstream(stages, stage)
@@ -371,8 +391,16 @@ def stage_instruction_text(stage: str) -> str:
             "・各コマで画角(shot)と役割を変え、状況提示→反応→引き のように流れを作る。"
             "・ページのpurposeとhookに沿ってコマを配置する。"
             "出力形式: pages配列。各ページは page(整数) と panels(1〜9個)を持ちます。"
-            "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue([{speaker, text}]), sfx([string]) を持ちます。"
-            "charactersにはそのコマに描かれる登場人物名を、台詞が無いコマでも必ず列挙してください。"
+            "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue, sfx を持ちます。"
+            "charactersにはそのコマに実際に描かれる登場人物名だけを列挙してください（画面外の話者は含めない）。"
+            "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
+            "可能なら character_directives: [{name, position, expression, action}] も出力し、"
+            "人物ごとの画面内位置(position: upper_left/upper_right/lower_left/lower_right/center)、"
+            "表情(expression)、動作(action)を英語で指定してください（画像生成promptへ反映されます）。"
+            "dialogueは [{speaker, text, kind, on_screen}] の配列です。"
+            "kindは speech(会話)/monologue(独白・心の声)/narration(ナレーション・地の文)/shout(叫び) から選びます。"
+            "on_screenは話者がそのコマに描かれていればtrue、画面外の声ならfalseにします。独白・ナレーションは原則false。"
+            "擬音は台詞に混ぜず、必ずsfxへ入れてください。sfxは [{text, style}] の配列です（styleは handwritten/impact/quiet）。"
             "shotはコマ番号ではなく、close-up, medium shot, wide shotなどの画角を文字列で指定してください。"
             "camera, location, visual_prompt, speaker, textも文字列で出力してください。"
             "任意で各ページにlayout(コマ割りのヒント文字列)を付けてもかまいません。"
@@ -450,6 +478,107 @@ def script_needs_repaneling(data: dict) -> bool:
     if len(pages) < 2:
         return False
     return all(len(page.get("panels", [])) <= 1 for page in pages)
+
+
+# --- 台本の編集チェック（領域2） ---
+
+# 純カタカナ（＋長音・末尾の感嘆符）は台詞ではなく擬音とみなす。
+_ONOMATOPOEIA_RE = re.compile(r"^[ァ-ヶー]{1,8}[！!]*$")
+# 擬音欄に紛れがちな「音ではない語」。場面と対応しないため除去する（例: トドメ）。
+_SFX_WORD_BLOCKLIST = {
+    "トドメ",
+    "とどめ",
+    "止め",
+    "攻撃",
+    "勝利",
+    "敗北",
+    "成功",
+    "失敗",
+    "完了",
+    "終了",
+}
+
+
+def _looks_like_shout(text: str) -> bool:
+    stripped = text.strip()
+    # 末尾に「！」が2つ以上で、語そのものがある（擬音ではない）場合は叫び。
+    return bool(re.search(r"[！!]{2,}$", stripped)) and not _ONOMATOPOEIA_RE.match(stripped)
+
+
+def _looks_like_monologue(text: str) -> bool:
+    stripped = text.strip()
+    return bool(re.fullmatch(r"[（(].+[）)]", stripped))
+
+
+def review_script(data: dict) -> tuple[dict, list[str]]:
+    """LLM/スタブ生成後の台本へ1回だけ編集チェックを掛ける（領域2）。
+
+    台詞と擬音の混同、独白/叫びの種別誤り、場面非対応の擬音などを自動修正し、
+    行った修正を警告メッセージとして返す。破壊的変更はせず、内容は保持する。
+    """
+    warnings: list[str] = []
+    pages = data.get("pages") if isinstance(data, dict) else None
+    if not isinstance(pages, list):
+        return data, warnings
+    for page in pages:
+        page_no = page.get("page", "?")
+        panels = page.get("panels", []) if isinstance(page, dict) else []
+        page_has_character = False
+        for p_index, panel in enumerate(panels, start=1):
+            if not isinstance(panel, dict):
+                continue
+            label = f"{page_no}ページ コマ{p_index}"
+            # character_directivesも人物指定とみなす（directive単独ページの誤警告を防ぐ）。
+            if panel.get("characters") or panel.get("character_directives"):
+                page_has_character = True
+            dialogue = panel.get("dialogue", []) or []
+            sfx = panel.get("sfx", []) or []
+            kept_dialogue: list[dict] = []
+            for line in dialogue:
+                if not isinstance(line, dict):
+                    continue
+                text = str(line.get("text", "")).strip()
+                if not text:
+                    continue
+                # 1) 擬音らしき台詞は内容を破壊しないよう自動移動せず、警告だけ出す
+                #    （「ダメ！」「ハイ！」等の自然な会話の誤変換を避ける）。
+                if _ONOMATOPOEIA_RE.match(text):
+                    warnings.append(
+                        f"{label}: 台詞「{text}」は擬音の可能性があります（擬音欄への移動を検討）"
+                    )
+                # 2) 独白を通常会話で書いている → kindをmonologueへ。
+                if _looks_like_monologue(text) and line.get("kind", "speech") == "speech":
+                    line["kind"] = "monologue"
+                    line["on_screen"] = False
+                    warnings.append(f"{label}: 括弧書きの台詞を独白に変更しました")
+                # 3) 叫びがspeechのまま → kindをshoutへ。
+                elif _looks_like_shout(text) and line.get("kind", "speech") == "speech":
+                    line["kind"] = "shout"
+                    warnings.append(f"{label}: 強い語気の台詞を叫びに変更しました")
+                kept_dialogue.append(line)
+            # 4) 場面非対応の擬音は、単語一致だけで内容を判断できないため削除せず警告に留める。
+            cleaned_sfx: list[dict] = []
+            for item in sfx:
+                sfx_text = (
+                    str(item.get("text", "")).strip()
+                    if isinstance(item, dict)
+                    else str(item).strip()
+                )
+                if not sfx_text:
+                    continue
+                if sfx_text in _SFX_WORD_BLOCKLIST:
+                    warnings.append(
+                        f"{label}: 擬音「{sfx_text}」は場面と対応しない可能性があります（要確認）"
+                    )
+                cleaned_sfx.append(item if isinstance(item, dict) else {"text": sfx_text})
+            panel["dialogue"] = kept_dialogue
+            panel["sfx"] = cleaned_sfx
+        # 5) 必須人物チェック: 人物も台詞も無いページは登場人物欠落として警告。
+        if panels and not page_has_character:
+            has_dialogue = any(panel.get("dialogue") for panel in panels if isinstance(panel, dict))
+            if not has_dialogue:
+                warnings.append(f"{page_no}ページ: 登場人物が指定されていません")
+    return data, warnings
 
 
 async def generate_llm_stage(
@@ -754,10 +883,118 @@ def resolve_location_id(location: str, manga: MangaProject) -> str:
     return manga.locations[0].id if manga.locations else ""
 
 
+# subject_mode自動分類用のキーワード（shot/visual_prompt/cameraを小文字化して照合）。
+_HAND_KEYWORDS = ["手元", "手のひら", "手だけ", "指先", "hand", "hands", "fingers", "palm"]
+_PROP_KEYWORDS = [
+    "小物",
+    "小箱",
+    "ボタン",
+    "アイテム",
+    "持ち物",
+    "商品",
+    "物だけ",
+    "prop",
+    "object",
+    "product",
+    "item",
+    "still life",
+    "close-up of a",
+]
+_BACKGROUND_KEYWORDS = [
+    "背景",
+    "風景",
+    "情景",
+    "遠景",
+    "空",
+    "街",
+    "建物",
+    "background",
+    "scenery",
+    "landscape",
+    "establishing",
+    "empty room",
+    "wide shot of",
+]
+
+
+def classify_subject_mode(script_panel: ScriptPanel) -> str:
+    """コマ台本から主題モードを推定する（領域1）。
+
+    手元・小物・背景コマを検出し、人物LoRA/参照を注入しない非人物モードへ振り分ける。
+    台本が人物を明示したコマ（charactersは「実際に描かれる人物だけ」の契約。
+    character_directivesも人物指定とみなす）と、画面内の会話・叫び話者がいるコマは
+    人物コマとして最優先で尊重する。画面外ナレーションだけの背景コマは非人物のまま
+    扱い、ページ人物の再混入を防ぐ。
+    """
+    if script_panel.characters or script_panel.character_directives:
+        return "character_scene"
+    # 話者名のある画面内の会話・叫びだけを人物コマの根拠にする。speaker省略（既定の
+    # speech/on_screen）の台詞本文だけでは人物コマと断定しない（背景コマの誤分類を防ぐ）。
+    has_visible_speaker = any(
+        line.speaker.strip() and line.on_screen and line.kind in {"speech", "shout"}
+        for line in script_panel.dialogue
+    )
+    if has_visible_speaker:
+        return "character_scene"
+    haystack = " ".join(
+        [script_panel.shot, script_panel.camera, script_panel.visual_prompt]
+    ).casefold()
+    if any(keyword.casefold() in haystack for keyword in _HAND_KEYWORDS):
+        return "hand_insert"
+    if any(keyword.casefold() in haystack for keyword in _BACKGROUND_KEYWORDS):
+        return "background"
+    if any(keyword.casefold() in haystack for keyword in _PROP_KEYWORDS):
+        return "prop_insert"
+    return "character_scene"
+
+
+# 複数擬音が中央へ集中しないよう分散させる既定アンカー。
+_SFX_SPREAD_ANCHORS = ["upper_right", "lower_left", "upper_left", "lower_right", "center"]
+
+
+def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
+    """台本の擬音をSfxへ変換する。位置未指定の複数擬音は重ならないよう分散する。"""
+    items = [item for item in script_panel.sfx if item.text.strip()]
+    all_centered = all(item.position == "center" for item in items)
+    sfx_list: list[Sfx] = []
+    for index, item in enumerate(items):
+        if all_centered and len(items) > 1:
+            position = _SFX_SPREAD_ANCHORS[index % len(_SFX_SPREAD_ANCHORS)]
+            # 上段と下段でサイズを変え、視覚的にも分離する。
+            font_size = 64 if index % 2 == 0 else 48
+        else:
+            position = item.position
+            font_size = 54
+        sfx_list.append(
+            Sfx(
+                text=item.text[:40],
+                position=position,
+                style=item.style or "small_handwritten",
+                font_size=font_size,
+            )
+        )
+    return sfx_list
+
+
+# 人物解決の警告に付ける安定prefix。再適用時にこの種別だけ再計算・置換する。
+UNRESOLVED_CHARACTER_PREFIX = "[未解決の人物] "
+
+
+def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
+    """既存warningsのうち未解決人物カテゴリだけを置換する。
+
+    安定prefixの警告を毎回作り直すことで、誤字を直して再適用すれば古い警告が消え、
+    他カテゴリ（編集チェック等）の警告は保持される。
+    """
+    kept = [warning for warning in existing if not warning.startswith(UNRESOLVED_CHARACTER_PREFIX)]
+    return kept + unresolved
+
+
 def script_to_manga(
     script: ScriptStage,
     base: MangaProject,
     page_characters: dict[int, list[str]] | None = None,
+    warnings: list[str] | None = None,
 ) -> MangaProject:
     common_positive = base.common_positive_prompt or DEFAULT_COMMON_POSITIVE_PROMPT
     common_negative = base.common_negative_prompt or DEFAULT_COMMON_NEGATIVE_PROMPT
@@ -780,23 +1017,86 @@ def script_to_manga(
             role = layout_engine.derive_role(
                 index, panel_count, page_index, total_pages, bool(script_panel.dialogue)
             )
-            # コマ明記の登場人物 + 台詞話者を統合し、無ければページ構成の登場人物で補う。
+            subject_mode = classify_subject_mode(script_panel)
+            non_character = subject_mode in {"prop_insert", "hand_insert", "background"}
+            # 明示された人物名（characters/directive/画面内話者）が登録キャラに解決できない
+            # 場合は、黙って人物なしコマにせず警告として残す（表記揺れ・誤字の検知）。
+            if warnings is not None:
+                explicit_names = [
+                    *script_panel.characters,
+                    *(directive.name for directive in script_panel.character_directives),
+                    *(
+                        line.speaker
+                        for line in script_panel.dialogue
+                        if line.speaker and line.on_screen and line.kind in {"speech", "shout"}
+                    ),
+                ]
+                for name in explicit_names:
+                    if name and match_character_id(name, base.characters) is None:
+                        message = f"{UNRESOLVED_CHARACTER_PREFIX}{panel_id}: 「{name}」を登録キャラクターに解決できません"
+                        if message not in warnings:
+                            warnings.append(message)
+            # コマ明記の登場人物 + 人物別ディレクションの名前に、画面内の会話/叫び話者だけを
+            # 足す（画面外台詞は描画人物に含めない）。directiveだけ指定された人物も取りこぼさない。
             names: list[str] = list(script_panel.characters)
+            for directive in script_panel.character_directives:
+                if directive.name and directive.name not in names:
+                    names.append(directive.name)
             for line in script_panel.dialogue:
-                if line.speaker and line.speaker not in names:
+                if (
+                    line.speaker
+                    and line.on_screen
+                    and line.kind in {"speech", "shout"}
+                    and line.speaker not in names
+                ):
                     names.append(line.speaker)
+            # 人物指定の意図（characters/directive/画面内話者）が一つでもあれば、
+            # 解決できなくてもページ人物へfallbackしない（未知名経由の再混入を防ぐ）。
+            has_explicit_character_intent = bool(names)
             character_ids = resolve_character_ids(names, base)
-            if not character_ids:
+            if not character_ids and not non_character and not has_explicit_character_intent:
                 character_ids = resolve_character_ids(
                     page_characters.get(script_page.page, []), base
                 )
+            # 手元・小物・背景コマは人物指定を外す（LoRA混入を防ぐ）。
+            if non_character:
+                character_ids = []
+            # 人物別ディレクション（位置・表情・動作）をIDで引けるようにする。
+            directive_by_id: dict[str, ScriptCharacter] = {}
+            for directive in script_panel.character_directives:
+                directive_id = match_character_id(directive.name, base.characters)
+                if directive_id and directive_id not in directive_by_id:
+                    directive_by_id[directive_id] = directive
+            character_layout = []
+            for i, character_id in enumerate(character_ids):
+                directive = directive_by_id.get(character_id)
+                if directive is not None:
+                    position = directive.position
+                else:
+                    position = _SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center"
+                character_layout.append(
+                    PanelCharacter(
+                        id=character_id,
+                        position=position,
+                        expression=directive.expression if directive else "",
+                        action=directive.action if directive else "",
+                    )
+                )
             dialogues = []
             for dialogue_index, line in enumerate(script_panel.dialogue):
-                speaker = match_character_id(line.speaker, base.characters) or line.speaker
+                if not line.text.strip():
+                    continue
+                speaker_id = match_character_id(line.speaker, base.characters) or line.speaker
+                # 画面内＝話者が描画人物に含まれ、kindが会話/叫びのとき。ナレーションは常に画面外。
+                on_screen = (
+                    line.kind != "narration" and line.on_screen and speaker_id in character_ids
+                )
                 dialogues.append(
                     Dialogue(
-                        speaker=speaker,
+                        speaker=speaker_id,
                         text=line.text[:120] if line.text else "…",
+                        kind=line.kind,
+                        on_screen=on_screen,
                         position="upper_right" if dialogue_index % 2 == 0 else "upper_left",
                         vertical=base.typography.vertical_default,
                     )
@@ -814,16 +1114,16 @@ def script_to_manga(
                     bbox=panel_bbox,
                     shape_points=shape_points,
                     shot=script_panel.shot or "コマ",
+                    subject_mode=subject_mode,
                     role=role,
                     emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
                     characters=character_ids,
+                    character_layout=character_layout,
                     prompt=script_panel.visual_prompt,
                     dialogue=dialogues,
-                    sfx=[
-                        Sfx(text=item[:40], position="center") for item in script_panel.sfx if item
-                    ],
+                    sfx=build_panel_sfx(script_panel),
                     generation=GenerationInfo(
                         backend="stub",
                         prompt=script_panel.visual_prompt,
@@ -884,7 +1184,16 @@ def apply_session(
         for outline in pages_data.get("pages", [])
         if outline.get("page")
     }
-    return script_to_manga(script, base, page_characters)
+    unresolved: list[str] = []
+    manga = script_to_manga(script, base, page_characters, warnings=unresolved)
+    # 解決不能な人物名は台本段階の警告として残し、StoryPanelで利用者に知らせる。
+    # 安定prefixの警告だけを毎回再計算・置換し、修正後の再適用で古い誤字警告を消す。
+    existing = list(stages["script"].get("warnings") or [])
+    updated = merge_unresolved_warnings(existing, unresolved)
+    if updated != existing:
+        stages["script"]["warnings"] = updated
+        save_stages(session, record, stages)
+    return manga
 
 
 def restore_revision(manga_json: str) -> MangaProject:

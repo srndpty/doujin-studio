@@ -853,6 +853,11 @@ export interface components {
              * @default 1
              */
             candidate_count: number;
+            /**
+             * Auto Candidates
+             * @default false
+             */
+            auto_candidates: boolean;
         };
         /** BatchGenerationJobResult */
         BatchGenerationJobResult: {
@@ -963,11 +968,22 @@ export interface components {
             /** Text */
             text: string;
             /**
+             * Kind
+             * @default speech
+             * @enum {string}
+             */
+            kind: "speech" | "monologue" | "narration" | "shout";
+            /**
              * Balloon
              * @default oval
              * @enum {string}
              */
             balloon: "oval" | "cloud" | "burst" | "caption" | "none";
+            /**
+             * Balloon Auto
+             * @default true
+             */
+            balloon_auto: boolean;
             /**
              * Position
              * @default upper_right
@@ -981,6 +997,11 @@ export interface components {
                 number,
                 number
             ] | null;
+            /**
+             * On Screen
+             * @default true
+             */
+            on_screen: boolean;
             /**
              * Vertical
              * @default true
@@ -1727,6 +1748,8 @@ export interface components {
             location_id: string;
             /** Characters */
             characters?: string[];
+            /** Character Layout */
+            character_layout?: components["schemas"]["PanelCharacter"][];
             /**
              * Prompt
              * @default
@@ -1745,6 +1768,36 @@ export interface components {
             /** Sfx */
             sfx?: components["schemas"]["Sfx"][];
             generation?: components["schemas"]["GenerationInfo"];
+        };
+        /**
+         * PanelCharacter
+         * @description コマ内に描く人物への大まかな配置・演技ヒント（領域1）。
+         *
+         *     通常promptでは人物ごとのブロック（位置語＋外見＋表情＋動作）の近接配置と、
+         *     吹き出しのしっぽの向きに使う。あくまでヒントであり、厳密な人物配置・領域分離は
+         *     ComfyUIのregional conditioning workflowが必要。``characters``(描画ID列)を
+         *     「実際に描く人物」の正本とし、本リストはその補足（IDは必ずcharactersの部分集合）。
+         *     画面外の台詞は ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。
+         */
+        PanelCharacter: {
+            /** Id */
+            id: string;
+            /**
+             * Position
+             * @default center
+             * @enum {string}
+             */
+            position: "upper_left" | "upper_right" | "lower_left" | "lower_right" | "center";
+            /**
+             * Expression
+             * @default
+             */
+            expression: string;
+            /**
+             * Action
+             * @default
+             */
+            action: string;
         };
         /** PanelControlReference */
         PanelControlReference: {
@@ -2269,6 +2322,8 @@ export interface components {
             knowledge_ids?: string[];
             /** Error */
             error?: string | null;
+            /** Warnings */
+            warnings?: string[];
             /** Updated At */
             updated_at?: string | null;
         };

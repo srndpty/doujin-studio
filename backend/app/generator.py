@@ -43,6 +43,22 @@ def compute_generation_size(
     return snap(width), snap(height)
 
 
+def suggest_candidate_count(panel: Panel, *, base: int = 2, maximum: int = 4) -> int:
+    """コマの見せ場度・登場人物数から生成候補数を提案する（領域5）。
+
+    複数人物コマと見せ場（強調度が高い／オチ・引き・アクション）は破綻しやすいため
+    候補を増やし、それ以外は基準数に抑える。
+    """
+    count = base
+    if panel.emphasis >= 4:
+        count += 1
+    if len(panel.characters) >= 2:
+        count += 1
+    if panel.role in {"punchline", "reveal", "action"}:
+        count += 1
+    return max(1, min(maximum, count))
+
+
 DEFAULT_COMMON_POSITIVE_PROMPT = "masterpiece, best quality, score_7, safe, anime"
 DEFAULT_COMMON_NEGATIVE_PROMPT = (
     "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, "

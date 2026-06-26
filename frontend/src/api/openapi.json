@@ -2817,6 +2817,11 @@
             "minimum": 1.0,
             "title": "Candidate Count",
             "default": 1
+          },
+          "auto_candidates": {
+            "type": "boolean",
+            "title": "Auto Candidates",
+            "default": false
           }
         },
         "type": "object",
@@ -3019,6 +3024,17 @@
             "minLength": 1,
             "title": "Text"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "speech",
+              "monologue",
+              "narration",
+              "shout"
+            ],
+            "title": "Kind",
+            "default": "speech"
+          },
           "balloon": {
             "type": "string",
             "enum": [
@@ -3030,6 +3046,11 @@
             ],
             "title": "Balloon",
             "default": "oval"
+          },
+          "balloon_auto": {
+            "type": "boolean",
+            "title": "Balloon Auto",
+            "default": true
           },
           "position": {
             "type": "string",
@@ -3069,6 +3090,11 @@
               }
             ],
             "title": "Box"
+          },
+          "on_screen": {
+            "type": "boolean",
+            "title": "On Screen",
+            "default": true
           },
           "vertical": {
             "type": "boolean",
@@ -4764,6 +4790,13 @@
             "type": "array",
             "title": "Characters"
           },
+          "character_layout": {
+            "items": {
+              "$ref": "#/components/schemas/PanelCharacter"
+            },
+            "type": "array",
+            "title": "Character Layout"
+          },
           "prompt": {
             "type": "string",
             "title": "Prompt",
@@ -4831,6 +4864,43 @@
           "shot"
         ],
         "title": "Panel"
+      },
+      "PanelCharacter": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "upper_left",
+              "upper_right",
+              "lower_left",
+              "lower_right",
+              "center"
+            ],
+            "title": "Position",
+            "default": "center"
+          },
+          "expression": {
+            "type": "string",
+            "title": "Expression",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "PanelCharacter",
+        "description": "コマ内に描く人物への大まかな配置・演技ヒント（領域1）。\n\n通常promptでは人物ごとのブロック（位置語＋外見＋表情＋動作）の近接配置と、\n吹き出しのしっぽの向きに使う。あくまでヒントであり、厳密な人物配置・領域分離は\nComfyUIのregional conditioning workflowが必要。``characters``(描画ID列)を\n「実際に描く人物」の正本とし、本リストはその補足（IDは必ずcharactersの部分集合）。\n画面外の台詞は ``Dialogue.on_screen`` が表すため、ここに画面内外のフラグは持たない。"
       },
       "PanelControlReference": {
         "properties": {
@@ -5976,6 +6046,13 @@
               }
             ],
             "title": "Error"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           },
           "updated_at": {
             "anyOf": [

@@ -14,6 +14,14 @@ SUBJECT_MODE_POSITIVE = {
     "hand_insert": "close-up of hands, detailed hands, no face",
     "background": "scenery, empty background, establishing shot, no people",
 }
+# character_layout.positionをプロンプトの位置語へ写像する（通常promptでの大まかな配置）。
+POSITION_PHRASE = {
+    "upper_left": "on the upper left",
+    "upper_right": "on the upper right",
+    "lower_left": "on the lower left",
+    "lower_right": "on the lower right",
+    "center": "in the center",
+}
 
 
 def is_non_character_mode(panel: Panel) -> bool:
@@ -35,17 +43,24 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
         positive_parts.append(SUBJECT_MODE_POSITIVE.get(panel.subject_mode, ""))
         negative_parts.append(INSERT_NEGATIVE_PROMPT)
     else:
+        layout_by_id = {entry.id: entry for entry in panel.character_layout}
         for character_id in panel.characters:
             character = characters_by_id.get(character_id)
             if character is None:
                 continue
-            positive_parts.extend(
-                [
-                    character.trigger_prompt or character.display_name,
-                    character.appearance_prompt,
-                    character.outfit_prompt,
-                ]
-            )
+            # 人物ごとに位置・外見・衣装・表情・動作を隣接させてブロック化し、
+            # 表情/動作が別人へ混ざりにくいようにまとめる（通常promptでの近接配置。
+            # 厳密な領域分離はregional conditioning workflowが要る）。
+            entry = layout_by_id.get(character_id)
+            char_tokens = [
+                character.trigger_prompt or character.display_name,
+                character.appearance_prompt,
+                character.outfit_prompt,
+            ]
+            if entry is not None:
+                char_tokens.insert(0, POSITION_PHRASE.get(entry.position, ""))
+                char_tokens.extend([entry.expression, entry.action])
+            positive_parts.extend(char_tokens)
             negative_parts.append(character.negative_prompt)
 
     positive_parts.append(panel.generation.prompt or panel.prompt)

@@ -89,7 +89,8 @@ def test_overlay_renders_with_occlusion_and_placeholder(tmp_path: Path) -> None:
     assert target2.exists()
 
 
-def test_preflight_flags_dialogue_overflow_as_warning() -> None:
+def test_preflight_flags_dialogue_clipped_as_error() -> None:
+    # 商用品質では、最小サイズでも収まらない台詞（文字切れ）は出力前エラーにする（領域3）。
     manga = MangaProject(
         title="overflow",
         pages=[
@@ -109,9 +110,8 @@ def test_preflight_flags_dialogue_overflow_as_warning() -> None:
         ],
     )
     issues = preflight.preflight_page(manga, manga.pages[0])
-    # テキストは切り捨てないので重大エラーではなく警告にする。
-    overflow = [issue for issue in issues if issue.code == "dialogue_overflow"]
-    assert overflow and all(issue.level == "warning" for issue in overflow)
+    clipped = [issue for issue in issues if issue.code == "dialogue_clipped"]
+    assert clipped and all(issue.level == "error" for issue in clipped)
 
 
 def test_preflight_tail_out_of_range_and_insert_characters() -> None:
@@ -312,8 +312,9 @@ def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) 
 
         response = client.post(f"/api/projects/{project_id}/pages/1/preflight", json=manga)
         assert response.status_code == 200
-        codes = {issue["code"] for issue in response.json()["warnings"]}
-        assert "dialogue_overflow" in codes  # 本文の内容が検査される
+        body = response.json()
+        codes = {issue["code"] for issue in body["errors"]}
+        assert "dialogue_clipped" in codes  # 本文の内容が検査される（文字切れはエラー）
 
         # 非破壊: DBは変わらず、render_statusはdoneのまま、台詞も元のまま。
         after = client.get(f"/api/projects/{project_id}").json()["manga_json"]
@@ -321,12 +322,12 @@ def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) 
         assert after["pages"][0]["panels"][0]["dialogue"][0]["text"] != "あ" * 300
 
 
-def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:
+def test_cbz_export_blocked_by_dialogue_clipping(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
         detail = client.get(f"/api/projects/{project_id}").json()
         manga = detail["manga_json"]
-        # 収まりにくい長文を仕込んでも、切り捨てない方針なので出力は止めない。
+        # 最小サイズでも収まらない長文（文字切れ）はCBZ出力を止める（商用品質: 領域3）。
         dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
         dialogue["text"] = "あ" * 300
         dialogue["box"] = [0.0, 0.0, 0.15, 0.1]
@@ -337,7 +338,7 @@ def test_cbz_export_succeeds_despite_dialogue_overflow(tmp_path: Path) -> None:
         assert saved.status_code == 200
         revision = client.get(f"/api/projects/{project_id}").json()["revision"]
         export = client.post(f"/api/projects/{project_id}/export/cbz?revision={revision}")
-        assert export.status_code == 200
-        # 窮屈さはプリフライト警告として確認できる。
+        assert export.status_code == 422
+        # 文字切れはプリフライトのエラーとして確認できる。
         preflight_result = client.post(f"/api/projects/{project_id}/pages/1/preflight").json()
-        assert any(issue["code"] == "dialogue_overflow" for issue in preflight_result["warnings"])
+        assert any(issue["code"] == "dialogue_clipped" for issue in preflight_result["errors"])

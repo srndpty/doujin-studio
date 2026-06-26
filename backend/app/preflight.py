@@ -12,14 +12,23 @@ from PIL import Image
 from . import layout_engine
 from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
-from .renderer import PAGE_SIZE, _panel_box_px, resolve_dialogue_layout
-from .schemas import MangaProject, Page, Panel, PreflightIssue
+from .renderer import (
+    PAGE_SIZE,
+    TEXT_FLOOR_SIZE,
+    _panel_box_px,
+    resolve_dialogue_layout,
+    sfx_bbox_px,
+)
+from .schemas import Character, MangaProject, Page, Panel, PreflightIssue
 
 # 重なり・縦横比などの許容しきい値。
 BUBBLE_OVERLAP_RATIO = 0.25
 ASPECT_TOLERANCE = 0.35
 GUTTER_MIN_RATIO = 0.4  # 設定ガターのこの割合未満は「狭すぎ」
 GUTTER_MAX_ABS = 0.08  # ページ比でこれを超える隣接間は「広すぎ」
+SFX_OVERLAP_RATIO = 0.3  # 擬音同士がこの割合以上重なれば衝突とみなす
+SFX_BUBBLE_OVERLAP_RATIO = 0.25  # 擬音が吹き出しとこの割合以上重なれば衝突
+SFX_OUT_OF_BOUNDS_RATIO = 0.18  # 擬音がコマ外へこの割合以上はみ出せば警告
 
 
 def preflight_project(manga: MangaProject, export_dir: Path | None = None) -> list[PreflightIssue]:
@@ -46,6 +55,8 @@ def preflight_page(
     issues.extend(_check_layout_repetition(manga, page, page_index))
     issues.extend(_check_image_aspect(page, export_dir))
     issues.extend(_check_subject_mode_characters(page))
+    issues.extend(_check_sfx_collisions(manga, page))
+    issues.extend(_check_character_setup(manga, page))
     issues.extend(_check_overlay_occlusion(page))
     issues.extend(_check_assets(page, export_dir))
     return issues
@@ -56,9 +67,25 @@ def _check_dialogue_fit(manga: MangaProject, page: Page) -> list[PreflightIssue]
     for panel in page.panels:
         box = _panel_box_px(panel)
         for dialogue in panel.dialogue:
+            # 縮小判定は台詞ごとの要求サイズ基準にする（font_sizeを明示的に小さくした
+            # 台詞を「縮小された」と誤判定しない）。
+            requested_size = max(
+                dialogue.font_size or manga.typography.default_font_size, TEXT_FLOOR_SIZE
+            )
             _bubble, layout = resolve_dialogue_layout(dialogue, box, manga.typography)
             if not layout.fits:
-                # テキストは切り捨てないため出力は止めず、注意（警告）として知らせる。
+                # 最小サイズでも全文が収まらない＝文字切れ。商用品質では出力前エラーにする（領域3）。
+                issues.append(
+                    PreflightIssue(
+                        level="error",
+                        code="dialogue_clipped",
+                        message=f"台詞が最小サイズでも吹き出しに収まりません（{dialogue.speaker}）",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                    )
+                )
+            elif layout.font_size < requested_size:
+                # 収まってはいるがフォント縮小が必要なほど窮屈。警告として知らせる。
                 issues.append(
                     PreflightIssue(
                         level="warning",
@@ -335,6 +362,124 @@ def _check_subject_mode_characters(page: Page) -> list[PreflightIssue]:
                     panel_id=panel.panel_id,
                 )
             )
+    return issues
+
+
+def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssue]:
+    """擬音のコマ外はみ出し・吹き出し衝突・擬音同士の重なりを検出する（領域4）。
+
+    擬音はコマ外へのはみ出しを許すため、擬音同士の重なりはページ全体で総当たり判定し、
+    隣接コマの擬音がガター上で重なるケースも拾う。
+    """
+    issues: list[PreflightIssue] = []
+    bubble_boxes = _bubble_boxes(manga, page)
+    # ページ全体の擬音矩形を集める（コマ外はみ出し・吹き出し衝突は個別に判定）。
+    page_sfx: list[tuple[str, str, tuple[int, int, int, int]]] = []
+    for panel in page.panels:
+        panel_box = _panel_box_px(panel)
+        for sfx in panel.sfx:
+            box = sfx_bbox_px(sfx, panel_box)
+            sfx_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            # コマ外はみ出し（擬音面積に対する超過分）。
+            inside = _overlap_area(box, panel_box)
+            if (sfx_area - inside) / sfx_area >= SFX_OUT_OF_BOUNDS_RATIO:
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="sfx_out_of_bounds",
+                        message=f"擬音「{sfx.text}」がコマ外へはみ出しています（{panel.panel_id}）",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                    )
+                )
+            # 吹き出しとの衝突。
+            for _pid, bubble in bubble_boxes:
+                overlap = _overlap_area(box, bubble)
+                if overlap > 0 and overlap / sfx_area >= SFX_BUBBLE_OVERLAP_RATIO:
+                    issues.append(
+                        PreflightIssue(
+                            level="warning",
+                            code="sfx_bubble_collision",
+                            message=f"擬音「{sfx.text}」が吹き出しと重なっています（{panel.panel_id}）",
+                            page=page.page,
+                            panel_id=panel.panel_id,
+                        )
+                    )
+                    break
+            page_sfx.append((panel.panel_id, sfx.text, box))
+    # 擬音同士の重なり（同一中心への配置・隣接コマのガター上の重なりを含む）。
+    for i in range(len(page_sfx)):
+        pid_i, text_i, box_i = page_sfx[i]
+        for j in range(i + 1, len(page_sfx)):
+            pid_j, text_j, box_j = page_sfx[j]
+            overlap = _overlap_area(box_i, box_j)
+            if overlap <= 0:
+                continue
+            area_i = (box_i[2] - box_i[0]) * (box_i[3] - box_i[1])
+            area_j = (box_j[2] - box_j[0]) * (box_j[3] - box_j[1])
+            smaller = max(1, min(area_i, area_j))
+            if overlap / smaller >= SFX_OVERLAP_RATIO:
+                same = pid_i == pid_j
+                where = f"{pid_i}" if same else f"{pid_i} と {pid_j}"
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="sfx_overlap",
+                        message=f"擬音「{text_i}」と「{text_j}」が重なっています（{where}）",
+                        page=page.page,
+                        panel_id=pid_i,
+                    )
+                )
+    return issues
+
+
+def _check_character_setup(manga: MangaProject, page: Page) -> list[PreflightIssue]:
+    """人物コマで、同一性を保てる設定（trigger/LoRA/参照画像）が不足していないか（領域1/5）。"""
+    issues: list[PreflightIssue] = []
+    by_id: dict[str, Character] = {character.id: character for character in manga.characters}
+    # 同じキャラの警告がコマ数ぶん重複しないよう、ページ内で1回に集約する。
+    warned: set[str] = set()
+    for panel in page.panels:
+        if is_non_character_mode(panel):
+            continue
+        for character_id in panel.characters:
+            if character_id in warned:
+                continue
+            character = by_id.get(character_id)
+            if character is None:
+                warned.add(character_id)
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="character_unknown",
+                        message=f"未登録のキャラクターを参照しています（{character_id}）",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                    )
+                )
+                continue
+            weak_trigger = (
+                not character.trigger_prompt.strip()
+                or character.trigger_prompt.strip() == character.display_name.strip()
+            )
+            has_lora = bool(character.lora_name and character.lora_node_id)
+            has_reference = bool(
+                character.reference_image_asset and character.reference_load_node_id
+            )
+            if weak_trigger and not has_lora and not has_reference:
+                warned.add(character_id)
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="character_setup_incomplete",
+                        message=(
+                            f"「{character.display_name}」に有効なtrigger/LoRA/参照画像が無く、"
+                            "同一性を保てません"
+                        ),
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                    )
+                )
     return issues
 
 

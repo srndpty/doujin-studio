@@ -25,6 +25,13 @@ const SNAP = 0.01; // 1%グリッドへスナップ
 
 const LAYOUT_FAMILIES = ["establish", "dialogue", "reveal", "action", "punchline", "silent", "montage"];
 const BALLOON_KINDS = ["oval", "cloud", "burst", "caption", "none"];
+// kind→既定の吹き出し形状（バックエンドのKIND_DEFAULT_BALLOONと一致させる）。
+const KIND_DEFAULT_BALLOON: Record<string, string> = {
+  speech: "oval",
+  monologue: "cloud",
+  narration: "caption",
+  shout: "burst"
+};
 
 function shapePointsForPreset(preset: string): [number, number][] | null {
   if (preset === "slant-right")
@@ -1121,13 +1128,37 @@ function BalloonControls({
       <legend>吹き出し</legend>
       <label>
         種別
-        <select value={dialogue.balloon} onChange={(event) => onChange({ balloon: event.target.value })}>
+        <select
+          value={dialogue.balloon}
+          disabled={dialogue.balloon_auto ?? false}
+          onChange={(event) =>
+            onChange({ balloon: event.target.value as Dialogue["balloon"], balloon_auto: false })
+          }
+        >
           {BALLOON_KINDS.map((kind) => (
             <option key={kind} value={kind}>
               {kind}
             </option>
           ))}
         </select>
+      </label>
+      <label title="種別(kind)に応じて吹き出し形状を自動選択します。手動で形状を選ぶと解除されます。">
+        <input
+          type="checkbox"
+          checked={dialogue.balloon_auto ?? false}
+          onChange={(event) =>
+            onChange(
+              event.target.checked
+                ? {
+                    balloon_auto: true,
+                    // ON時は現在のkind既定形状へ即更新し、表示・プレビューのずれを防ぐ。
+                    balloon: KIND_DEFAULT_BALLOON[dialogue.kind ?? "speech"] ?? "oval"
+                  }
+                : { balloon_auto: false }
+            )
+          }
+        />
+        形状をkindに自動追従
       </label>
       <label>
         <input

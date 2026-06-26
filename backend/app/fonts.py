@@ -8,9 +8,12 @@ from PIL import ImageFont
 
 WINDOWS_FONT_DIR = Path("C:/Windows/Fonts")
 USER_FONT_DIR = Path.home() / "AppData/Local/Microsoft/Windows/Fonts"
+# ユーザーが擬音用フォントを置く登録ディレクトリ。ここを最優先で探索する。
+USER_SFX_FONT_DIR = Path.home() / ".doujin-studio/fonts/sfx"
 
 # フォント探索ディレクトリ（Windows優先、Linux/Macも対応）。
 FONT_DIRS = [
+    USER_SFX_FONT_DIR,
     WINDOWS_FONT_DIR,
     USER_FONT_DIR,
     Path("/usr/share/fonts"),
@@ -129,6 +132,57 @@ def find_dialogue_font_path(preferred_font: str | None = None) -> Path | None:
         or _find_in_dirs(FALLBACK_FONT_FILES)
         or _scan_for_keywords(CJK_FALLBACK_KEYWORDS)
     )
+
+
+# 擬音向けの太め・インパクト系フォントの候補キーワード（あれば優先）。
+SFX_FONT_KEYWORDS = [
+    "rampart",
+    "reggae",
+    "dotgothic",
+    "kaiseidecol",
+    "yujiboku",
+    "hachimaru",
+    "mochiypop",
+    "rocknroll",
+]
+
+
+def _scan_dir_for_any_font(directory: Path) -> Path | None:
+    if not directory.is_dir():
+        return None
+    try:
+        entries = sorted(directory.rglob("*"), key=lambda item: item.name)
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.suffix.lower() in {".ttf", ".otf", ".ttc"} and entry.is_file():
+            return entry
+    return None
+
+
+@lru_cache(maxsize=16)
+def find_sfx_font_path(preferred_font: str | None = None) -> Path | None:
+    """擬音用フォントのパス。
+
+    探索順:
+    1) ``preferred_font`` をファイル名／キーワードとして解決（ユーザー登録名）。
+    2) 登録ディレクトリ(USER_SFX_FONT_DIR)に置かれた任意のフォント。
+    3) インパクト系の既知フォント。
+    4) 退避として台詞フォント（源暎アンチック等）。
+    未登録でも必ず描画できるよう、最後は台詞フォントへフォールバックする。
+    """
+    preferred = (preferred_font or "").strip()
+    if preferred:
+        direct = _find_in_dirs([preferred]) or _scan_for_keywords([preferred.casefold()])
+        if direct:
+            return direct
+    registered = _scan_dir_for_any_font(USER_SFX_FONT_DIR)
+    if registered:
+        return registered
+    keyworded = _scan_for_keywords(SFX_FONT_KEYWORDS)
+    if keyworded:
+        return keyworded
+    return find_dialogue_font_path()
 
 
 def dialogue_font_is_primary() -> bool:
