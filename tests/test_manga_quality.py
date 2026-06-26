@@ -178,6 +178,47 @@ def test_render_refreshes_sfx_font_cache() -> None:
     assert find_sfx_font_path.cache_info().currsize == 0
 
 
+def _signature_manga(position: str) -> tuple[MangaProject, Page]:
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0.05, 0.05, 0.9, 0.9),
+        shot="t",
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika", position=position)],
+    )
+    manga = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+        pages=[Page(page=1, theme="t", layout_template="o", panels=[panel])],
+    )
+    return manga, manga.pages[0]
+
+
+def test_render_signature_includes_character_layout_position() -> None:
+    # しっぽ方向を変えるcharacter_layout.positionは描画hashに反映される（P2）。
+    from backend.app.rendering import page_render_hash
+
+    m1, p1 = _signature_manga("upper_left")
+    m2, p2 = _signature_manga("lower_right")
+    assert page_render_hash(m1, p1) != page_render_hash(m2, p2)
+
+
+def test_render_signature_includes_sfx_font(tmp_path, monkeypatch) -> None:
+    # 擬音フォントの差し替えで描画hashが変わる（不変アセットの内容不一致を防ぐ・P1）。
+    from backend.app import fonts, rendering
+
+    font_a = tmp_path / "a.ttf"
+    font_a.write_bytes(b"a")
+    font_b = tmp_path / "b.ttf"
+    font_b.write_bytes(b"b")
+    manga, page = _signature_manga("center")
+    monkeypatch.setattr(fonts, "find_sfx_font_path", lambda *args, **kwargs: font_a)
+    hash_a = rendering.page_render_hash(manga, page)
+    monkeypatch.setattr(fonts, "find_sfx_font_path", lambda *args, **kwargs: font_b)
+    hash_b = rendering.page_render_hash(manga, page)
+    assert hash_a != hash_b
+
+
 def test_sfx_style_presets_differ() -> None:
     assert (
         renderer.sfx_style_params("handwritten").jitter_rot

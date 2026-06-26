@@ -202,6 +202,28 @@ def build_production_status(
     )
 
 
+def _font_render_signature(manga: MangaProject) -> dict:
+    """描画に使う台詞・擬音フォントの識別子(パス+mtime)。
+
+    フォントを差し替え/追加すると同じManga JSONでも描画結果が変わるため、これを
+    シグネチャへ含めて再描画を促し、不変アセットの内容不一致を防ぐ（P1）。
+    """
+    from .fonts import find_dialogue_font_path, find_sfx_font_path
+
+    def signature(path) -> list | None:
+        if path is None:
+            return None
+        try:
+            return [str(path), int(path.stat().st_mtime)]
+        except OSError:
+            return [str(path), None]
+
+    return {
+        "dialogue": signature(find_dialogue_font_path(manga.typography.primary_font)),
+        "sfx": signature(find_sfx_font_path()),
+    }
+
+
 def page_render_signature(manga: MangaProject, page) -> str:
     """ページの描画結果に影響する入力だけを取り出した安定シグネチャ。
 
@@ -212,6 +234,7 @@ def page_render_signature(manga: MangaProject, page) -> str:
         "typography": manga.typography.model_dump(),
         "page_layout": manga.page_layout.model_dump(),
         "reading_direction": manga.reading_direction,
+        "fonts": _font_render_signature(manga),
         "overlays": [overlay.model_dump() for overlay in page.overlay_elements],
         "panels": [
             {
@@ -220,6 +243,10 @@ def page_render_signature(manga: MangaProject, page) -> str:
                 "image_asset": panel.image_asset,
                 "dialogue": [line.model_dump() for line in panel.dialogue],
                 "sfx": [item.model_dump() for item in panel.sfx],
+                # しっぽ方向はcharacter_layout.positionから決まるため描画入力に含める（P2）。
+                "character_layout": [
+                    {"id": entry.id, "position": entry.position} for entry in panel.character_layout
+                ],
                 "crop": {
                     "fit_mode": panel.generation.fit_mode,
                     "crop_anchor": panel.generation.crop_anchor,
