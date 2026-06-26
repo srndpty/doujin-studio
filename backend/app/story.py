@@ -920,11 +920,12 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
     """コマ台本から主題モードを推定する（領域1）。
 
     手元・小物・背景コマを検出し、人物LoRA/参照を注入しない非人物モードへ振り分ける。
-    台本が人物を明示したコマ（charactersは「実際に描かれる人物だけ」の契約）と、
-    画面内の会話・叫び話者がいるコマは人物コマとして最優先で尊重する。画面外
-    ナレーションだけの背景コマは非人物のまま扱い、ページ人物の再混入を防ぐ。
+    台本が人物を明示したコマ（charactersは「実際に描かれる人物だけ」の契約。
+    character_directivesも人物指定とみなす）と、画面内の会話・叫び話者がいるコマは
+    人物コマとして最優先で尊重する。画面外ナレーションだけの背景コマは非人物のまま
+    扱い、ページ人物の再混入を防ぐ。
     """
-    if script_panel.characters:
+    if script_panel.characters or script_panel.character_directives:
         return "character_scene"
     has_visible_speaker = any(
         line.on_screen and line.kind in {"speech", "shout"} for line in script_panel.dialogue
@@ -999,8 +1000,12 @@ def script_to_manga(
             )
             subject_mode = classify_subject_mode(script_panel)
             non_character = subject_mode in {"prop_insert", "hand_insert", "background"}
-            # コマ明記の登場人物に、画面内の会話/叫び話者だけを足す（画面外台詞は描画人物に含めない）。
+            # コマ明記の登場人物 + 人物別ディレクションの名前に、画面内の会話/叫び話者だけを
+            # 足す（画面外台詞は描画人物に含めない）。directiveだけ指定された人物も取りこぼさない。
             names: list[str] = list(script_panel.characters)
+            for directive in script_panel.character_directives:
+                if directive.name and directive.name not in names:
+                    names.append(directive.name)
             for line in script_panel.dialogue:
                 if (
                     line.speaker

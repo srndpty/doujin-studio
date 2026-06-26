@@ -1121,7 +1121,12 @@ function BalloonControls({
       <legend>吹き出し</legend>
       <label>
         種別
-        <select value={dialogue.balloon} onChange={(event) => onChange({ balloon: event.target.value })}>
+        <select
+          value={dialogue.balloon}
+          onChange={(event) =>
+            onChange({ balloon: event.target.value as Dialogue["balloon"], balloon_auto: false })
+          }
+        >
           {BALLOON_KINDS.map((kind) => (
             <option key={kind} value={kind}>
               {kind}

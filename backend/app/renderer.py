@@ -486,6 +486,19 @@ def draw_dialogue(
     return [f"{dialogue.speaker}: {message}" for message in warnings]
 
 
+def dialogue_draws_tail(dialogue: Dialogue) -> bool:
+    """この台詞に吹き出しのしっぽを描くか。
+
+    画面外台詞(on_screen=False)はしっぽを出さない。tailが明示的に無効化されていれば
+    出さない。on_screenを描画時に評価するため、再編集で画面内へ戻せばしっぽが復活する。
+    """
+    if not dialogue.on_screen:
+        return False
+    if dialogue.tail is not None and not dialogue.tail.enabled:
+        return False
+    return True
+
+
 def _draw_balloon_shape(
     page_image: Image.Image,
     draw: ImageDraw.ImageDraw,
@@ -501,17 +514,23 @@ def _draw_balloon_shape(
         # ナレーションは四角枠。しっぽは付けない。
         draw.rectangle(bubble, fill=(252, 252, 250, 255), outline=outline, width=3)
         return
+    show_tail = dialogue_draws_tail(dialogue)
     if dialogue.balloon == "burst":
         _draw_burst(draw, bubble, outline, white)
-        _draw_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor)
+        if show_tail:
+            _draw_tail(
+                draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor
+            )
         return
     if dialogue.balloon == "cloud":
         _draw_cloud(draw, bubble, outline, white)
-        _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor)
+        if show_tail:
+            _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor)
         return
     # oval（標準の楕円）
     draw.ellipse(bubble, fill=white, outline=outline, width=3)
-    _draw_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor)
+    if show_tail:
+        _draw_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor)
 
 
 def _tail_tip(dialogue: Dialogue, bubble, panel_box, speaker_anchor: str | None = None):

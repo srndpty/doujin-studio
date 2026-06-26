@@ -9,6 +9,7 @@ from backend.app.generator import suggest_candidate_count
 from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import _panel_box_px, compute_bubble_layout
 from backend.app.schemas import (
+    BalloonTail,
     Character,
     Dialogue,
     MangaProject,
@@ -51,9 +52,20 @@ def test_saved_json_kind_change_updates_balloon() -> None:
     assert Dialogue.model_validate(manual).balloon == "oval"
 
 
-def test_offscreen_dialogue_disables_tail() -> None:
-    line = Dialogue(speaker="a", text="画面外の声", on_screen=False)
-    assert line.tail is not None and line.tail.enabled is False
+def test_tail_follows_on_screen_at_draw_time() -> None:
+    # on_screenは描画時に評価する。モデルでtailを自動生成しない（再編集で復活できる）。
+    off = Dialogue(speaker="a", text="画面外の声", on_screen=False)
+    assert off.tail is None
+    assert renderer.dialogue_draws_tail(off) is False
+    on = Dialogue(speaker="a", text="画面内の声", on_screen=True)
+    assert renderer.dialogue_draws_tail(on) is True
+    # 画面外→保存→画面内へ戻すと、既定のしっぽが再び描かれる（復活する）。
+    restored = Dialogue.model_validate({**off.model_dump(), "on_screen": True})
+    assert restored.tail is None
+    assert renderer.dialogue_draws_tail(restored) is True
+    # 明示的に無効化したtailは画面内でも描かない。
+    disabled = Dialogue(speaker="a", text="x", tail=BalloonTail(enabled=False))
+    assert renderer.dialogue_draws_tail(disabled) is False
 
 
 # --- 領域3: 収まり判定と描画領域の一致（はみ出し0） ---
@@ -445,6 +457,37 @@ def test_script_directives_flow_to_prompt_per_character() -> None:
     positive, _negative = compose_panel_prompts(manga, drawn)
     for token in ("smiling", "waving hand", "crying", "on the upper left", "on the lower right"):
         assert token in positive
+
+
+def test_directive_only_character_is_kept() -> None:
+    # charactersへの列挙を漏らしても、character_directivesの人物は取りこぼさない（Medium回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="solo",
+        visual_prompt="a girl",
+        characters=[],  # 明示列挙は漏れている
+        character_directives=[
+            ScriptCharacter(name="美嘉", position="center", expression="smiling")
+        ],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base)
+    drawn = manga.pages[0].panels[0]
+    assert drawn.subject_mode == "character_scene"
+    assert drawn.characters == ["mika"]
+    assert drawn.character_layout[0].expression == "smiling"
+
+
+def test_script_character_position_normalizes_variants() -> None:
+    # 表記ゆれ（ハイフン・大文字・別名）を既定position語へ正規化する（Low回帰）。
+    assert ScriptCharacter(name="a", position="upper-left").position == "upper_left"
+    assert ScriptCharacter(name="a", position="Upper_Left").position == "upper_left"
+    assert ScriptCharacter(name="a", position="top-right").position == "upper_right"
+    assert ScriptCharacter(name="a", position="middle").position == "center"
+    assert ScriptCharacter(name="a", position="nonsense").position == "center"
 
 
 def test_character_layout_feeds_prompt() -> None:

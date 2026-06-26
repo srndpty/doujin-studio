@@ -42,8 +42,12 @@ type WorkspaceTab = "production" | "editor" | "knowledge" | "story";
 export type Dialogue = {
   speaker: string;
   text: string;
+  kind?: string;
   balloon: string;
+  // falseなら手動指定したballoonを保持。kind変更で自動追従させたい場合はtrueにする。
+  balloon_auto?: boolean;
   position: string;
+  on_screen?: boolean;
   box: [number, number, number, number] | null;
   font_size: number | null;
   min_font_size?: number | null;

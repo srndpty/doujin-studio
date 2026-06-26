@@ -148,9 +148,8 @@ class Dialogue(BaseModel):
         object.__setattr__(self, "balloon_auto", auto)
         if auto:
             object.__setattr__(self, "balloon", KIND_DEFAULT_BALLOON[self.kind])
-        # 画面外台詞（独白・ナレーションを含む）はしっぽを出さない。
-        if not self.on_screen and self.tail is None:
-            object.__setattr__(self, "tail", BalloonTail(enabled=False))
+        # 画面外台詞でしっぽを出さない判断は描画時(on_screen)に行う。ここでtailを
+        # 自動生成すると、再編集でon_screen=Trueへ戻してもしっぽが復活しなくなる。
         return self
 
     @field_validator("box")
@@ -1057,10 +1056,20 @@ class ScriptCharacter(BaseModel):
     @field_validator("position", mode="before")
     @classmethod
     def normalize_position(cls, value):
+        if not isinstance(value, str):
+            return "center"
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "top_left": "upper_left",
+            "top_right": "upper_right",
+            "bottom_left": "lower_left",
+            "bottom_right": "lower_right",
+            "middle": "center",
+            "centre": "center",
+        }
+        normalized = aliases.get(normalized, normalized)
         valid = {"upper_left", "upper_right", "lower_left", "lower_right", "center"}
-        if isinstance(value, str) and value in valid:
-            return value
-        return "center"
+        return normalized if normalized in valid else "center"
 
 
 class ScriptPanel(BaseModel):
