@@ -516,6 +516,43 @@ def test_unresolved_directive_does_not_inject_page_characters() -> None:
     assert drawn.characters == []
 
 
+def test_empty_speaker_dialogue_keeps_background_mode() -> None:
+    # speaker省略の台詞本文だけの背景コマは人物コマと断定せず、ページ人物も混入しない（Medium回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="背景",
+        visual_prompt="empty background, scenery",
+        characters=[],
+        dialogue=[ScriptDialogue(speaker="", text="その時…")],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base, page_characters={1: ["美嘉"]})
+    drawn = manga.pages[0].panels[0]
+    assert drawn.subject_mode == "background"
+    assert drawn.characters == []
+
+
+def test_script_to_manga_warns_on_unresolved_character() -> None:
+    # 解決不能な人物名（誤字・表記揺れ）は警告として収集される（Low回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="solo",
+        visual_prompt="someone",
+        characters=["美香"],  # 誤字（登録は「美嘉」）
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    warnings: list[str] = []
+    manga = story.script_to_manga(script, base, warnings=warnings)
+    assert manga.pages[0].panels[0].characters == []
+    assert any("美香" in warning for warning in warnings)
+
+
 def test_review_script_no_false_warning_for_directive_only_page() -> None:
     # character_directivesだけで人物を指定した無台詞ページに誤警告を出さない（Low回帰）。
     data = {

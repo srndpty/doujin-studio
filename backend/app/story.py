@@ -928,8 +928,11 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
     """
     if script_panel.characters or script_panel.character_directives:
         return "character_scene"
+    # 話者名のある画面内の会話・叫びだけを人物コマの根拠にする。speaker省略（既定の
+    # speech/on_screen）の台詞本文だけでは人物コマと断定しない（背景コマの誤分類を防ぐ）。
     has_visible_speaker = any(
-        line.on_screen and line.kind in {"speech", "shout"} for line in script_panel.dialogue
+        line.speaker.strip() and line.on_screen and line.kind in {"speech", "shout"}
+        for line in script_panel.dialogue
     )
     if has_visible_speaker:
         return "character_scene"
@@ -977,6 +980,7 @@ def script_to_manga(
     script: ScriptStage,
     base: MangaProject,
     page_characters: dict[int, list[str]] | None = None,
+    warnings: list[str] | None = None,
 ) -> MangaProject:
     common_positive = base.common_positive_prompt or DEFAULT_COMMON_POSITIVE_PROMPT
     common_negative = base.common_negative_prompt or DEFAULT_COMMON_NEGATIVE_PROMPT
@@ -1001,6 +1005,17 @@ def script_to_manga(
             )
             subject_mode = classify_subject_mode(script_panel)
             non_character = subject_mode in {"prop_insert", "hand_insert", "background"}
+            # 明示された人物名（characters/directive）が登録キャラに解決できない場合は、
+            # 黙って人物なしコマにせず警告として残す（表記揺れ・誤字の検知）。
+            if warnings is not None:
+                explicit_names = list(script_panel.characters) + [
+                    directive.name for directive in script_panel.character_directives
+                ]
+                for name in explicit_names:
+                    if name and match_character_id(name, base.characters) is None:
+                        message = f"{panel_id}: 人物「{name}」を登録キャラクターに解決できません"
+                        if message not in warnings:
+                            warnings.append(message)
             # コマ明記の登場人物 + 人物別ディレクションの名前に、画面内の会話/叫び話者だけを
             # 足す（画面外台詞は描画人物に含めない）。directiveだけ指定された人物も取りこぼさない。
             names: list[str] = list(script_panel.characters)
@@ -1149,7 +1164,14 @@ def apply_session(
         for outline in pages_data.get("pages", [])
         if outline.get("page")
     }
-    return script_to_manga(script, base, page_characters)
+    unresolved: list[str] = []
+    manga = script_to_manga(script, base, page_characters, warnings=unresolved)
+    # 解決不能な人物名は台本段階の警告として残し、StoryPanelで利用者に知らせる。
+    if unresolved:
+        existing = list(stages["script"].get("warnings") or [])
+        stages["script"]["warnings"] = existing + [w for w in unresolved if w not in existing]
+        save_stages(session, record, stages)
+    return manga
 
 
 def restore_revision(manga_json: str) -> MangaProject:

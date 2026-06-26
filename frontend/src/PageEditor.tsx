@@ -1123,6 +1123,7 @@ function BalloonControls({
         種別
         <select
           value={dialogue.balloon}
+          disabled={dialogue.balloon_auto ?? false}
           onChange={(event) =>
             onChange({ balloon: event.target.value as Dialogue["balloon"], balloon_auto: false })
           }
@@ -1133,6 +1134,14 @@ function BalloonControls({
             </option>
           ))}
         </select>
+      </label>
+      <label title="種別(kind)に応じて吹き出し形状を自動選択します。手動で形状を選ぶと解除されます。">
+        <input
+          type="checkbox"
+          checked={dialogue.balloon_auto ?? false}
+          onChange={(event) => onChange({ balloon_auto: event.target.checked })}
+        />
+        形状をkindに自動追従
       </label>
       <label>
         <input
