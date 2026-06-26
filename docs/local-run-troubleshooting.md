@@ -13,6 +13,44 @@
 
 起動順は **ComfyUI → backend → frontend** が無難（backend が起動時に ComfyUI 疎通を見るため）。
 
+## 1コマンド起動（dev-up.ps1）
+
+ComfyUI のポートを自動検出（または headless 起動）し、backend と frontend を各ウィンドウで立ち上げる。
+LLM は VRAM 都合で別運用のため起動しない。
+
+```powershell
+# 既に動いている ComfyUI(Desktop等)を検出して backend+frontend を起動
+.\scripts\dev-up.ps1
+
+# ソース版 ComfyUI を Desktop の basePath を再利用して headless 起動してから一括起動
+.\scripts\dev-up.ps1 -ComfyPath C:\tools\ComfyUI -ComfyBasePath "C:\Users\<you>\Documents\ComfyUI"
+```
+
+`-ProbePorts 8188,8001,8000` で検出候補ポートを調整できる（Desktop 版はポートが自動でずれるため）。
+
+## VRAM の排他（LLM ⇄ ComfyUI）
+
+LLM が VRAM 重い場合、プロセスを落とすのではなく **モデルだけ VRAM から退避**するのが堅実。
+
+- **LLM 側（自動）**: Ollama は `keep_alive: 0`（または `OLLAMA_KEEP_ALIVE=0`）で各生成後に自動退避。LM Studio はモデル TTL / JIT auto-evict を短く設定。
+- **ComfyUI 側**: `POST /free {"unload_models":true,"free_memory":true}` でサーバを落とさず VRAM 解放。台本生成の直前に実行する。
+- ヘルパー: `scripts\gpu-free.ps1 -ComfyBaseUrl http://127.0.0.1:8001 [-OllamaModel <name>]`
+- 完全自動にしたい場合は backend に「LLMステージ開始前に ComfyUI /free を叩く」フックを足す（要コード変更）。
+
+## Desktop → headless 移行（model/workflow を消さない）
+
+Desktop は全データを basePath（例 `C:\Users\<you>\Documents\ComfyUI`：`models`/`custom_nodes`/`user`(UIワークフロー)/`input`/`output`）に保持している。
+ソース版 ComfyUI を**同じ basePath に向けるだけ**で、データを移動・複製・削除せず再利用できる。
+
+```powershell
+git clone https://github.com/comfyanonymous/ComfyUI C:\tools\ComfyUI
+# venv 作成＋依存(torch CUDA等)導入は別途
+.\scripts\start-comfy-headless.ps1 -ComfyPath C:\tools\ComfyUI -BasePath "C:\Users\<you>\Documents\ComfyUI"
+```
+
+`-BasePath` 指定で `--base-directory/--user-directory/--input/output-directory` と Desktop の `extra_models_config.yaml` を引き継ぐ。
+注意: `custom_nodes` の Python 依存は新 venv へ入れ直しが要る場合がある（ComfyUI-Manager で再導入可）。バニラノードはそのまま動く。
+
 ## 起動の早見表
 
 ```powershell
