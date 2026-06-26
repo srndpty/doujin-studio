@@ -133,16 +133,19 @@ class Dialogue(BaseModel):
         ナレーション→矩形/叫び→破裂形）。
 
         balloon_autoの確定規則:
-        - balloon_autoが入力に明示されていればそれに従う（保存済みJSONの再編集を含む）。
-        - balloon_autoが無くballoonが明示されていれば、利用者の手動指定とみなしFalse。
+        - balloon_autoが入力に明示されていればそれに従う（新規データの往復はこちら）。
+        - balloon_autoが無くballoonが明示されている場合（balloon_auto導入前の旧JSON）:
+          balloonが既定のoval（旧UIの既定値で実質「未選択」）なら自動扱いへbackfillし、
+          kind変更で形状へ追従できるようにする。oval以外は利用者が選んだ形状とみなし手動。
+          手動でovalにしたい場合はUIがballoon_auto=falseを明示送信する。
         - どちらも無ければ自動(True)。
-        これにより「明示ovalの尊重」と「kind変更で既定形状へ追従」を両立する（領域3）。
+        これにより「明示形状の尊重」「旧JSONの自動追従backfill」「kind追従」を両立する（領域3）。
         """
         fields = self.model_fields_set
         if "balloon_auto" in fields:
             auto = self.balloon_auto
         elif "balloon" in fields:
-            auto = False
+            auto = self.balloon == "oval"
         else:
             auto = True
         object.__setattr__(self, "balloon_auto", auto)

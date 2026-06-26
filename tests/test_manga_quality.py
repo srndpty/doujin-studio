@@ -33,23 +33,39 @@ def test_dialogue_kind_selects_balloon() -> None:
     assert Dialogue(speaker="a", text="…", kind="monologue").balloon == "cloud"
     assert Dialogue(speaker="a", text="その時", kind="narration").balloon == "caption"
     assert Dialogue(speaker="a", text="うわっ", kind="shout").balloon == "burst"
-    # 明示的に指定したballoonは尊重する（kindに上書きされない）。
+    # 明示的に指定した非oval形状は尊重する（kindに上書きされない）。
     assert Dialogue(speaker="a", text="…", kind="monologue", balloon="caption").balloon == "caption"
-    # ovalを明示指定した独白は、cloudへ書き換えずovalのまま保持する。
-    assert Dialogue(speaker="a", text="……", kind="monologue", balloon="oval").balloon == "oval"
+    # ovalを手動固定（balloon_auto=False）した独白は、cloudへ書き換えずovalのまま保持する。
+    assert (
+        Dialogue(
+            speaker="a", text="……", kind="monologue", balloon="oval", balloon_auto=False
+        ).balloon
+        == "oval"
+    )
 
 
 def test_saved_json_kind_change_updates_balloon() -> None:
-    # 保存済みJSON（balloonが常に含まれる）の再編集でkindを変えると、既定形状へ追従する。
+    # 新規JSON（balloon_auto=True）の再編集でkindを変えると、既定形状へ追従する。
     payload = Dialogue(speaker="a", text="本文").model_dump()
     assert payload["balloon"] == "oval" and payload["balloon_auto"] is True
     payload["kind"] = "narration"
     assert Dialogue.model_validate(payload).balloon == "caption"
-    # 明示指定（balloon_auto=False）は再編集でも保持される。
-    manual = Dialogue(speaker="a", text="本文", kind="monologue", balloon="oval").model_dump()
+    # 手動固定（balloon_auto=False）は再編集でも保持される。
+    manual = Dialogue(
+        speaker="a", text="本文", kind="monologue", balloon="oval", balloon_auto=False
+    ).model_dump()
     assert manual["balloon_auto"] is False
     manual["kind"] = "narration"
     assert Dialogue.model_validate(manual).balloon == "oval"
+
+
+def test_legacy_json_balloon_auto_backfill() -> None:
+    # balloon_auto導入前の旧JSON: oval既定は自動扱いへbackfillし、kind変更で追従する。
+    legacy = {"speaker": "a", "text": "本文", "balloon": "oval", "kind": "narration"}
+    assert Dialogue.model_validate(legacy).balloon == "caption"
+    # 旧JSONで明示された非oval形状は手動扱いで保持する。
+    legacy_shape = {"speaker": "a", "text": "本文", "balloon": "cloud", "kind": "narration"}
+    assert Dialogue.model_validate(legacy_shape).balloon == "cloud"
 
 
 def test_tail_follows_on_screen_at_draw_time() -> None:
@@ -479,6 +495,46 @@ def test_directive_only_character_is_kept() -> None:
     assert drawn.subject_mode == "character_scene"
     assert drawn.characters == ["mika"]
     assert drawn.character_layout[0].expression == "smiling"
+
+
+def test_unresolved_directive_does_not_inject_page_characters() -> None:
+    # 解決できないdirective名があっても、同ページの別人物がfallbackで混入しない（Medium回帰）。
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="solo",
+        visual_prompt="someone",
+        characters=[],
+        character_directives=[ScriptCharacter(name="未知名", position="center")],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base, page_characters={1: ["美嘉"]})
+    drawn = manga.pages[0].panels[0]
+    # 明示意図（未知のdirective）があるので、ページ人物「美嘉」を勝手に入れない。
+    assert drawn.characters == []
+
+
+def test_review_script_no_false_warning_for_directive_only_page() -> None:
+    # character_directivesだけで人物を指定した無台詞ページに誤警告を出さない（Low回帰）。
+    data = {
+        "pages": [
+            {
+                "page": 1,
+                "panels": [
+                    {
+                        "characters": [],
+                        "character_directives": [{"name": "美嘉", "expression": "smiling"}],
+                        "dialogue": [],
+                        "sfx": [],
+                    }
+                ],
+            }
+        ]
+    }
+    _fixed, warnings = story.review_script(data)
+    assert not any("登場人物が指定されていません" in warning for warning in warnings)
 
 
 def test_script_character_position_normalizes_variants() -> None:

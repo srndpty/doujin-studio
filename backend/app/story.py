@@ -528,7 +528,8 @@ def review_script(data: dict) -> tuple[dict, list[str]]:
             if not isinstance(panel, dict):
                 continue
             label = f"{page_no}ページ コマ{p_index}"
-            if panel.get("characters"):
+            # character_directivesも人物指定とみなす（directive単独ページの誤警告を防ぐ）。
+            if panel.get("characters") or panel.get("character_directives"):
                 page_has_character = True
             dialogue = panel.get("dialogue", []) or []
             sfx = panel.get("sfx", []) or []
@@ -1014,8 +1015,11 @@ def script_to_manga(
                     and line.speaker not in names
                 ):
                     names.append(line.speaker)
+            # 人物指定の意図（characters/directive/画面内話者）が一つでもあれば、
+            # 解決できなくてもページ人物へfallbackしない（未知名経由の再混入を防ぐ）。
+            has_explicit_character_intent = bool(names)
             character_ids = resolve_character_ids(names, base)
-            if not character_ids and not non_character:
+            if not character_ids and not non_character and not has_explicit_character_intent:
                 character_ids = resolve_character_ids(
                     page_characters.get(script_page.page, []), base
                 )
