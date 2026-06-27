@@ -241,13 +241,18 @@ def stage_query(stage: str, record: StoryGenerationSessionRecord, stages: dict) 
 # --- 段階生成 ---
 
 
-def require_previous_approved(stage: str, stages: dict) -> None:
+def require_previous_ready(stage: str, stages: dict) -> None:
+    """前段階が生成済み（データあり）であることだけを要求する。
+
+    承認フローは廃止したため、前段階の生成が終われば次段階を生成できる。
+    不満があれば各段階を再生成すればよい。
+    """
     index = STAGE_ORDER.index(stage)
     if index == 0:
         return
     previous = STAGE_ORDER[index - 1]
-    if stages[previous]["status"] != "approved":
-        raise StoryError(f"前段階「{previous}」を承認してから生成してください")
+    if stages[previous]["status"] == "empty" or stages[previous]["data"] is None:
+        raise StoryError(f"前段階「{previous}」を生成してから生成してください")
 
 
 def invalidate_downstream(stages: dict, stage: str) -> None:
@@ -281,6 +286,33 @@ def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:
 logger = logging.getLogger(__name__)
 
 
+# 段階生成のライブ進捗（session_id -> 進捗スナップショット）。
+# ローカル単一プロセス前提の軽量な可観測性。生成中はLLM出力の受信状況を保持し、
+# フロントエンドが別リクエストでポーリングして「止まっていないこと」を表示する。
+_GENERATION_PROGRESS: dict[str, dict] = {}
+
+
+def get_generation_progress(session_id: str) -> dict | None:
+    """進行中の段階生成の進捗スナップショットを返す（無ければNone）。"""
+    return _GENERATION_PROGRESS.get(session_id)
+
+
+def _start_generation_progress(session_id: str, stage: str) -> None:
+    timestamp = now_utc().isoformat()
+    _GENERATION_PROGRESS[session_id] = {
+        "stage": stage,
+        "phase": "running",
+        "chars": 0,
+        "tail": "",
+        "started_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _clear_generation_progress(session_id: str) -> None:
+    _GENERATION_PROGRESS.pop(session_id, None)
+
+
 async def free_comfyui_vram(settings: Settings) -> None:
     """ComfyUIの/freeでVRAMを解放する（プロセスは落とさない）。ベストエフォート。
 
@@ -311,47 +343,64 @@ async def generate_stage(
     if stage not in STAGE_ORDER:
         raise StoryError("不正な段階です", status_code=422)
     stages = load_stages(record)
-    require_previous_approved(stage, stages)
+    require_previous_ready(stage, stages)
     context = build_context(session, settings, record.work_name, stage_query(stage, record, stages))
 
+    session_id = record.id
+
+    def on_progress(text: str) -> None:
+        # LLMから受信した累積出力の文字数と末尾を進捗へ反映する（止まっていない証跡）。
+        snapshot = _GENERATION_PROGRESS.get(session_id)
+        if snapshot is None:
+            return
+        snapshot["chars"] = len(text)
+        snapshot["tail"] = text[-120:]
+        snapshot["updated_at"] = now_utc().isoformat()
+
+    _start_generation_progress(session_id, stage)
     error: str | None = None
     review_warnings: list[str] = []
     try:
-        if isinstance(llm, StubLLMClient):
-            data = generate_stub_stage(session, record, stages, stage)
-            data = validate_stage_data(stage, data, record.target_pages)
-        else:
-            # 実LLM呼び出し前にComfyUIのVRAMを解放してVRAM同居を避ける（任意・既定OFF）。
-            if settings.comfyui_free_before_llm:
-                await free_comfyui_vram(settings)
-            data = await generate_llm_stage(llm, record, stages, stage, context, instruction)
-    except StoryError:
-        raise
-    except (LLMError, ValidationError, ValueError, json.JSONDecodeError) as exc:
-        error = str(exc)
-        data = None
-
-    # 台本段階は生成後に1回だけ編集チェックを掛け、自動修正と警告を残す（領域2）。
-    if stage == "script" and data is not None:
-        original_data = copy.deepcopy(data)
-        data, review_warnings = review_script(data)
         try:
-            data = validate_stage_data(stage, data, record.target_pages)
-        except (ValidationError, ValueError) as exc:
-            # 編集チェックで壊れることは想定しないが、壊れたら修正前データへ戻す。
-            error = error or str(exc)
-            data = original_data
-            review_warnings = []
+            if isinstance(llm, StubLLMClient):
+                data = generate_stub_stage(session, record, stages, stage)
+                data = validate_stage_data(stage, data, record.target_pages)
+            else:
+                # 実LLM呼び出し前にComfyUIのVRAMを解放してVRAM同居を避ける（任意・既定OFF）。
+                if settings.comfyui_free_before_llm:
+                    await free_comfyui_vram(settings)
+                data = await generate_llm_stage(
+                    llm, record, stages, stage, context, instruction, on_progress=on_progress
+                )
+        except StoryError:
+            raise
+        except (LLMError, ValidationError, ValueError, json.JSONDecodeError) as exc:
+            error = str(exc)
+            data = None
 
-    stages[stage]["data"] = data
-    stages[stage]["knowledge_ids"] = context.knowledge_ids
-    stages[stage]["error"] = error
-    stages[stage]["warnings"] = review_warnings
-    stages[stage]["status"] = "draft" if data is not None else "empty"
-    stages[stage]["updated_at"] = now_utc().isoformat()
-    invalidate_downstream(stages, stage)
-    save_stages(session, record, stages)
-    return record
+        # 台本段階は生成後に1回だけ編集チェックを掛け、自動修正と警告を残す（領域2）。
+        if stage == "script" and data is not None:
+            original_data = copy.deepcopy(data)
+            data, review_warnings = review_script(data)
+            try:
+                data = validate_stage_data(stage, data, record.target_pages)
+            except (ValidationError, ValueError) as exc:
+                # 編集チェックで壊れることは想定しないが、壊れたら修正前データへ戻す。
+                error = error or str(exc)
+                data = original_data
+                review_warnings = []
+
+        stages[stage]["data"] = data
+        stages[stage]["knowledge_ids"] = context.knowledge_ids
+        stages[stage]["error"] = error
+        stages[stage]["warnings"] = review_warnings
+        stages[stage]["status"] = "draft" if data is not None else "empty"
+        stages[stage]["updated_at"] = now_utc().isoformat()
+        invalidate_downstream(stages, stage)
+        save_stages(session, record, stages)
+        return record
+    finally:
+        _clear_generation_progress(session_id)
 
 
 def update_stage(
@@ -384,7 +433,7 @@ def approve_stage(
     if stage not in STAGE_ORDER:
         raise StoryError("不正な段階です", status_code=422)
     stages = load_stages(record)
-    require_previous_approved(stage, stages)
+    require_previous_ready(stage, stages)
     if stages[stage]["data"] is None:
         raise StoryError("生成または編集してから承認してください")
     stages[stage]["status"] = "approved"
@@ -615,6 +664,7 @@ async def generate_llm_stage(
     stage: str,
     context: KnowledgeContext,
     instruction: str,
+    on_progress=None,
 ) -> dict:
     async def attempt(directive: str | None) -> dict:
         messages = build_stage_messages(
@@ -623,7 +673,7 @@ async def generate_llm_stage(
         last_error: Exception | None = None
         max_attempts = 3 if stage == "script" else 2
         for retry in range(max_attempts):
-            content = await llm.chat(messages, want_json=True)
+            content = await llm.chat(messages, want_json=True, on_progress=on_progress)
             try:
                 parsed = extract_json_object(content)
                 return validate_stage_data(stage, parsed, record.target_pages)
@@ -839,15 +889,33 @@ def resolve_character_ids(names: list[str], manga: MangaProject) -> list[str]:
     return resolved
 
 
+def _has_ascii_letters(text: str) -> bool:
+    """英字（booruタグの最低条件）を含むか。"""
+    return any("a" <= ch.lower() <= "z" for ch in text)
+
+
 def _is_weak_trigger(character: Character) -> bool:
-    """画像生成トークンとして弱い（未設定/表示名そのまま）triggerかどうか。"""
+    """画像生成トークンとして弱いtriggerかどうか。
+
+    未設定・表示名そのまま・英字を含まない（日本語名のみ）triggerは、素モデルが
+    解釈できず人物が描き分けられないため弱trigger扱いし、知識DBのboooruタグで上書きする。
+    例: 「城ヶ崎莉嘉」→ 弱 → 「jougasaki rika, idolmaster cinderella girls」で補完。
+    """
     trigger = (character.trigger_prompt or "").strip()
-    return not trigger or trigger == character.display_name.strip()
+    if not trigger or trigger == character.display_name.strip():
+        return True
+    return not _has_ascii_letters(trigger)
 
 
 def build_characters_from_knowledge(session: Session, work_name: str) -> list[Character]:
-    """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。"""
-    characters: list[Character] = []
+    """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。
+
+    同じ人物のチャンクが重複している場合（旧データの残骸など）は、英字triggerを持つ
+    強い方を優先して1人に統合する。これにより、triggerが空の重複チャンクが正しい
+    booruタグを上書きして人物が描けなくなる事故を防ぐ。
+    """
+    by_display: dict[str, Character] = {}
+    order: list[str] = []
     used_ids: set[str] = set()
     for index, chunk in enumerate(knowledge.get_character_chunks(session, work_name)):
         display_name = (chunk.title or "").strip()
@@ -855,24 +923,36 @@ def build_characters_from_knowledge(session: Session, work_name: str) -> list[Ch
             continue
         image = knowledge.parse_chunk_image(chunk)
         char_id = str(image.get("id") or f"kc_{index + 1}").strip() or f"kc_{index + 1}"
-        while char_id in used_ids:
-            char_id = f"{char_id}_x"
-        used_ids.add(char_id)
         aliases = [str(alias).strip() for alias in image.get("aliases", []) if str(alias).strip()]
-        characters.append(
-            Character(
-                id=char_id,
-                display_name=display_name,
-                aliases=aliases,
-                trigger_prompt=str(image.get("trigger_prompt", "")).strip() or display_name,
-                appearance_prompt=str(image.get("appearance_prompt", "")).strip(),
-                outfit_prompt=str(image.get("outfit_prompt", "")).strip(),
-                negative_prompt=str(image.get("negative_prompt", "")).strip(),
-                lora_node_id=str(image.get("lora_node_id", "")).strip(),
-                lora_name=str(image.get("lora_name", "")).strip(),
-                speech_style=str(image.get("speech_style", "")).strip(),
-            )
+        candidate = Character(
+            id=char_id,
+            display_name=display_name,
+            aliases=aliases,
+            trigger_prompt=str(image.get("trigger_prompt", "")).strip() or display_name,
+            appearance_prompt=str(image.get("appearance_prompt", "")).strip(),
+            outfit_prompt=str(image.get("outfit_prompt", "")).strip(),
+            negative_prompt=str(image.get("negative_prompt", "")).strip(),
+            lora_node_id=str(image.get("lora_node_id", "")).strip(),
+            lora_name=str(image.get("lora_name", "")).strip(),
+            speech_style=str(image.get("speech_style", "")).strip(),
         )
+        existing = by_display.get(display_name)
+        if existing is None:
+            order.append(display_name)
+            by_display[display_name] = candidate
+            continue
+        # 重複時は弱trigger側を、強trigger側で置き換える（順序は最初の登場位置を保つ）。
+        if _is_weak_trigger(existing) and not _is_weak_trigger(candidate):
+            candidate.id = existing.id  # 既存IDを維持して下流の参照を壊さない
+            by_display[display_name] = candidate
+
+    characters: list[Character] = []
+    for display_name in order:
+        character = by_display[display_name]
+        while character.id in used_ids:
+            character.id = f"{character.id}_x"
+        used_ids.add(character.id)
+        characters.append(character)
     return characters
 
 
@@ -1197,8 +1277,8 @@ def apply_session(
     base: MangaProject,
 ) -> MangaProject:
     stages = load_stages(record)
-    if stages["script"]["status"] != "approved" or stages["script"]["data"] is None:
-        raise StoryError("台本段階を承認してから適用してください")
+    if stages["script"]["data"] is None:
+        raise StoryError("台本段階を生成してから適用してください")
     script = ScriptStage.model_validate(stages["script"]["data"])
     if len(script.pages) not in {4, 8, 16}:
         raise StoryError("ページ数は4・8・16のいずれかにしてください")

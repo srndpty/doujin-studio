@@ -574,11 +574,13 @@ class FakeLLM:
         self.responses = list(responses)
         self.calls: list = []
 
-    async def chat(self, messages: list[dict], want_json: bool = True) -> str:
+    async def chat(self, messages: list[dict], want_json: bool = True, on_progress=None) -> str:
         self.calls.append(messages)
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
+        if on_progress is not None:
+            on_progress(item)
         return item
 
 
@@ -807,3 +809,32 @@ def test_openai_client_parses_and_handles_errors(monkeypatch) -> None:
         assert False, "タイムアウトでLLMErrorになること"
     except LLMError as exc:
         assert "タイムアウト" in str(exc)
+
+
+# --- 莉嘉のtrigger不具合（日本語名trigger）への対策 ---
+
+
+def test_is_weak_trigger_treats_japanese_only_as_weak() -> None:
+    from backend.app.schemas import Character
+
+    japanese = Character(id="rika", display_name="城ヶ崎莉嘉", trigger_prompt="城ヶ崎莉嘉")
+    booru = Character(
+        id="rika",
+        display_name="城ヶ崎莉嘉",
+        trigger_prompt="jougasaki rika, idolmaster cinderella girls",
+    )
+    # 日本語名そのまま・表示名一致はいずれも弱trigger（素モデルが解釈できない）。
+    assert story._is_weak_trigger(japanese) is True
+    assert story._is_weak_trigger(booru) is False
+
+
+def test_generation_progress_idle_when_not_generating(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_project(client)
+        session = client.post(
+            mutation_url(client, project_id, "story-sessions"), json={"target_pages": 4}
+        ).json()
+        session_id = session["result"]["id"]
+        progress = client.get(f"/api/story-sessions/{session_id}/generation-progress").json()
+        assert progress["phase"] == "idle"
+        assert progress["chars"] == 0

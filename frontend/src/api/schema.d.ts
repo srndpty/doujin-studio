@@ -713,6 +713,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/story-sessions/{session_id}/generation-progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Story Generation Progress
+         * @description 進行中の段階生成のライブ進捗を返す。生成中でなければidle。
+         *
+         *     生成リクエスト（POST .../generate）が長時間ブロックする間、フロントエンドが
+         *     本エンドポイントを別途ポーリングして受信文字数・経過・出力末尾を表示する。
+         */
+        get: operations["get_story_generation_progress_api_story_sessions__session_id__generation_progress_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/story-sessions/{session_id}/stages/{stage}": {
         parameters: {
             query?: never;
@@ -4013,6 +4036,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StorySessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_story_generation_progress_api_story_sessions__session_id__generation_progress_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */

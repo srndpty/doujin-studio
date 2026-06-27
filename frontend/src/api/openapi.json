@@ -2445,6 +2445,48 @@
         }
       }
     },
+    "/api/story-sessions/{session_id}/generation-progress": {
+      "get": {
+        "summary": "Get Story Generation Progress",
+        "description": "進行中の段階生成のライブ進捗を返す。生成中でなければidle。\n\n生成リクエスト（POST .../generate）が長時間ブロックする間、フロントエンドが\n本エンドポイントを別途ポーリングして受信文字数・経過・出力末尾を表示する。",
+        "operationId": "get_story_generation_progress_api_story_sessions__session_id__generation_progress_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Story Generation Progress Api Story Sessions  Session Id  Generation Progress Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/story-sessions/{session_id}/stages/{stage}": {
       "put": {
         "summary": "Update Story Stage",

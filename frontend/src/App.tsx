@@ -244,7 +244,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("production");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
+  const [newProjectTitle, setNewProjectTitle] = useState("");
   const selectedProjectIdRef = useRef<string | null>(null);
   // 単調性ガードを同期的に判定するためのselectedミラー。setStateの更新関数内で状態を
   // 読むと反映タイミングが保証されないため、commit済みrevisionをrefで参照する。
@@ -1447,7 +1447,10 @@ export function App() {
             <button
               className="icon-button"
               title="新規プロジェクト"
-              onClick={() => setNewProjectOpen(true)}
+              onClick={() => {
+                setNewProjectTitle("");
+                setNewProjectOpen(true);
+              }}
               disabled={busy}
             >
               <Plus size={18} />
@@ -2785,6 +2788,7 @@ export function App() {
               <input
                 value={newProjectTitle}
                 onChange={(event) => setNewProjectTitle(event.target.value)}
+                placeholder="テスト本"
                 maxLength={120}
               />
             </label>

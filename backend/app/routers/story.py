@@ -121,6 +121,26 @@ async def generate_story_stage(
         return story_module.session_to_response(record)
 
 
+@router.get("/api/story-sessions/{session_id}/generation-progress")
+def get_story_generation_progress(session_id: str) -> dict:
+    """進行中の段階生成のライブ進捗を返す。生成中でなければidle。
+
+    生成リクエスト（POST .../generate）が長時間ブロックする間、フロントエンドが
+    本エンドポイントを別途ポーリングして受信文字数・経過・出力末尾を表示する。
+    """
+    progress = story_module.get_generation_progress(session_id)
+    if progress is None:
+        return {
+            "stage": None,
+            "phase": "idle",
+            "chars": 0,
+            "tail": "",
+            "started_at": None,
+            "updated_at": None,
+        }
+    return progress
+
+
 @router.put("/api/story-sessions/{session_id}/stages/{stage}", response_model=StorySessionResponse)
 def update_story_stage(
     session_id: str, stage: str, payload: StageUpdateRequest, request: Request
