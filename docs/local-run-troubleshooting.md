@@ -48,8 +48,21 @@ ollama pull qwen2.5:14b
 .\scripts\dev-up.ps1 -Ollama -OllamaModel qwen2.5:14b
 ```
 
-注意: 既に Ollama がサービスとして 11434 で起動している場合、本スクリプトはその環境変数を変更できない。
-VRAM 自動退避を効かせるには、Ollama サービスの環境変数へ `OLLAMA_KEEP_ALIVE=0` を設定するか、サービスを止めて `dev-up.ps1 -Ollama` に `ollama serve` を任せる。
+注意: 既に Ollama がサービス/デスクトップアプリとして 11434 で起動している場合、本スクリプトはその環境変数を変更できない（アプリ既定は `OLLAMA_KEEP_ALIVE=5m`）。
+VRAM 自動退避を効かせるには次のどちらか:
+
+```powershell
+# A) アプリ運用のまま keep_alive=0 を効かせる（推奨・確実）
+setx OLLAMA_KEEP_ALIVE 0
+#    → タスクトレイの Ollama を Quit して再起動。生成直後に確認:
+ollama ps          # UNTIL が即時/Stopping… になっていれば OK
+
+# B) アプリを Quit して serve をスクリプトに任せる
+.\scripts\dev-up.ps1 -Ollama   # keep_alive=0 付きで ollama serve を起動
+```
+
+`ollama pull <model>` はグローバル（保存先 `~/.ollama/models`）でターミナル非依存。`ollama list` で取得済みを確認できる。
+モデル名は実在タグを指定する（`ollama list` / ollama.com/library で確認）。
 
 ### 手動/個別の方法
 
