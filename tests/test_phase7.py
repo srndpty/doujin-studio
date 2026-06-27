@@ -913,6 +913,10 @@ def test_duplicate_character_merge_keeps_existing_profile(tmp_path: Path) -> Non
         )
         session.commit()
 
+        chunks = knowledge.get_character_chunks(session, "シンデレラ")
+        assert len(chunks) == 1
+        assert "詳細プロフィール" in chunks[0].content
+
         characters = story.build_characters_from_knowledge(session, "シンデレラ")
 
     assert len(characters) == 1

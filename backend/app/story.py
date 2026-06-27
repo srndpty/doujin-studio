@@ -938,6 +938,27 @@ def _merge_duplicate_character(existing: Character, candidate: Character) -> Cha
     return merged
 
 
+def _get_character_chunks_for_profile_merge(
+    session: Session, work_name: str
+) -> list[KnowledgeChunkRecord]:
+    """同名chunkの情報統合専用に、重複を残したcharacter chunkを取得する。"""
+    if not work_name:
+        return []
+    return (
+        session.query(KnowledgeChunkRecord)
+        .filter(
+            KnowledgeChunkRecord.work_name == work_name,
+            KnowledgeChunkRecord.kind == "character",
+        )
+        .order_by(
+            KnowledgeChunkRecord.usage,
+            KnowledgeChunkRecord.source_id,
+            KnowledgeChunkRecord.position,
+        )
+        .all()
+    )
+
+
 def build_characters_from_knowledge(session: Session, work_name: str) -> list[Character]:
     """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。
 
@@ -948,7 +969,7 @@ def build_characters_from_knowledge(session: Session, work_name: str) -> list[Ch
     by_display: dict[str, Character] = {}
     order: list[str] = []
     used_ids: set[str] = set()
-    for index, chunk in enumerate(knowledge.get_character_chunks(session, work_name)):
+    for index, chunk in enumerate(_get_character_chunks_for_profile_merge(session, work_name)):
         display_name = (chunk.title or "").strip()
         if not display_name:
             continue
