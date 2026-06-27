@@ -466,6 +466,7 @@ def apply_panel_to_workflow(
                     patch_workflow_input(
                         patched, preset.sampler_node_id, input_name, value, "sampler"
                     )
+        apply_regional_binding(patched, preset.regional_binding, panel)
     lora_nodes: set[str] = set()
     for lora in panel.generation.loras:
         if lora.node_id in lora_nodes:
@@ -478,6 +479,54 @@ def apply_panel_to_workflow(
         node["inputs"]["strength_model"] = lora.strength_model
         node["inputs"]["strength_clip"] = lora.strength_clip
     return patched
+
+
+def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
+    if binding is None or not binding.enabled:
+        return
+    regions = compose_character_regional_prompts_from_prepared_panel(panel)
+    if not regions:
+        return
+    if len(binding.character_prompt_node_ids) < len(regions):
+        raise ValueError("regional workflowのキャラpromptノード数が不足しています")
+    if len(binding.region_node_ids) < len(regions):
+        raise ValueError("regional workflowの領域ノード数が不足しています")
+    for index, region in enumerate(regions):
+        prompt_node_id = binding.character_prompt_node_ids[index]
+        region_node_id = binding.region_node_ids[index]
+        patch_workflow_input(workflow, prompt_node_id, "text", region["prompt"], "regional prompt")
+        box = region["region_box"]
+        assert isinstance(box, tuple)
+        node = workflow.get(region_node_id)
+        if not node or "inputs" not in node:
+            raise ValueError(f"regional領域ノードがworkflowにありません: {region_node_id}")
+        x, y, width, height = box
+        node["inputs"]["x"] = x
+        node["inputs"]["y"] = y
+        node["inputs"]["width"] = width
+        node["inputs"]["height"] = height
+        node["inputs"]["region"] = f"{x},{y},{width},{height}"
+
+
+def compose_character_regional_prompts_from_prepared_panel(panel: Panel) -> list[dict[str, object]]:
+    """prepare_panel_for_generation後のpanelからregional入力を作る。
+
+    生成直前はMangaProject全体を持たないため、通常promptへ統合済みの情報ではなく、
+    character_layoutの領域とgeneration.reference/loras前の人物IDを使う。promptは
+    character_layoutの演技語だけでなく、既に合成済みpositiveからも補強されるよう、
+    panel.generation.promptを共通文脈として併記する。
+    """
+    regions: list[dict[str, object]] = []
+    for entry in panel.character_layout:
+        if entry.id not in panel.characters or entry.region_box is None:
+            continue
+        prompt = ", ".join(
+            part
+            for part in [entry.expression, entry.action, panel.generation.prompt or panel.prompt]
+            if part
+        )
+        regions.append({"character_id": entry.id, "prompt": prompt, "region_box": entry.region_box})
+    return regions
 
 
 def patch_workflow_input(workflow: dict, node_id: str, input_name: str, value, label: str) -> None:

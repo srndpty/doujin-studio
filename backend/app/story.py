@@ -474,9 +474,10 @@ def stage_instruction_text(stage: str) -> str:
             "・1ページを1コマにするのは、山場・見せ場・余韻など明確な演出意図があるページだけに限る。漫然と全ページを1コマにしない。"
             "・各コマで画角(shot)と役割を変え、状況提示→反応→引き のように流れを作る。"
             "・ページのpurposeとhookに沿ってコマを配置する。"
-            "出力形式: pages配列。各ページは page(整数) と panels(1〜9個)を持ちます。"
+            "出力形式: pages配列。各ページは page(整数), page_goal, emotional_curve([string]), "
+            "panels(1〜9個)を持ちます。"
             "各コマは shot, camera, role, emotion, background_density, location, visual_prompt, "
-            "characters([string]), dialogue, sfx を持ちます。"
+            "composition_notes, text_safe_area, characters([string]), dialogue, sfx を持ちます。"
             "roleは establish/dialogue/reaction/action/reveal/emotional_peak/silent/transition/"
             "punchline/aftermath から選びます。"
             "emotionはそのコマで読者に伝える感情ビートを短く書きます。"
@@ -485,7 +486,8 @@ def stage_instruction_text(stage: str) -> str:
             "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
             "可能なら character_directives: [{name, position, expression, action}] も出力し、"
             "人物ごとの画面内位置(position: upper_left/upper_right/lower_left/lower_right/center)、"
-            "表情(expression)、動作(action)を英語で指定してください（画像生成promptへ反映されます）。"
+            "表情(expression)、動作(action)、region_box([x,y,w,h])を英語/数値で指定してください"
+            "（画像生成promptと領域分離へ反映されます）。"
             "dialogueは [{speaker, text, kind, on_screen}] の配列です。"
             "kindは speech(会話)/monologue(独白・心の声)/narration(ナレーション・地の文)/shout(叫び) から選びます。"
             "on_screenは話者がそのコマに描かれていればtrue、画面外の声ならfalseにします。独白・ナレーションは原則false。"
@@ -1144,6 +1146,14 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
 # 人物解決の警告に付ける安定prefix。再適用時にこの種別だけ再計算・置換する。
 UNRESOLVED_CHARACTER_PREFIX = "[未解決の人物] "
 
+POSITION_REGION_BOXES: dict[str, tuple[float, float, float, float]] = {
+    "upper_left": (0.02, 0.02, 0.46, 0.46),
+    "upper_right": (0.52, 0.02, 0.46, 0.46),
+    "lower_left": (0.02, 0.52, 0.46, 0.46),
+    "lower_right": (0.52, 0.52, 0.46, 0.46),
+    "center": (0.18, 0.08, 0.64, 0.84),
+}
+
 
 SCRIPT_ROLE_ALIASES = {
     "establishing": "establish",
@@ -1176,6 +1186,16 @@ def normalize_script_role(value: str) -> str:
         "montage",
     }
     return normalized if normalized in valid else ""
+
+
+def default_region_box(position: str, index: int, total: int) -> tuple[float, float, float, float]:
+    """人物領域が未指定のとき、位置指定と人数から決定的な初期領域を作る。"""
+    if position in POSITION_REGION_BOXES:
+        return POSITION_REGION_BOXES[position]
+    if total <= 1:
+        return POSITION_REGION_BOXES["center"]
+    width = 1.0 / total
+    return (round(index * width, 4), 0.05, round(width, 4), 0.9)
 
 
 def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
@@ -1278,6 +1298,11 @@ def script_to_manga(
                         position=position,
                         expression=directive.expression if directive else "",
                         action=directive.action if directive else "",
+                        region_box=(
+                            directive.region_box
+                            if directive and directive.region_box is not None
+                            else default_region_box(position, i, len(character_ids))
+                        ),
                     )
                 )
             dialogues = []
@@ -1316,6 +1341,8 @@ def script_to_manga(
                     role=role,
                     emotion=script_panel.emotion,
                     background_density=script_panel.background_density,
+                    composition_notes=script_panel.composition_notes,
+                    text_safe_area=script_panel.text_safe_area,
                     emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
@@ -1341,6 +1368,8 @@ def script_to_manga(
                 theme=f"{script_page.page}ページ",
                 layout_template=f"count_{panel_count}",
                 layout_family=family,
+                page_goal=script_page.page_goal,
+                emotional_curve=script_page.emotional_curve,
                 reading_order=[panel.panel_id for panel in panels],
                 panels=panels,
             )

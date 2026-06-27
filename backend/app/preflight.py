@@ -53,11 +53,13 @@ def preflight_page(
     issues.extend(_check_reading_order(manga, page))
     issues.extend(_check_gutters(manga, page))
     issues.extend(_check_layout_repetition(manga, page, page_index))
+    issues.extend(_check_story_structure(page))
     issues.extend(_check_visual_rhythm(page))
     issues.extend(_check_image_aspect(page, export_dir))
     issues.extend(_check_subject_mode_characters(page))
     issues.extend(_check_sfx_collisions(manga, page))
     issues.extend(_check_character_setup(manga, page))
+    issues.extend(_check_character_regions(page))
     issues.extend(_check_overlay_occlusion(page))
     issues.extend(_check_assets(page, export_dir))
     return issues
@@ -312,6 +314,48 @@ def _check_layout_repetition(
     return []
 
 
+def _check_story_structure(page: Page) -> list[PreflightIssue]:
+    issues: list[PreflightIssue] = []
+    if len(page.panels) >= 3 and not page.page_goal.strip():
+        issues.append(
+            PreflightIssue(
+                level="warning",
+                code="page_goal_missing",
+                message="ページ目的が未設定です",
+                page=page.page,
+                category="rhythm",
+                suggestion="このページで読者の感情をどこへ進めるかをpage_goalへ短く設定してください",
+                fixable=False,
+            )
+        )
+    if len(page.panels) >= 3 and len(page.emotional_curve) < 2:
+        issues.append(
+            PreflightIssue(
+                level="warning",
+                code="emotional_curve_missing",
+                message="感情曲線が不足しています",
+                page=page.page,
+                category="rhythm",
+                suggestion="導入、反応、転換、余韻などページ内の感情ビートを2件以上設定してください",
+                fixable=False,
+            )
+        )
+    roles = {_normalize_rhythm_token(panel.role) for panel in page.panels if panel.role}
+    if len(page.panels) >= 4 and not (roles & {"reveal", "punchline", "emotional_peak"}):
+        issues.append(
+            PreflightIssue(
+                level="warning",
+                code="page_peak_missing",
+                message="ページ内に見せ場コマがありません",
+                page=page.page,
+                category="rhythm",
+                suggestion="1コマはreveal/punchline/emotional_peakのいずれかにして面積や演出を強めてください",
+                fixable=False,
+            )
+        )
+    return issues
+
+
 def _normalize_rhythm_token(value: str) -> str:
     return (value or "").strip().casefold().replace(" ", "_").replace("-", "_")
 
@@ -334,6 +378,9 @@ def _check_visual_rhythm(page: Page) -> list[PreflightIssue]:
                     message="同じ画角のコマが3つ続いています",
                     page=page.page,
                     panel_id=window[0].panel_id,
+                    category="rhythm",
+                    suggestion="close-up、medium shot、wide shotなど画角を交互に変えてください",
+                    fixable=False,
                 )
             )
             break
@@ -354,6 +401,9 @@ def _check_visual_rhythm(page: Page) -> list[PreflightIssue]:
                     message="白背景または背景なしの人物コマが3つ続いています",
                     page=page.page,
                     panel_id=window[0].panel_id,
+                    category="rhythm",
+                    suggestion="少なくとも1コマはlight/full背景にするか、白背景の演出理由を明確にしてください",
+                    fixable=False,
                 )
             )
             break
@@ -529,6 +579,33 @@ def _check_character_setup(manga: MangaProject, page: Page) -> list[PreflightIss
                         panel_id=panel.panel_id,
                     )
                 )
+    return issues
+
+
+def _check_character_regions(page: Page) -> list[PreflightIssue]:
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        if is_non_character_mode(panel) or len(panel.characters) < 2:
+            continue
+        by_id = {entry.id: entry for entry in panel.character_layout}
+        missing = [
+            character_id
+            for character_id in panel.characters
+            if character_id not in by_id or by_id[character_id].region_box is None
+        ]
+        if missing:
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="character_region_missing",
+                    message=f"複数キャラコマに人物領域がありません（{', '.join(missing)}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="character",
+                    suggestion="各キャラのregion_boxを設定し、regional workflowで領域分離できるようにしてください",
+                    fixable=False,
+                )
+            )
     return issues
 
 

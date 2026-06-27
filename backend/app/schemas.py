@@ -198,6 +198,31 @@ class Sfx(BaseModel):
         return value
 
 
+def _validate_unit_box(
+    value: tuple[float, float, float, float] | None,
+    label: str,
+) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return value
+    left, top, width, height = value
+    if min(value) < 0 or left + width > 1 or top + height > 1:
+        raise ValueError(f"{label}は0から1の範囲に収めてください")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{label}の幅と高さは正の値にしてください")
+    return value
+
+
+class RegionalWorkflowBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["attention_couple"] = "attention_couple"
+    # character_layoutの順番に対応するキャラ別promptノード。
+    character_prompt_node_ids: list[str] = Field(default_factory=list)
+    # character_layoutの順番に対応する領域ノード。入力名x/y/width/heightへ0..1値を入れる。
+    region_node_ids: list[str] = Field(default_factory=list)
+
+
 class WorkflowPreset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -213,6 +238,7 @@ class WorkflowPreset(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=200)
     cfg: float | None = Field(default=None, ge=0, le=30)
     denoise: float | None = Field(default=None, ge=0, le=1)
+    regional_binding: RegionalWorkflowBinding | None = None
 
 
 class PanelControlReference(BaseModel):
@@ -312,6 +338,15 @@ class PanelCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    # コマ内の人物領域（x, y, w, h）。regional workflowの領域分離に使う。
+    region_box: tuple[float, float, float, float] | None = None
+
+    @field_validator("region_box")
+    @classmethod
+    def validate_region_box(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(value, "region_box")
 
 
 class Panel(BaseModel):
@@ -332,6 +367,9 @@ class Panel(BaseModel):
     emotion: str = ""
     # 背景密度。white/none/light/full等を入れ、白背景の連続を検査する。
     background_density: str = ""
+    composition_notes: str = ""
+    # 写植予定領域。画像生成時に重要な顔や手を置かない余白として扱う。
+    text_safe_area: tuple[float, float, float, float] | None = None
     # 強調度（1=控えめ、5=見せ場）。レイアウトエンジンが面積配分に使う。
     emphasis: int = Field(default=2, ge=1, le=5)
     camera: str = ""
@@ -353,12 +391,16 @@ class Panel(BaseModel):
     def validate_bbox(
         cls, value: tuple[float, float, float, float]
     ) -> tuple[float, float, float, float]:
-        left, top, width, height = value
-        if min(value) < 0 or left + width > 1 or top + height > 1:
-            raise ValueError("bboxは0から1の範囲に収めてください")
-        if width <= 0 or height <= 0:
-            raise ValueError("bboxの幅と高さは正の値にしてください")
-        return value
+        validated = _validate_unit_box(value, "bbox")
+        assert validated is not None
+        return validated
+
+    @field_validator("text_safe_area")
+    @classmethod
+    def validate_text_safe_area(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(value, "text_safe_area")
 
     @model_validator(mode="after")
     def validate_character_layout(self) -> "Panel":
@@ -448,6 +490,9 @@ class Page(BaseModel):
     layout_family: str = ""
     # ページの演出意図（構図段階）。
     intent: str = ""
+    page_goal: str = ""
+    emotional_curve: list[str] = Field(default_factory=list)
+    quality_notes: list[str] = Field(default_factory=list)
     # 手動編集後はtrue。自動レイアウト再提案で上書きしない。
     layout_locked: bool = False
     # コマの読み順（panel_id列）。右上から左下を既定とする。
@@ -703,6 +748,9 @@ class PreflightIssue(BaseModel):
     message: str
     page: int
     panel_id: str | None = None
+    category: str = "general"
+    suggestion: str = ""
+    fixable: bool = False
 
 
 class PreflightResponse(BaseModel):
@@ -1054,6 +1102,7 @@ class ScriptCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    region_box: tuple[float, float, float, float] | None = None
 
     @field_validator("name", "expression", "action", mode="before")
     @classmethod
@@ -1082,6 +1131,13 @@ class ScriptCharacter(BaseModel):
         valid = {"upper_left", "upper_right", "lower_left", "lower_right", "center"}
         return normalized if normalized in valid else "center"
 
+    @field_validator("region_box")
+    @classmethod
+    def validate_region_box(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(value, "region_box")
+
 
 class ScriptPanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1091,6 +1147,8 @@ class ScriptPanel(BaseModel):
     role: str = ""
     emotion: str = ""
     background_density: str = ""
+    composition_notes: str = ""
+    text_safe_area: tuple[float, float, float, float] | None = None
     location: str = ""
     visual_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
@@ -1105,6 +1163,7 @@ class ScriptPanel(BaseModel):
         "role",
         "emotion",
         "background_density",
+        "composition_notes",
         "location",
         "visual_prompt",
         mode="before",
@@ -1116,6 +1175,13 @@ class ScriptPanel(BaseModel):
         if isinstance(value, (int, float, bool)):
             return str(value)
         return value
+
+    @field_validator("text_safe_area")
+    @classmethod
+    def validate_text_safe_area(
+        cls, value: tuple[float, float, float, float] | None
+    ) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(value, "text_safe_area")
 
     @field_validator("characters", mode="before")
     @classmethod
@@ -1179,15 +1245,29 @@ class ScriptPage(BaseModel):
 
     page: int = Field(ge=1)
     layout: str = ""
+    page_goal: str = ""
+    emotional_curve: list[str] = Field(default_factory=list)
     panels: list[ScriptPanel] = Field(min_length=1, max_length=9)
 
-    @field_validator("layout", mode="before")
+    @field_validator("layout", "page_goal", mode="before")
     @classmethod
     def normalize_layout(cls, value):
         if value is None:
             return ""
         if isinstance(value, (int, float, bool)):
             return str(value)
+        return value
+
+    @field_validator("emotional_curve", mode="before")
+    @classmethod
+    def normalize_emotional_curve(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, (str, int, float, bool)):
+            text = str(value).strip()
+            return [text] if text else []
         return value
 
 

@@ -22,6 +22,7 @@ POSITION_PHRASE = {
     "lower_right": "on the lower right",
     "center": "in the center",
 }
+TEXT_SAFE_PROMPT = "leave clean empty space for later typesetting, no text in image"
 
 
 def is_non_character_mode(panel: Panel) -> bool:
@@ -63,9 +64,52 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
             positive_parts.extend(char_tokens)
             negative_parts.append(character.negative_prompt)
 
-    positive_parts.append(panel.generation.prompt or panel.prompt)
+    positive_parts.extend(
+        [
+            panel.role,
+            panel.emotion,
+            panel.camera,
+            panel.composition_notes,
+            TEXT_SAFE_PROMPT if panel.text_safe_area else "",
+            panel.generation.prompt or panel.prompt,
+        ]
+    )
     negative_parts.append(panel.generation.negative_prompt)
     return merge_prompt_parts(positive_parts), merge_prompt_parts(negative_parts)
+
+
+def compose_character_regional_prompts(
+    manga: MangaProject, panel: Panel
+) -> list[dict[str, object]]:
+    """regional workflowへ渡すキャラ別promptと領域を作る。"""
+    if is_non_character_mode(panel):
+        return []
+    characters_by_id = {character.id: character for character in manga.characters}
+    regions: list[dict[str, object]] = []
+    for entry in panel.character_layout:
+        if entry.id not in panel.characters or entry.region_box is None:
+            continue
+        character = characters_by_id.get(entry.id)
+        if character is None:
+            continue
+        prompt = merge_prompt_parts(
+            [
+                character.trigger_prompt or character.display_name,
+                character.appearance_prompt,
+                character.outfit_prompt,
+                POSITION_PHRASE.get(entry.position, ""),
+                entry.expression,
+                entry.action,
+            ]
+        )
+        regions.append(
+            {
+                "character_id": entry.id,
+                "prompt": prompt,
+                "region_box": entry.region_box,
+            }
+        )
+    return regions
 
 
 def merge_prompt_parts(parts: list[str]) -> str:

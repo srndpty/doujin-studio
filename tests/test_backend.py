@@ -54,6 +54,7 @@ from backend.app.schemas import (
     MangaProject,
     Page,
     Panel,
+    PanelCharacter,
 )
 
 
@@ -932,6 +933,47 @@ def test_workflow_preset_patches_model_and_sampler(tmp_path: Path) -> None:
     assert patched["41"]["inputs"]["vae_name"] == "anime.vae"
     assert patched["3"]["inputs"]["steps"] == 24
     assert patched["3"]["inputs"]["cfg"] == 5.5
+
+
+def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                position="upper_left",
+                expression="smiling",
+                action="waving",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            )
+        ],
+        generation=GenerationInfo(
+            prompt="jougasaki mika, orange hoodie",
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert "smiling" in patched["50"]["inputs"]["text"]
+    assert "jougasaki mika" in patched["50"]["inputs"]["text"]
+    assert patched["51"]["inputs"]["x"] == 0.1
+    assert patched["51"]["inputs"]["y"] == 0.2
+    assert patched["51"]["inputs"]["width"] == 0.3
+    assert patched["51"]["inputs"]["height"] == 0.4
 
 
 def test_existing_manga_json_gets_new_defaults() -> None:

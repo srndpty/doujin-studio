@@ -19,6 +19,7 @@ from backend.app.schemas import (
     OverlayElement,
     Page,
     Panel,
+    PanelCharacter,
 )
 
 
@@ -246,6 +247,50 @@ def test_preflight_visual_rhythm_warnings() -> None:
     codes = {issue.code for issue in issues}
     assert "shot_repetition" in codes
     assert "background_density_repetition" in codes
+    rhythm = [issue for issue in issues if issue.code == "shot_repetition"][0]
+    assert rhythm.category == "rhythm"
+    assert rhythm.suggestion
+
+
+def test_preflight_story_structure_and_character_regions() -> None:
+    panels = [
+        Panel(
+            panel_id="p01_01",
+            bbox=(0.05, 0.05, 0.9, 0.2),
+            shot="wide",
+            role="dialogue",
+        ),
+        Panel(
+            panel_id="p01_02",
+            bbox=(0.05, 0.3, 0.9, 0.2),
+            shot="medium",
+            role="dialogue",
+            characters=["a", "b"],
+            character_layout=[PanelCharacter(id="a", position="upper_left")],
+        ),
+        Panel(
+            panel_id="p01_03",
+            bbox=(0.05, 0.55, 0.9, 0.2),
+            shot="close-up",
+            role="dialogue",
+        ),
+        Panel(
+            panel_id="p01_04",
+            bbox=(0.05, 0.8, 0.9, 0.15),
+            shot="close-up",
+            role="dialogue",
+        ),
+    ]
+    manga = MangaProject(
+        title="structure",
+        pages=[Page(page=1, theme="t", layout_template="grid", panels=panels)],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    codes = {issue.code for issue in issues}
+    assert {"page_goal_missing", "emotional_curve_missing", "page_peak_missing"} <= codes
+    region = [issue for issue in issues if issue.code == "character_region_missing"][0]
+    assert region.category == "character"
+    assert "region_box" in region.suggestion
 
 
 def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:

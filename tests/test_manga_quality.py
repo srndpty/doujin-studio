@@ -533,10 +533,29 @@ def test_script_directives_flow_to_prompt_per_character() -> None:
     layout = {entry.id: entry for entry in drawn.character_layout}
     assert layout["mika"].expression == "smiling" and layout["mika"].action == "waving hand"
     assert layout["mika"].position == "upper_left"
+    assert layout["mika"].region_box == (0.02, 0.02, 0.46, 0.46)
     assert layout["rika"].expression == "crying" and layout["rika"].position == "lower_right"
+    assert layout["rika"].region_box == (0.52, 0.52, 0.46, 0.46)
     positive, _negative = compose_panel_prompts(manga, drawn)
     for token in ("smiling", "waving hand", "crying", "on the upper left", "on the lower right"):
         assert token in positive
+
+
+def test_script_directive_region_box_is_preserved() -> None:
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    panel = ScriptPanel(
+        shot="solo",
+        visual_prompt="a girl",
+        character_directives=[
+            ScriptCharacter(name="美嘉", position="center", region_box=(0.1, 0.2, 0.3, 0.4))
+        ],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base)
+    assert manga.pages[0].panels[0].character_layout[0].region_box == (0.1, 0.2, 0.3, 0.4)
 
 
 def test_directive_only_character_is_kept() -> None:
