@@ -2137,6 +2137,39 @@ def test_schema_migration_updates_legacy_missing_columns_and_keeps_data(tmp_path
         assert chunk_meta == ""
 
 
+def test_schema_migration_repairs_applied_baseline_schema_drift(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "legacy-applied.db"
+    create_legacy_schema_without_migration_version(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "baseline_schema", db_now_utc().isoformat()),
+        )
+
+    session_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with session_factory() as session:
+        job_columns = {
+            row[1] for row in session.execute(text("PRAGMA table_info(generation_jobs)")).all()
+        }
+        assert {"prompt_id", "epoch", "generation_input_hash", "randomize_seed"} <= job_columns
+        rows = session.execute(
+            text("SELECT version, name FROM schema_migrations ORDER BY version")
+        ).all()
+        assert rows == [(1, "baseline_schema")]
+
+
 def test_schema_migration_terminates_duplicate_active_jobs_and_is_idempotent(
     tmp_path: Path,
 ) -> None:

@@ -1765,6 +1765,16 @@ export interface components {
              */
             role: string;
             /**
+             * Emotion
+             * @default
+             */
+            emotion: string;
+            /**
+             * Background Density
+             * @default
+             */
+            background_density: string;
+            /**
              * Emphasis
              * @default 2
              */

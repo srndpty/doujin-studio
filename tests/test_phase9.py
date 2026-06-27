@@ -111,6 +111,34 @@ def test_script_to_manga_sets_composition_metadata() -> None:
     ) != len(manga.pages[0].panels)
 
 
+def test_script_to_manga_preserves_directing_metadata() -> None:
+    base = MangaProject(title="本")
+    script = ScriptStage.model_validate(
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "panels": [
+                        {
+                            "shot": "close-up",
+                            "role": "emotional peak",
+                            "emotion": "動揺",
+                            "background_density": "white",
+                            "dialogue": [{"speaker": "a", "text": "……"}],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    manga = story.script_to_manga(script, base)
+    panel = manga.pages[0].panels[0]
+    assert panel.role == "emotional_peak"
+    assert panel.emotion == "動揺"
+    assert panel.background_density == "white"
+    assert panel.emphasis == 5
+
+
 def test_layout_suggest_api_repropose_keeps_content(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)

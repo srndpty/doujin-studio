@@ -53,6 +53,7 @@ def preflight_page(
     issues.extend(_check_reading_order(manga, page))
     issues.extend(_check_gutters(manga, page))
     issues.extend(_check_layout_repetition(manga, page, page_index))
+    issues.extend(_check_visual_rhythm(page))
     issues.extend(_check_image_aspect(page, export_dir))
     issues.extend(_check_subject_mode_characters(page))
     issues.extend(_check_sfx_collisions(manga, page))
@@ -309,6 +310,54 @@ def _check_layout_repetition(
             )
         ]
     return []
+
+
+def _normalize_rhythm_token(value: str) -> str:
+    return (value or "").strip().casefold().replace(" ", "_").replace("-", "_")
+
+
+def _check_visual_rhythm(page: Page) -> list[PreflightIssue]:
+    """同じ画角・白背景の連続を検出し、ネーム段階の単調さを警告する。"""
+    issues: list[PreflightIssue] = []
+    panels = page.panels
+    if len(panels) < 3:
+        return issues
+
+    for index in range(len(panels) - 2):
+        window = panels[index : index + 3]
+        shots = [_normalize_rhythm_token(panel.shot or panel.camera) for panel in window]
+        if shots[0] and len(set(shots)) == 1:
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="shot_repetition",
+                    message="同じ画角のコマが3つ続いています",
+                    page=page.page,
+                    panel_id=window[0].panel_id,
+                )
+            )
+            break
+
+    pale_background = {"none", "white", "blank"}
+    for index in range(len(panels) - 2):
+        window = panels[index : index + 3]
+        densities = [
+            _normalize_rhythm_token(panel.background_density or "")
+            for panel in window
+            if not is_non_character_mode(panel)
+        ]
+        if len(densities) == 3 and all(value in pale_background for value in densities):
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="background_density_repetition",
+                    message="白背景または背景なしの人物コマが3つ続いています",
+                    page=page.page,
+                    panel_id=window[0].panel_id,
+                )
+            )
+            break
+    return issues
 
 
 def _check_image_aspect(page: Page, export_dir: Path | None = None) -> list[PreflightIssue]:

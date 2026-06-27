@@ -475,7 +475,12 @@ def stage_instruction_text(stage: str) -> str:
             "・各コマで画角(shot)と役割を変え、状況提示→反応→引き のように流れを作る。"
             "・ページのpurposeとhookに沿ってコマを配置する。"
             "出力形式: pages配列。各ページは page(整数) と panels(1〜9個)を持ちます。"
-            "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue, sfx を持ちます。"
+            "各コマは shot, camera, role, emotion, background_density, location, visual_prompt, "
+            "characters([string]), dialogue, sfx を持ちます。"
+            "roleは establish/dialogue/reaction/action/reveal/emotional_peak/silent/transition/"
+            "punchline/aftermath から選びます。"
+            "emotionはそのコマで読者に伝える感情ビートを短く書きます。"
+            "background_densityは none/white/light/full から選び、白背景にする場合は演出意図を持たせてください。"
             "charactersにはそのコマに実際に描かれる登場人物名だけを列挙してください（画面外の話者は含めない）。"
             "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
             "可能なら character_directives: [{name, position, expression, action}] も出力し、"
@@ -1140,6 +1145,39 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
 UNRESOLVED_CHARACTER_PREFIX = "[未解決の人物] "
 
 
+SCRIPT_ROLE_ALIASES = {
+    "establishing": "establish",
+    "setup": "establish",
+    "conversation": "dialogue",
+    "closeup": "reaction",
+    "close_up": "reaction",
+    "insert": "transition",
+    "climax": "emotional_peak",
+    "quiet": "silent",
+    "silence": "silent",
+}
+
+
+def normalize_script_role(value: str) -> str:
+    """台本のrole表記を検査しやすい語彙へ寄せる。"""
+    normalized = (value or "").strip().casefold().replace(" ", "_").replace("-", "_")
+    normalized = SCRIPT_ROLE_ALIASES.get(normalized, normalized)
+    valid = {
+        "establish",
+        "dialogue",
+        "reaction",
+        "action",
+        "reveal",
+        "emotional_peak",
+        "silent",
+        "transition",
+        "punchline",
+        "aftermath",
+        "montage",
+    }
+    return normalized if normalized in valid else ""
+
+
 def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
     """既存warningsのうち未解決人物カテゴリだけを置換する。
 
@@ -1174,7 +1212,7 @@ def script_to_manga(
         panels: list[Panel] = []
         for index, script_panel in enumerate(script_page.panels):
             panel_id = f"p{script_page.page:02d}_{index + 1:02d}"
-            role = layout_engine.derive_role(
+            role = normalize_script_role(script_panel.role) or layout_engine.derive_role(
                 index, panel_count, page_index, total_pages, bool(script_panel.dialogue)
             )
             subject_mode = classify_subject_mode(script_panel)
@@ -1276,6 +1314,8 @@ def script_to_manga(
                     shot=script_panel.shot or "コマ",
                     subject_mode=subject_mode,
                     role=role,
+                    emotion=script_panel.emotion,
+                    background_density=script_panel.background_density,
                     emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),

@@ -4818,6 +4818,16 @@
             "title": "Role",
             "default": ""
           },
+          "emotion": {
+            "type": "string",
+            "title": "Emotion",
+            "default": ""
+          },
+          "background_density": {
+            "type": "string",
+            "title": "Background Density",
+            "default": ""
+          },
           "emphasis": {
             "type": "integer",
             "maximum": 5.0,

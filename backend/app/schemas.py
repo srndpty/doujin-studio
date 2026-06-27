@@ -328,6 +328,10 @@ class Panel(BaseModel):
     ] = "character_scene"
     # 構図段階の役割（establish/dialogue/reveal/action/punchline/silent/montage等）。
     role: str = ""
+    # 読者に伝える感情ビート。表情指定とは別に、ページ全体の感情曲線を検査する。
+    emotion: str = ""
+    # 背景密度。white/none/light/full等を入れ、白背景の連続を検査する。
+    background_density: str = ""
     # 強調度（1=控えめ、5=見せ場）。レイアウトエンジンが面積配分に使う。
     emphasis: int = Field(default=2, ge=1, le=5)
     camera: str = ""
@@ -1084,6 +1088,9 @@ class ScriptPanel(BaseModel):
 
     shot: str = ""
     camera: str = ""
+    role: str = ""
+    emotion: str = ""
+    background_density: str = ""
     location: str = ""
     visual_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
@@ -1092,7 +1099,16 @@ class ScriptPanel(BaseModel):
     dialogue: list[ScriptDialogue] = Field(default_factory=list)
     sfx: list[ScriptSfx] = Field(default_factory=list)
 
-    @field_validator("shot", "camera", "location", "visual_prompt", mode="before")
+    @field_validator(
+        "shot",
+        "camera",
+        "role",
+        "emotion",
+        "background_density",
+        "location",
+        "visual_prompt",
+        mode="before",
+    )
     @classmethod
     def normalize_text(cls, value):
         if value is None:

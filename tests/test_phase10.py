@@ -228,6 +228,26 @@ def test_preflight_layout_repetition() -> None:
     assert any(issue.code == "layout_repetition" for issue in issues)
 
 
+def test_preflight_visual_rhythm_warnings() -> None:
+    panels = [
+        Panel(
+            panel_id=f"p01_{index + 1:02d}",
+            bbox=(0.05, 0.05 + index * 0.25, 0.9, 0.2),
+            shot="close-up",
+            background_density="white",
+        )
+        for index in range(3)
+    ]
+    manga = MangaProject(
+        title="rhythm",
+        pages=[Page(page=1, theme="t", layout_template="grid", panels=panels)],
+    )
+    issues = preflight.preflight_page(manga, manga.pages[0])
+    codes = {issue.code for issue in issues}
+    assert "shot_repetition" in codes
+    assert "background_density_repetition" in codes
+
+
 def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
