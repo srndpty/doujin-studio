@@ -101,16 +101,19 @@ $backendEnvPrefix = ""
 if ($Ollama) {
     if (Get-Command ollama -ErrorAction SilentlyContinue) {
         $ollamaUrl = "http://127.0.0.1:$OllamaPort"
-        $ollamaUp = $false
-        try { Invoke-WebRequest -Uri "$ollamaUrl/api/tags" -UseBasicParsing -TimeoutSec 3 | Out-Null; $ollamaUp = $true } catch { $ollamaUp = $false }
-        if ($ollamaUp) {
+        # API で起動確認とモデル一覧を取得する。`ollama list`(CLI)はサーバを同期起動して
+        # ブロックし得るため使わない（タブを開く前に固まる原因になる）。
+        $models = $null
+        try { $models = (Invoke-RestMethod -Uri "$ollamaUrl/api/tags" -TimeoutSec 3).models } catch { $models = $null }
+        if ($null -ne $models) {
             Write-Warning "既存の Ollama を使用します。keep_alive=0 を効かせるには 'setx OLLAMA_KEEP_ALIVE 0' 後にアプリ再起動してください。"
+            if (-not ($models.name -contains $OllamaModel)) {
+                Write-Warning "モデル '$OllamaModel' が未取得です。'ollama pull $OllamaModel' を実行してください（実在タグは ollama.com/library で確認）。"
+            }
         } else {
+            # サーバ未起動 → serve をタブで起動（モデル確認は起動後に各自）。
             $tabs.Add(@{ Title = "ollama"; Command = "`$env:OLLAMA_KEEP_ALIVE='0'; ollama serve" })
-        }
-        $installed = (& ollama list) 2>$null | Out-String
-        if ($installed -notmatch [regex]::Escape($OllamaModel)) {
-            Write-Warning "モデル '$OllamaModel' が未取得です。'ollama pull $OllamaModel' を実行してください（実在タグは 'ollama list' / ollama.com/library で確認）。"
+            Write-Host "Ollama: serve をタブで起動します（未取得なら 'ollama pull $OllamaModel'）。"
         }
         $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
     } else {
