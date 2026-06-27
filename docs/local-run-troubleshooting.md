@@ -28,6 +28,9 @@ LLM は VRAM 都合で別運用のため起動しない。
 
 `-ProbePorts 8188,8001,8000` で検出候補ポートを調整できる（Desktop 版はポートが自動でずれるため）。
 
+Windows Terminal がある環境では、**1 ウィンドウの複数タブ**（ComfyUI/ollama/backend/frontend）にまとめて開く（手動の D&D 連結が不要）。
+各タブは `-EncodedCommand` で渡すため、コマンド内の `;` も正しく保持される。タブにまとめず従来どおり別ウィンドウで開きたい場合は `-SeparateWindows` を付ける。
+
 ## VRAM の排他（LLM ⇄ ComfyUI）
 
 LLM が VRAM 重い場合、プロセスを落とすのではなく **モデルだけ VRAM から退避**するのが堅実。

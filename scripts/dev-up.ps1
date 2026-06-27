@@ -1,15 +1,16 @@
 <#
 .SYNOPSIS
-  ComfyUI を検出（または headless 起動）し、backend と frontend をまとめて起動する開発用ランチャ。
-  LLM は VRAM 都合で別運用のため、このスクリプトでは起動しない。
+  ComfyUI を検出（または headless 起動）し、backend と frontend を起動する開発用ランチャ。
+  Windows Terminal がある場合は 1 ウィンドウの複数タブにまとめて開く（手動の連結が不要）。
+  LLM は VRAM 都合で別運用が既定。-Ollama で Ollama も自動管理する。
 
 .EXAMPLE
-  # 既に動いている ComfyUI(Desktop等)を自動検出して backend+frontend を起動
+  # 既に動いている ComfyUI(Desktop等)を検出して backend+frontend を 1 ウィンドウのタブで起動
   .\scripts\dev-up.ps1
 
 .EXAMPLE
-  # ソース版 ComfyUI を Desktop の basePath を再利用して headless 起動してから一括起動
-  .\scripts\dev-up.ps1 -ComfyPath C:\tools\ComfyUI -ComfyBasePath "C:\Users\<you>\Documents\ComfyUI"
+  # ソース版 ComfyUI を headless 起動し、Ollama も含めて全部タブで起動
+  .\scripts\dev-up.ps1 -ComfyPath C:\tools\ComfyUI -ComfyBasePath "C:\Users\<you>\Documents\ComfyUI" -Ollama
 #>
 param(
     [string]$ComfyBaseUrl = "",                 # 既知の ComfyUI URL。指定時は検出/起動をスキップ
@@ -17,17 +18,23 @@ param(
     [string]$ComfyPath = "",                    # headless ソース版を起動する場合のフォルダ
     [string]$ComfyBasePath = "",                # headless 時に再利用する Desktop basePath
     [int]$BackendPort = 8000,
-    [int]$WaitSeconds = 90,                     # ComfyUI 起動待ちの上限
     # Ollama を一緒に起動し、LLM も自動管理する（VRAM は keep_alive=0 で各生成後に自動退避）。
     [switch]$Ollama,
-    [string]$OllamaModel = "qwen2.5:14b",
+    [string]$OllamaModel = "qwen3.6:27b",
     [int]$OllamaPort = 11434,
-    [switch]$NoFrontend
+    [switch]$NoFrontend,
+    # Windows Terminal のタブにまとめず、従来どおり各プロセスを別ウィンドウで開く。
+    [switch]$SeparateWindows
 )
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
+
+# 起動シェル（pwsh 優先、無ければ Windows PowerShell）。
+$shell = $null
+$pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+if ($pwsh) { $shell = $pwsh.Source } else { $shell = (Get-Command powershell).Source }
 
 function Test-Comfy([string]$url) {
     try {
@@ -45,81 +52,92 @@ function Find-Comfy([int[]]$ports) {
     return ""
 }
 
-# 別ウィンドウで PowerShell コマンドを起動するヘルパー（ログを各ウィンドウに残す）。
-$shell = $null
-$pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
-if ($pwsh) { $shell = $pwsh.Source } else { $shell = (Get-Command powershell).Source }
-function Start-Window([string]$title, [string]$command) {
-    Start-Process -FilePath $shell -ArgumentList @(
-        "-NoExit", "-Command",
-        "`$Host.UI.RawUI.WindowTitle='$title'; Set-Location '$root'; $command"
-    )
+# 収集したタブ（各 @{Title; Command}）を Windows Terminal の 1 ウィンドウに開く。
+# wt が無い／-SeparateWindows 指定時は従来どおり別ウィンドウで開く。
+function Open-Tabs($tabs) {
+    $wt = Get-Command wt -ErrorAction SilentlyContinue
+    if ($wt -and -not $SeparateWindows) {
+        $wtArgs = @()
+        for ($i = 0; $i -lt $tabs.Count; $i++) {
+            if ($i -gt 0) { $wtArgs += ";" }   # wt のタブ区切り
+            # タブ内コマンドの ; や引用符を wt/シェルに誤解析させないため EncodedCommand で渡す。
+            $full = "Set-Location '$root'; " + $tabs[$i].Command
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($full))
+            $wtArgs += @("new-tab", "--title", $tabs[$i].Title, $shell, "-NoExit", "-EncodedCommand", $b64)
+        }
+        & $wt.Source @wtArgs
+        Write-Host "Windows Terminal の 1 ウィンドウに $($tabs.Count) タブで起動しました。"
+    } else {
+        foreach ($tab in $tabs) {
+            Start-Process -FilePath $shell -ArgumentList @(
+                "-NoExit", "-Command",
+                "`$Host.UI.RawUI.WindowTitle='$($tab.Title)'; Set-Location '$root'; $($tab.Command)"
+            )
+        }
+        Write-Host "各プロセスを別ウィンドウで起動しました（wt が無い、または -SeparateWindows）。"
+    }
 }
 
-# 1) ComfyUI: 既知URL > 検出 > headless起動
+$tabs = New-Object System.Collections.Generic.List[object]
+
+# 1) ComfyUI: 既知URL > 検出 > headless起動（タブ追加）
 if (-not $ComfyBaseUrl) { $ComfyBaseUrl = Find-Comfy $ProbePorts }
 if (-not $ComfyBaseUrl -and $ComfyPath) {
-    $comfyArgs = @("-ComfyPath", $ComfyPath, "-Port", $ProbePorts[0])
-    if ($ComfyBasePath) { $comfyArgs += @("-BasePath", $ComfyBasePath) }
-    Start-Window "ComfyUI" ("& .\scripts\start-comfy-headless.ps1 " + ($comfyArgs -join ' '))
-    $url = "http://127.0.0.1:$($ProbePorts[0])"
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    while ((Get-Date) -lt $deadline -and -not (Test-Comfy $url)) { Start-Sleep -Seconds 2 }
-    if (Test-Comfy $url) { $ComfyBaseUrl = $url }
-}
-
-if ($ComfyBaseUrl) {
+    $port = $ProbePorts[0]
+    $cmd = "& .\scripts\start-comfy-headless.ps1 -ComfyPath '$ComfyPath' -Port $port"
+    if ($ComfyBasePath) { $cmd += " -BasePath '$ComfyBasePath'" }
+    $tabs.Add(@{ Title = "ComfyUI"; Command = $cmd })
+    $ComfyBaseUrl = "http://127.0.0.1:$port"
+    Write-Host "ComfyUI: $ComfyBaseUrl (headless 起動)"
+} elseif ($ComfyBaseUrl) {
     Write-Host "ComfyUI: $ComfyBaseUrl (connected)"
 } else {
     Write-Warning "ComfyUI が見つかりません。Desktop アプリを起動するか -ComfyPath を指定してください。backend は未接続で起動します。"
     $ComfyBaseUrl = "http://127.0.0.1:$($ProbePorts[0])"
 }
 
-# 2) Ollama（任意）: serve を起動し、keep_alive=0 で各生成後に VRAM 自動退避。
-#    backend には LLM_* と COMFYUI_FREE_BEFORE_LLM=1 を渡し、台本生成前に ComfyUI を /free する。
+# 2) Ollama（任意）: serve を keep_alive=0 で起動。backend へ LLM_* と /free フラグを渡す。
 $backendEnvPrefix = ""
 if ($Ollama) {
-    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-        Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。"
-    } else {
+    if (Get-Command ollama -ErrorAction SilentlyContinue) {
         $ollamaUrl = "http://127.0.0.1:$OllamaPort"
         $ollamaUp = $false
         try { Invoke-WebRequest -Uri "$ollamaUrl/api/tags" -UseBasicParsing -TimeoutSec 3 | Out-Null; $ollamaUp = $true } catch { $ollamaUp = $false }
         if ($ollamaUp) {
-            Write-Host "Ollama: 既に起動済み ($ollamaUrl)"
-            Write-Warning "既存の Ollama は keep_alive 設定を引き継げません。VRAM 自動退避には、Ollama サービスの環境変数に OLLAMA_KEEP_ALIVE=0 を設定するか、サービスを停止して本スクリプトに serve を任せてください。"
+            Write-Warning "既存の Ollama を使用します。keep_alive=0 を効かせるには 'setx OLLAMA_KEEP_ALIVE 0' 後にアプリ再起動してください。"
         } else {
-            # keep_alive=0 を持つ serve を起動（各生成後に即アンロード）。
-            Start-Window "ollama" ("`$env:OLLAMA_KEEP_ALIVE='0'; ollama serve")
-            $deadline = (Get-Date).AddSeconds($WaitSeconds)
-            while ((Get-Date) -lt $deadline) {
-                try { Invoke-WebRequest -Uri "$ollamaUrl/api/tags" -UseBasicParsing -TimeoutSec 2 | Out-Null; $ollamaUp = $true; break } catch { Start-Sleep -Seconds 2 }
-            }
+            $tabs.Add(@{ Title = "ollama"; Command = "`$env:OLLAMA_KEEP_ALIVE='0'; ollama serve" })
         }
-        # モデルの存在確認（無ければ pull を案内）。
-        $installed = (& ollama list) 2>$null
+        $installed = (& ollama list) 2>$null | Out-String
         if ($installed -notmatch [regex]::Escape($OllamaModel)) {
-            Write-Warning "モデル '$OllamaModel' が未取得です。別ターミナルで 'ollama pull $OllamaModel' を実行してください。"
+            Write-Warning "モデル '$OllamaModel' が未取得です。'ollama pull $OllamaModel' を実行してください（実在タグは 'ollama list' / ollama.com/library で確認）。"
         }
         $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
+    } else {
+        Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。"
     }
 }
 
 # 3) backend
-Start-Window "backend" ($backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl '$ComfyBaseUrl' -Port $BackendPort")
+$tabs.Add(@{
+        Title   = "backend"
+        Command = ($backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl '$ComfyBaseUrl' -Port $BackendPort")
+    })
 
 # 4) frontend
 if (-not $NoFrontend) {
-    Start-Window "frontend" ("Set-Location frontend; npm run dev")
+    $tabs.Add(@{ Title = "frontend"; Command = "Set-Location frontend; npm run dev" })
 }
 
+Open-Tabs $tabs
+
 Write-Host ""
-Write-Host "起動しました:"
+Write-Host "起動内容:"
 Write-Host "  ComfyUI : $ComfyBaseUrl"
 Write-Host "  backend : http://127.0.0.1:$BackendPort  (確認: /api/comfyui/status, /api/llm/status)"
 if (-not $NoFrontend) { Write-Host "  frontend: http://127.0.0.1:5173" }
 if ($Ollama) {
-    Write-Host "  LLM     : Ollama http://127.0.0.1:$OllamaPort (model=$OllamaModel, keep_alive=0)"
+    Write-Host "  LLM     : Ollama http://127.0.0.1:$OllamaPort (model=$OllamaModel)"
     Write-Host "            台本生成前に ComfyUI を自動 /free（COMFYUI_FREE_BEFORE_LLM=1）→ VRAM 同居なし"
 } else {
     Write-Host "  LLM     : 別途起動（-Ollama で自動管理。例: LM Studio :1234）"
