@@ -18,6 +18,10 @@ param(
     [string]$ComfyBasePath = "",                # headless 時に再利用する Desktop basePath
     [int]$BackendPort = 8000,
     [int]$WaitSeconds = 90,                     # ComfyUI 起動待ちの上限
+    # Ollama を一緒に起動し、LLM も自動管理する（VRAM は keep_alive=0 で各生成後に自動退避）。
+    [switch]$Ollama,
+    [string]$OllamaModel = "qwen2.5:14b",
+    [int]$OllamaPort = 11434,
     [switch]$NoFrontend
 )
 
@@ -71,10 +75,40 @@ if ($ComfyBaseUrl) {
     $ComfyBaseUrl = "http://127.0.0.1:$($ProbePorts[0])"
 }
 
-# 2) backend
-Start-Window "backend" ("& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl '$ComfyBaseUrl' -Port $BackendPort")
+# 2) Ollama（任意）: serve を起動し、keep_alive=0 で各生成後に VRAM 自動退避。
+#    backend には LLM_* と COMFYUI_FREE_BEFORE_LLM=1 を渡し、台本生成前に ComfyUI を /free する。
+$backendEnvPrefix = ""
+if ($Ollama) {
+    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。"
+    } else {
+        $ollamaUrl = "http://127.0.0.1:$OllamaPort"
+        $ollamaUp = $false
+        try { Invoke-WebRequest -Uri "$ollamaUrl/api/tags" -UseBasicParsing -TimeoutSec 3 | Out-Null; $ollamaUp = $true } catch { $ollamaUp = $false }
+        if ($ollamaUp) {
+            Write-Host "Ollama: 既に起動済み ($ollamaUrl)"
+            Write-Warning "既存の Ollama は keep_alive 設定を引き継げません。VRAM 自動退避には、Ollama サービスの環境変数に OLLAMA_KEEP_ALIVE=0 を設定するか、サービスを停止して本スクリプトに serve を任せてください。"
+        } else {
+            # keep_alive=0 を持つ serve を起動（各生成後に即アンロード）。
+            Start-Window "ollama" ("`$env:OLLAMA_KEEP_ALIVE='0'; ollama serve")
+            $deadline = (Get-Date).AddSeconds($WaitSeconds)
+            while ((Get-Date) -lt $deadline) {
+                try { Invoke-WebRequest -Uri "$ollamaUrl/api/tags" -UseBasicParsing -TimeoutSec 2 | Out-Null; $ollamaUp = $true; break } catch { Start-Sleep -Seconds 2 }
+            }
+        }
+        # モデルの存在確認（無ければ pull を案内）。
+        $installed = (& ollama list) 2>$null
+        if ($installed -notmatch [regex]::Escape($OllamaModel)) {
+            Write-Warning "モデル '$OllamaModel' が未取得です。別ターミナルで 'ollama pull $OllamaModel' を実行してください。"
+        }
+        $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
+    }
+}
 
-# 3) frontend
+# 3) backend
+Start-Window "backend" ($backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl '$ComfyBaseUrl' -Port $BackendPort")
+
+# 4) frontend
 if (-not $NoFrontend) {
     Start-Window "frontend" ("Set-Location frontend; npm run dev")
 }
@@ -82,6 +116,11 @@ if (-not $NoFrontend) {
 Write-Host ""
 Write-Host "起動しました:"
 Write-Host "  ComfyUI : $ComfyBaseUrl"
-Write-Host "  backend : http://127.0.0.1:$BackendPort  (確認: /api/comfyui/status)"
+Write-Host "  backend : http://127.0.0.1:$BackendPort  (確認: /api/comfyui/status, /api/llm/status)"
 if (-not $NoFrontend) { Write-Host "  frontend: http://127.0.0.1:5173" }
-Write-Host "  LLM     : 別途起動してください（例: LM Studio :1234 / Ollama）"
+if ($Ollama) {
+    Write-Host "  LLM     : Ollama http://127.0.0.1:$OllamaPort (model=$OllamaModel, keep_alive=0)"
+    Write-Host "            台本生成前に ComfyUI を自動 /free（COMFYUI_FREE_BEFORE_LLM=1）→ VRAM 同居なし"
+} else {
+    Write-Host "  LLM     : 別途起動（-Ollama で自動管理。例: LM Studio :1234）"
+}

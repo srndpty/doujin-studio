@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import re
 import uuid
 from dataclasses import dataclass, field
 
+import httpx
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
@@ -276,6 +278,24 @@ def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:
     return validated.model_dump()
 
 
+logger = logging.getLogger(__name__)
+
+
+async def free_comfyui_vram(settings: Settings) -> None:
+    """ComfyUIの/freeでVRAMを解放する（プロセスは落とさない）。ベストエフォート。
+
+    台本(LLM)生成の直前に呼び、ComfyUIの画像モデルをVRAMから退避させて、LLMが
+    VRAMを確保できるようにする。LLM側はOllama OLLAMA_KEEP_ALIVE=0等で各生成後に
+    自動退避する想定。失敗しても生成は止めない。
+    """
+    base = settings.comfyui_base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(f"{base}/free", json={"unload_models": True, "free_memory": True})
+    except Exception as exc:  # 接続不可・未対応でも生成は継続する
+        logger.debug("ComfyUI /free に失敗しました（VRAM解放はスキップ）: %s", exc)
+
+
 async def generate_stage(
     session: Session,
     llm,
@@ -297,6 +317,9 @@ async def generate_stage(
             data = generate_stub_stage(session, record, stages, stage)
             data = validate_stage_data(stage, data, record.target_pages)
         else:
+            # 実LLM呼び出し前にComfyUIのVRAMを解放してVRAM同居を避ける（任意・既定OFF）。
+            if settings.comfyui_free_before_llm:
+                await free_comfyui_vram(settings)
             data = await generate_llm_stage(llm, record, stages, stage, context, instruction)
     except StoryError:
         raise

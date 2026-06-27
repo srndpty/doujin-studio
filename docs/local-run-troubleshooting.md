@@ -32,10 +32,30 @@ LLM は VRAM 都合で別運用のため起動しない。
 
 LLM が VRAM 重い場合、プロセスを落とすのではなく **モデルだけ VRAM から退避**するのが堅実。
 
-- **LLM 側（自動）**: Ollama は `keep_alive: 0`（または `OLLAMA_KEEP_ALIVE=0`）で各生成後に自動退避。LM Studio はモデル TTL / JIT auto-evict を短く設定。
-- **ComfyUI 側**: `POST /free {"unload_models":true,"free_memory":true}` でサーバを落とさず VRAM 解放。台本生成の直前に実行する。
-- ヘルパー: `scripts\gpu-free.ps1 -ComfyBaseUrl http://127.0.0.1:8001 [-OllamaModel <name>]`
-- 完全自動にしたい場合は backend に「LLMステージ開始前に ComfyUI /free を叩く」フックを足す（要コード変更）。
+### おすすめ: Ollama で完全自動（手動操作ゼロ）
+
+2つの自動化を組み合わせると、LLM と ComfyUI が VRAM に同居しなくなり、手動の解放操作が不要になる。
+
+1. **LLM 側**: Ollama を `OLLAMA_KEEP_ALIVE=0` で起動 → 各台本生成の直後にモデルを VRAM から自動退避。
+2. **ComfyUI 側**: backend の `COMFYUI_FREE_BEFORE_LLM=1` → 台本生成の直前に ComfyUI `/free` を自動実行し VRAM 解放。
+
+`dev-up.ps1 -Ollama` がこの両方を自動で設定する（Ollama serve を keep_alive=0 で起動し、backend へ `LLM_*` と `COMFYUI_FREE_BEFORE_LLM=1` を渡す）。
+
+```powershell
+# モデルを一度取得（初回のみ・サイズ大）
+ollama pull qwen2.5:14b
+# ComfyUI(検出) + Ollama(keep_alive=0) + backend(自動/free) + frontend を一括起動
+.\scripts\dev-up.ps1 -Ollama -OllamaModel qwen2.5:14b
+```
+
+注意: 既に Ollama がサービスとして 11434 で起動している場合、本スクリプトはその環境変数を変更できない。
+VRAM 自動退避を効かせるには、Ollama サービスの環境変数へ `OLLAMA_KEEP_ALIVE=0` を設定するか、サービスを止めて `dev-up.ps1 -Ollama` に `ollama serve` を任せる。
+
+### 手動/個別の方法
+
+- **LLM 側**: LM Studio を使うならモデル TTL / JIT auto-evict を短く設定。
+- **ComfyUI 側**: `POST /free {"unload_models":true,"free_memory":true}` でサーバを落とさず解放。
+- ヘルパー（半自動）: `scripts\gpu-free.ps1 -ComfyBaseUrl http://127.0.0.1:8001 [-OllamaModel <name>]`
 
 ## Desktop → headless 移行（model/workflow を消さない）
 
