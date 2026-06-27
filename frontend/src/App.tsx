@@ -129,15 +129,8 @@ export type Panel = {
 type LoRABinding = Schemas["LoRABinding"];
 type ReferenceImageBinding = Schemas["ReferenceImageBinding"];
 type PanelControlReference = Schemas["PanelControlReference"];
-type RegionalWorkflowBinding = {
-  enabled: boolean;
-  mode: "attention_couple" | "regional_prompt";
-  character_prompt_node_ids: string[];
-  region_node_ids: string[];
-};
-type WorkflowPreset = Schemas["WorkflowPreset"] & {
-  regional_binding?: RegionalWorkflowBinding | null;
-};
+type RegionalWorkflowBinding = Schemas["RegionalWorkflowBinding"];
+type WorkflowPreset = Schemas["WorkflowPreset"];
 type LocationProfile = Schemas["LocationProfile"];
 
 type ImageCandidate = Schemas["ImageCandidate"];
@@ -2041,13 +2034,12 @@ export function App() {
                                 }
                               >
                                 <option value="attention_couple">attention_couple</option>
-                                <option value="regional_prompt">regional_prompt</option>
                               </select>
                             </label>
                             <label>
                               character promptノード
                               <input
-                                value={preset.regional_binding.character_prompt_node_ids.join(", ")}
+                                value={(preset.regional_binding.character_prompt_node_ids ?? []).join(", ")}
                                 placeholder="20, 21"
                                 onChange={(event) =>
                                   updateWorkflowPreset(preset.id, (item) => {
@@ -2062,7 +2054,7 @@ export function App() {
                             <label>
                               regionノード
                               <input
-                                value={preset.regional_binding.region_node_ids.join(", ")}
+                                value={(preset.regional_binding.region_node_ids ?? []).join(", ")}
                                 placeholder="30, 31"
                                 onChange={(event) =>
                                   updateWorkflowPreset(preset.id, (item) => {

@@ -1668,6 +1668,15 @@ export interface components {
              */
             intent: string;
             /**
+             * Page Goal
+             * @default
+             */
+            page_goal: string;
+            /** Emotional Curve */
+            emotional_curve?: string[];
+            /** Quality Notes */
+            quality_notes?: string[];
+            /**
              * Layout Locked
              * @default false
              */
@@ -1775,6 +1784,18 @@ export interface components {
              */
             background_density: string;
             /**
+             * Composition Notes
+             * @default
+             */
+            composition_notes: string;
+            /** Text Safe Area */
+            text_safe_area?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /**
              * Emphasis
              * @default 2
              */
@@ -1841,6 +1862,13 @@ export interface components {
              * @default
              */
             action: string;
+            /** Region Box */
+            region_box?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
         };
         /** PanelControlReference */
         PanelControlReference: {
@@ -1886,6 +1914,21 @@ export interface components {
             page: number;
             /** Panel Id */
             panel_id?: string | null;
+            /**
+             * Category
+             * @default general
+             */
+            category: string;
+            /**
+             * Suggestion
+             * @default
+             */
+            suggestion: string;
+            /**
+             * Fixable
+             * @default false
+             */
+            fixable: boolean;
         };
         /** PreflightResponse */
         PreflightResponse: {
@@ -2195,6 +2238,24 @@ export interface components {
              */
             kind: "character" | "location" | "pose" | "depth" | "lineart" | "background";
         };
+        /** RegionalWorkflowBinding */
+        RegionalWorkflowBinding: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Mode
+             * @default attention_couple
+             * @constant
+             */
+            mode: "attention_couple";
+            /** Character Prompt Node Ids */
+            character_prompt_node_ids?: string[];
+            /** Region Node Ids */
+            region_node_ids?: string[];
+        };
         /** RenderRequest */
         RenderRequest: {
             /**
@@ -2456,6 +2517,7 @@ export interface components {
             cfg?: number | null;
             /** Denoise */
             denoise?: number | null;
+            regional_binding?: components["schemas"]["RegionalWorkflowBinding"] | null;
         };
     };
     responses: never;
