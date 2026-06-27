@@ -13,17 +13,23 @@ from PIL import Image, ImageDraw, ImageFont
 
 # 行頭禁則（行・列の先頭に置けない文字）。
 LINE_START_FORBIDDEN = set(
-    "」』）］｝〕〉》】、。，．・？！ゝ々ー〜：；,.!?）)]｠､｡"
+    "」』）］｝〕〉》】、。，．・？！ゝ々ー〜～：；,.!?）)]｠､｡"
     "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ"
 )
 # 行末禁則（行・列の末尾に置けない文字）。
 LINE_END_FORBIDDEN = set("「『（［｛〔〈《【（([｟")
-# 縦書きで90度回転させる文字（長音・ダッシュ・括弧類）。
-ROTATE_CHARS = set("ー－—‐-~〜（）()「」『』【】〈〉《》〔〕［］｛｝<>＜＞≪≫…‥")
+# 縦書きで90度回転させる文字（長音・ダッシュ・チルダ・括弧類）。
+# 波ダッシュ「〜」(U+301C)と全角チルダ「～」(U+FF5E)、各種ダッシュ/水平線、
+# スワング・ダッシュ、二重ハイフンなど、横倒しのまま残りがちな見た目の似た字を網羅する。
+ROTATE_CHARS = set("ー－—‐-~〜～⁓―‒–゠（）()「」『』【】〈〉《》〔〕［］｛｝<>＜＞≪≫…‥")
 # 縦書きで右上へ寄せる小書き仮名。
 SMALL_KANA_CHARS = set("ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ")
 # 縦書きでセル右上へ置く句読点。
 PUNCT_CHARS = set("、。，．")
+# 縦書きで回転後に左右反転させる波ダッシュ／チルダ（上側が左へカーブする向きにする）。
+WAVE_DASH_CHARS = set("〜～⁓")
+# 縦書きで実インク中央寄せする三点リーダ類（全角幅bboxで右へ偏るのを防ぐ）。
+ELLIPSIS_CHARS = set("…‥")
 
 
 @dataclass
@@ -199,11 +205,14 @@ def _draw_glyph(
     rotate: bool,
     cell: float = 0.0,
     corner: str = "",
+    mirror: bool = False,
+    center_ink: bool = False,
 ) -> None:
     """1セル分のグリフを中心(cx, cy)へ描く。
 
-    rotateで90度回転。corner="tr"のときはセル(中心cx,cy・一辺cell)の右上へ寄せる
-    （縦書きの句読点向け）。
+    rotateで90度回転。mirrorで回転後に左右反転（波ダッシュの向き調整）。
+    corner="tr"のときはセル(中心cx,cy・一辺cell)の右上へ寄せる（縦書きの句読点向け）。
+    center_inkのときは実インク領域へクロップしてから中央寄せ（三点リーダ等の偏り補正）。
     """
     pad = stroke_width + 4
     try:
@@ -224,11 +233,22 @@ def _draw_glyph(
     )
     if rotate:
         tile = tile.rotate(-90, expand=True)
+    if mirror:
+        tile = tile.transpose(Image.FLIP_LEFT_RIGHT)
     if corner == "tr" and cell:
-        # セル右上に寄せる（縦書きの句読点）。
-        paste_x = int(cx + cell / 2 - tile.width - cell * 0.04)
-        paste_y = int(cy - cell / 2 + cell * 0.04)
+        # フォントによっては句読点グリフのbboxが全角幅で返り、インクが左下へ寄る。
+        # タイルを実インク領域へクロップしてからセル右上へ寄せ、左上に流れるのを防ぐ。
+        ink = tile.getbbox()
+        if ink:
+            tile = tile.crop(ink)
+        paste_x = int(cx + cell / 2 - tile.width - cell * 0.08)
+        paste_y = int(cy - cell / 2 + cell * 0.08)
     else:
+        if center_ink:
+            # 全角幅bboxで偏るグリフ（三点リーダ等）を実インクで正確に中央寄せする。
+            ink = tile.getbbox()
+            if ink:
+                tile = tile.crop(ink)
         paste_x = int(cx - tile.width / 2)
         paste_y = int(cy - tile.height / 2)
     base.alpha_composite(tile, (paste_x, paste_y))
@@ -303,7 +323,17 @@ def _draw_cell_vertical(
         return
     if kind == "rot":
         _draw_glyph(
-            base, full_font, glyph_text, cx, cy, fill, stroke_width, stroke_fill, rotate=True
+            base,
+            full_font,
+            glyph_text,
+            cx,
+            cy,
+            fill,
+            stroke_width,
+            stroke_fill,
+            rotate=True,
+            mirror=glyph_text in WAVE_DASH_CHARS,
+            center_ink=glyph_text in ELLIPSIS_CHARS,
         )
         return
     ch = glyph_text
