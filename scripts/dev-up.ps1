@@ -33,15 +33,14 @@ $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
 
+# 純粋ヘルパー（ConvertTo-PSLiteral / Select-AvailablePort / Test-PortAvailable /
+# New-WaitForComfyCommand）を読み込む。テストは tests/dev-lib.Tests.ps1 を参照。
+. (Join-Path $PSScriptRoot "dev-lib.ps1")
+
 # 起動シェル（pwsh 優先、無ければ Windows PowerShell）。
 $shell = $null
 $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
 if ($pwsh) { $shell = $pwsh.Source } else { $shell = (Get-Command powershell).Source }
-
-# パスをコード文字列へ埋め込む際、単一引用符を '' にエスケープして安全な PS リテラルにする。
-function ConvertTo-PSLiteral([string]$value) {
-    "'" + $value.Replace("'", "''") + "'"
-}
 
 function Test-Comfy([string]$url) {
     try {
@@ -77,9 +76,10 @@ function Open-Tabs($tabs) {
         Write-Host "Windows Terminal の 1 ウィンドウに $($tabs.Count) タブで起動しました。"
     } else {
         foreach ($tab in $tabs) {
+            $titleLiteral = ConvertTo-PSLiteral $tab.Title
             Start-Process -FilePath $shell -ArgumentList @(
                 "-NoExit", "-Command",
-                "`$Host.UI.RawUI.WindowTitle='$($tab.Title)'; $setRoot$($tab.Command)"
+                "`$Host.UI.RawUI.WindowTitle=$titleLiteral; $setRoot$($tab.Command)"
             )
         }
         Write-Host "各プロセスを別ウィンドウで起動しました（wt が無い、または -SeparateWindows）。"
@@ -92,7 +92,10 @@ $tabs = New-Object System.Collections.Generic.List[object]
 $launchedComfyHeadless = $false
 if (-not $ComfyBaseUrl) { $ComfyBaseUrl = Find-Comfy $ProbePorts }
 if (-not $ComfyBaseUrl -and $ComfyPath) {
-    $port = $ProbePorts[0]
+    # 検出できなかった＝起動する経路。先頭ポート固定ではなく、空いている候補ポートを選ぶ
+    # （backend のポートは除外し、既に占有されている 8188 等での bind 失敗を避ける）。
+    $candidates = @($ProbePorts | Where-Object { $_ -ne $BackendPort })
+    $port = Select-AvailablePort $candidates { param($p) Test-PortAvailable $p }
     $cmd = "& .\scripts\start-comfy-headless.ps1 -ComfyPath " + (ConvertTo-PSLiteral $ComfyPath) + " -Port $port"
     if ($ComfyBasePath) { $cmd += " -BasePath " + (ConvertTo-PSLiteral $ComfyBasePath) }
     $tabs.Add(@{ Title = "ComfyUI"; Command = $cmd })
@@ -136,7 +139,7 @@ if ($Ollama) {
 # 3) backend（headless で ComfyUI を起動した場合は、その疎通を待ってから起動する）
 $waitForComfy = ""
 if ($launchedComfyHeadless) {
-    $waitForComfy = "Write-Host 'ComfyUI の起動を待機中...'; `$deadline=(Get-Date).AddMinutes(3); do { try { if ((Invoke-WebRequest -Uri '$ComfyBaseUrl/system_stats' -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200){ break } } catch {}; Start-Sleep -Seconds 2 } while ((Get-Date) -lt `$deadline); if ((Get-Date) -ge `$deadline){ Write-Warning 'ComfyUI の起動待機がタイムアウトしました。' }; "
+    $waitForComfy = New-WaitForComfyCommand "$ComfyBaseUrl/system_stats"
 }
 $backendCommand = $waitForComfy + $backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl " + (ConvertTo-PSLiteral $ComfyBaseUrl) + " -Port $BackendPort"
 $tabs.Add(@{ Title = "backend"; Command = $backendCommand })

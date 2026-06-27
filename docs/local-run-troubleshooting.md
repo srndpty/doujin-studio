@@ -30,6 +30,13 @@ LLM は VRAM 都合で別運用のため起動しない。
 
 Windows Terminal がある環境では、**1 ウィンドウの複数タブ**（ComfyUI/ollama/backend/frontend）にまとめて開く（手動の D&D 連結が不要）。
 各タブは `-EncodedCommand` で渡すため、コマンド内の `;` も正しく保持される。タブにまとめず従来どおり別ウィンドウで開きたい場合は `-SeparateWindows` を付ける。
+headless 起動時は空き候補ポートを選び（backend ポートは除外）、backend タブは ComfyUI 疎通を待ってから起動する。
+
+`dev-up.ps1` の純粋ヘルパーは `scripts/dev-lib.ps1` に分離し、Pester で検証している:
+
+```powershell
+Invoke-Pester -Path tests/dev-lib.Tests.ps1
+```
 
 ## VRAM の排他（LLM ⇄ ComfyUI）
 
