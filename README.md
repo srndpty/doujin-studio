@@ -35,6 +35,9 @@ npm run dev
 
 ブラウザで`http://127.0.0.1:5173`を開きます。
 
+> 実機（ComfyUI 実生成＋実 LLM）での起動順・ポート自動ずれ・DB schema 不一致などの詰まりは
+> [docs/local-run-troubleshooting.md](docs/local-run-troubleshooting.md) を参照。
+
 ## テスト
 
 ```powershell

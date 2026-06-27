@@ -3,6 +3,9 @@ param(
     [string]$ComfyPath,
     [string]$Listen = "127.0.0.1",
     [int]$Port = 8188,
+    # ソース版/ポータブル版で、既存のComfyUI Desktopのデータ(models/custom_nodes/user)を
+    # 再利用したい場合に basePath を渡す。models等を移動・複製せず共有できる。
+    [string]$BasePath = "",
     [switch]$ValidateOnly
 )
 
@@ -64,6 +67,24 @@ if (Test-Path -LiteralPath $desktopMain -PathType Leaf) {
         (Get-Command python -ErrorAction Stop).Source
     }
     $workingDirectory = Split-Path -Parent $main
+    # ソース版で既存basePath(models/custom_nodes/user)を共有する。データは移動・複製しない。
+    if ($BasePath) {
+        # 存在しないパスでは Resolve-Path 自体が例外になるため、先に存在検査する。
+        if (-not (Test-Path -LiteralPath $BasePath -PathType Container)) {
+            throw "basePathが見つかりません: $BasePath"
+        }
+        $resolvedBase = (Resolve-Path -LiteralPath $BasePath).Path
+        $arguments += @(
+            "--base-directory", $resolvedBase,
+            "--user-directory", (Join-Path $resolvedBase "user"),
+            "--input-directory", (Join-Path $resolvedBase "input"),
+            "--output-directory", (Join-Path $resolvedBase "output")
+        )
+        $extraModels = Join-Path $env:APPDATA "ComfyUI\extra_models_config.yaml"
+        if (Test-Path -LiteralPath $extraModels -PathType Leaf) {
+            $arguments += @("--extra-model-paths-config", $extraModels)
+        }
+    }
 }
 
 Write-Host "ComfyUIをheadless起動します: http://${Listen}:$Port"

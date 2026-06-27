@@ -25,6 +25,9 @@ class Settings:
     # 接続不可・タイムアウトなど一時障害のときだけstub画像へ退避する。
     # ワークフロー不正やノード不足などの設定不備は退避せずエラーにする。
     comfyui_fallback_to_stub: bool = True
+    # trueなら台本(LLM)生成の直前にComfyUIの/freeを叩きVRAMを解放する。
+    # LLM側(Ollama OLLAMA_KEEP_ALIVE=0等)の自動退避と併用し、両者のVRAM同居を避ける。
+    comfyui_free_before_llm: bool = False
     # autoはLM Studioのロード済みモデルを都度検出し、無ければstubへ退避する。
     llm_provider: str = "auto"
     llm_base_url: str = "http://127.0.0.1:1234/v1"
@@ -53,6 +56,8 @@ class Settings:
             comfyui_save_prefix_node_id=os.getenv("COMFYUI_SAVE_PREFIX_NODE_ID", "9"),
             comfyui_fallback_to_stub=os.getenv("COMFYUI_FALLBACK_TO_STUB", "true").lower()
             not in {"0", "false", "no"},
+            comfyui_free_before_llm=os.getenv("COMFYUI_FREE_BEFORE_LLM", "false").lower()
+            in {"1", "true", "yes"},
             llm_provider=os.getenv("LLM_PROVIDER", "auto"),
             llm_base_url=os.getenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
             llm_model=os.getenv("LLM_MODEL", ""),
