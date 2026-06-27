@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
 from json_repair import repair_json
 
 from .config import Settings
+
+logger = logging.getLogger(__name__)
+
+# 累積した生成テキストを受け取る進捗コールバック（ストリーミング表示用）。
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -28,7 +35,12 @@ class StubLLMClient:
 
     provider = "stub"
 
-    async def chat(self, messages: list[dict], want_json: bool = True) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        want_json: bool = True,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
         # story.py側でスタブ生成を行うため、本メソッドは利用されない。
         return "{}"
 
@@ -57,7 +69,12 @@ class UnavailableLLMClient:
         self.model = model
         self.reason = reason
 
-    async def chat(self, messages: list[dict], want_json: bool = True) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        want_json: bool = True,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
         raise LLMError(self.reason)
 
     async def status(self) -> LLMStatus:
@@ -82,7 +99,25 @@ class OpenAICompatibleClient:
         self.timeout_seconds = timeout_seconds
         self.json_mode = json_mode
 
-    async def chat(self, messages: list[dict], want_json: bool = True) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        want_json: bool = True,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
+        # 進捗コールバックがある場合はストリーミングで逐次受信し、UIへ「止まっていない」
+        # ことを見せる。非対応が応答前に分かった場合だけ通常応答へフォールバックする。
+        # 途中まで受信した後の失敗やHTTPステータスエラーは二重生成を避けるため失敗扱い。
+        if on_progress is not None:
+            try:
+                return await self._chat_streaming(messages, want_json, on_progress)
+            except LLMError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - フォールバックして生成自体は継続する
+                logger.debug("ストリーミング非対応のため通常応答へフォールバック: %s", exc)
+        return await self._chat_blocking(messages, want_json)
+
+    async def _chat_blocking(self, messages: list[dict], want_json: bool = True) -> str:
         payload: dict = {
             "model": self.model,
             "messages": messages,
@@ -118,6 +153,63 @@ class OpenAICompatibleClient:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"LLM応答の形式が不正です: {json.dumps(data)[:200]}") from exc
+
+    async def _chat_streaming(
+        self, messages: list[dict], want_json: bool, on_progress: ProgressCallback
+    ) -> str:
+        """stream=Trueで逐次受信し、累積テキストをon_progressへ通知しつつ全文を返す。
+
+        OpenAI互換のSSE（`data: {...}` 行、終端は `data: [DONE]`）を解釈する。Ollama・
+        LM Studioいずれもこの形式を返す。
+        """
+        payload: dict = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+            "stream": True,
+        }
+        if want_json and self.json_mode in {"auto", "response_format"}:
+            payload["response_format"] = {"type": "json_object"}
+        chunks: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                async with client.stream(
+                    "POST", f"{self.base_url}/chat/completions", json=payload
+                ) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
+                        response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:") :].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            event = json.loads(data)
+                            delta = event["choices"][0]["delta"].get("content")
+                        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                            continue
+                        if delta:
+                            chunks.append(delta)
+                            on_progress("".join(chunks))
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"LLM応答がタイムアウトしました: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            if not chunks and self.json_mode == "auto" and exc.response.status_code == 400:
+                raise RuntimeError("ストリーミング応答が400で拒否されました") from exc
+            raise LLMError(
+                f"LLMがエラーを返しました: {exc.response.status_code} {exc.response.text[:200]}"
+            ) from exc
+        except Exception as exc:
+            if chunks:
+                raise LLMError(f"LLMストリーミングが途中で切断されました: {exc}") from exc
+            raise
+        text = "".join(chunks)
+        if not text.strip():
+            raise LLMError("LLMからの応答が空でした（ストリーミング）")
+        return text
 
     async def status(self) -> LLMStatus:
         connected = False

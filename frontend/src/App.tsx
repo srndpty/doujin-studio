@@ -236,6 +236,8 @@ export function App() {
   const [candidateCount, setCandidateCount] = useState(1);
   // 一括生成で見せ場・複数人物コマの候補数を自動的に増やす（candidateCountは下限）。
   const [autoCandidates, setAutoCandidates] = useState(false);
+  // 生成のたびに基準seedをランダム化し、同じコマでも違う絵を出す（既定ON）。
+  const [randomizeSeed, setRandomizeSeed] = useState(true);
   const [activeJobIds, setActiveJobIds] = useState<string[]>([]);
   const [productionStatus, setProductionStatus] = useState<ProductionStatus | null>(null);
   const [jobHistory, setJobHistory] = useState<GenerationJob[]>([]);
@@ -244,7 +246,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("production");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectTitle, setNewProjectTitle] = useState("テスト本");
+  const [newProjectTitle, setNewProjectTitle] = useState("");
   const selectedProjectIdRef = useRef<string | null>(null);
   // 単調性ガードを同期的に判定するためのselectedミラー。setStateの更新関数内で状態を
   // 読むと反映タイミングが保証されないため、commit済みrevisionをrefで参照する。
@@ -724,7 +726,8 @@ export function App() {
         {
           page: selectedPage,
           candidate_count: candidateCount,
-          auto_candidates: autoCandidates
+          auto_candidates: autoCandidates,
+          randomize_seed: randomizeSeed
         }
       );
       const batchAdopted = await adoptMutationResponse(batchResponse);
@@ -778,7 +781,7 @@ export function App() {
       const projectId = saved.id;
       const batchResponse = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
         withRevision(`/api/projects/${projectId}/generation-jobs`, saved.revision),
-        { candidate_count: candidateCount, auto_candidates: autoCandidates }
+        { candidate_count: candidateCount, auto_candidates: autoCandidates, randomize_seed: randomizeSeed }
       );
       const batchAdopted = await adoptMutationResponse(batchResponse);
       if (!batchAdopted.applied || !batchAdopted.project) return;
@@ -871,7 +874,7 @@ export function App() {
   ): Promise<GenerationJob> {
     const response = await api.post<ProjectMutationResponse<GenerationJob>>(
       withRevision(`/api/projects/${projectId}/panels/${panelId}/generation-jobs`, revision),
-      { candidate_count: candidateCount }
+      { candidate_count: candidateCount, randomize_seed: randomizeSeed }
     );
     const adopted = await adoptMutationResponse(response);
     if (!adopted.applied || !adopted.project) {
@@ -1447,7 +1450,10 @@ export function App() {
             <button
               className="icon-button"
               title="新規プロジェクト"
-              onClick={() => setNewProjectOpen(true)}
+              onClick={() => {
+                setNewProjectTitle("");
+                setNewProjectOpen(true);
+              }}
               disabled={busy}
             >
               <Plus size={18} />
@@ -2666,6 +2672,18 @@ export function App() {
                         />
                         見せ場・複数人物は候補を自動で増やす
                       </label>
+                      <label
+                        className="auto-candidates-toggle"
+                        title="オフにすると下のseed欄の値を基準に生成し、同じ設定なら同じ絵が再現できます"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={randomizeSeed}
+                          onChange={(event) => setRandomizeSeed(event.target.checked)}
+                          disabled={busy}
+                        />
+                        毎回シードをランダムにする
+                      </label>
                     </div>
                     {currentPanel.image_candidates.length > 0 ? (
                       <div className="candidate-gallery">
@@ -2785,6 +2803,7 @@ export function App() {
               <input
                 value={newProjectTitle}
                 onChange={(event) => setNewProjectTitle(event.target.value)}
+                placeholder="テスト本"
                 maxLength={120}
               />
             </label>

@@ -12,8 +12,9 @@ from backend.app import fonts, typeset
 
 
 def test_vertical_layout_and_draw_covers_all_cell_kinds() -> None:
-    # 縦中横(ABC123)・回転(ー)・句読点(、。)・小書き仮名(っ)・改行・括弧を含める。
-    text = "テスト、ABC123ー っ。\n次の「行」だ"
+    # 縦中横(ABC123)・回転(ー)・波ダッシュ反転(～)・三点リーダ中央寄せ(…)・
+    # 句読点(、。)・小書き仮名(っ)・改行・括弧を含め、各描画分岐を通す。
+    text = "テスト、ABC123ー…っ。～\n次の「行」だ"
     layout = typeset.layout_text(text, None, 240, 360, vertical=True, default_size=30, min_size=20)
     assert layout.vertical is True
     assert layout.columns
@@ -22,8 +23,43 @@ def test_vertical_layout_and_draw_covers_all_cell_kinds() -> None:
     typeset.draw_layout(image, layout, None, (10, 10, 250, 370), (10, 10, 10), stroke_width=3)
     # 全文字が保持される（切り捨てない）。
     flattened = "".join(token[1] for line in layout.columns for token in line)
-    for ch in "テストABC123ー次の行だ":
+    for ch in "テストABC123ー…～次の行だ":
         assert ch in flattened
+
+
+def test_vertical_rotates_wave_and_dash_variants() -> None:
+    # 縦書きで横倒しになりがちな波ダッシュ・チルダ・長ダッシュ類が回転トークンになること。
+    # 「お疲れ様～！」のような全角チルダ(U+FF5E)が横向きのまま残る不具合の回帰防止。
+    for ch in "〜～⁓―—－ー":
+        tokens = typeset.tokenize_vertical(f"あ{ch}い")
+        kinds = {token[0] for token in tokens if token[1] == ch}
+        assert kinds == {"rot"}, f"{ch!r}(U+{ord(ch):04X}) が回転対象になっていない"
+
+
+def test_vertical_punctuation_is_drawn_at_cell_top_right() -> None:
+    # 縦書きの読点はセル右上へ。フォントによりbboxが全角幅で返っても左上へ流れないこと。
+    fp = fonts.find_dialogue_font_path("")
+    if fp is None:
+        return  # 日本語フォント未導入の環境ではスキップ
+    layout = typeset.layout_text(
+        "あ、", str(fp), 60, 140, vertical=True, default_size=40, min_size=40
+    )
+    width, height = 160, 200
+    image = Image.new("RGBA", (width, height), (255, 255, 255, 255))
+    typeset.draw_layout(image, layout, str(fp), (10, 10, width - 10, height - 10), (0, 0, 0))
+    pixels = image.convert("L").load()
+    cell = layout.cell
+
+    def ink_x_range(y0: int, y1: int) -> tuple[int, int]:
+        xs = [x for y in range(y0, y1) for x in range(width) if pixels[x, y] < 128]
+        return (min(xs), max(xs)) if xs else (0, 0)
+
+    base_min, base_max = ink_x_range(10, int(10 + cell))  # 「あ」セル
+    comma_min, comma_max = ink_x_range(int(10 + cell), int(10 + cell * 2))  # 「、」セル
+    base_center = (base_min + base_max) / 2
+    comma_center = (comma_min + comma_max) / 2
+    # 読点のインク中心が本文字より右側にあること（右上配置）。
+    assert comma_center > base_center, (base_center, comma_center)
 
 
 def test_horizontal_layout_and_draw() -> None:

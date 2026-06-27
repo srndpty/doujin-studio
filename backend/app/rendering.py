@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 
 ProductionStatusValue = Literal["incomplete", "ready", "complete"]
 
+# 描画エンジンのバージョン。typeset/renderer のロジックを変えてピクセル出力が変わったら
+# 必ず +1 する。ページ成果物のファイル名は入力hash由来のため、コード変更だけでは
+# hashが変わらず、同名・別内容の不変アセット衝突（RuntimeError: 不変アセットの内容が
+# 一致しません）を起こす。本バージョンをシグネチャへ含めることで、コード変更後は新しい
+# ファイル名で再公開され、古いキャッシュページと衝突しなくなる。
+# 履歴: 1=初期, 2=縦書き句読点を右上クロップ配置・全角チルダ等の回転対応,
+#       3=波ダッシュの向き反転・三点リーダの実インク中央寄せ・吹き出しのアンチエイリアス
+RENDER_ENGINE_VERSION = 3
+
 
 class RenderInputChangedError(Exception):
     pass
@@ -231,6 +240,7 @@ def page_render_signature(manga: MangaProject, page) -> str:
     画像に影響しないメタ変更では再レンダリングを促さない。
     """
     payload = {
+        "render_engine_version": RENDER_ENGINE_VERSION,
         "typography": manga.typography.model_dump(),
         "page_layout": manga.page_layout.model_dump(),
         "reading_direction": manga.reading_direction,

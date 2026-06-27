@@ -103,6 +103,7 @@ async def generate_panel_image(
         candidate_count,
         "画像生成ジョブを登録しました",
         expected_revision=revision,
+        randomize_seed=payload.randomize_seed if payload else True,
     )
     job = jobs[0]
     ensure_sync_generation_succeeded(await request.app.state.generation.await_completion(job))
@@ -152,6 +153,7 @@ async def create_generation_job(
         payload.candidate_count if payload else 1,
         "画像生成ジョブを登録しました",
         expected_revision=revision,
+        randomize_seed=payload.randomize_seed if payload else True,
     )
     job = jobs[0]
     return to_project_mutation_response(
@@ -197,6 +199,7 @@ async def create_batch_generation_jobs(
         skip_active=True,
         expected_revision=revision,
         candidate_counts=candidate_counts,
+        randomize_seed=options.randomize_seed,
     )
     return to_project_mutation_response(
         request,

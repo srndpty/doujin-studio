@@ -510,6 +510,23 @@ def dialogue_draws_tail(dialogue: Dialogue) -> bool:
     return True
 
 
+# 吹き出し外形の拡大率。PILは図形にアンチエイリアスを掛けないため、拡大タイルへ描いて
+# LANCZOS縮小し、縁のジャギーを滑らかにする。文字は等倍で別途描くので鮮明さは保つ。
+BALLOON_SUPERSAMPLE = 3
+
+
+def _shift_scale(
+    box: tuple[float, float, float, float], ox: float, oy: float, scale: float
+) -> tuple[int, int, int, int]:
+    """ページ座標のboxを、(ox,oy)原点・scale倍のローカルタイル座標へ写す。"""
+    return (
+        round((box[0] - ox) * scale),
+        round((box[1] - oy) * scale),
+        round((box[2] - ox) * scale),
+        round((box[3] - oy) * scale),
+    )
+
+
 def _draw_balloon_shape(
     page_image: Image.Image,
     draw: ImageDraw.ImageDraw,
@@ -518,30 +535,82 @@ def _draw_balloon_shape(
     panel_box: tuple[int, int, int, int],
     speaker_anchor: str | None = None,
 ) -> None:
+    page_w, page_h = PAGE_SIZE
+    show_tail = dialogue.balloon != "caption" and dialogue_draws_tail(dialogue)
+    xs = [bubble[0], bubble[2]]
+    ys = [bubble[1], bubble[3]]
+    if show_tail:
+        tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
+        xs.append(tip[0])
+        ys.append(tip[1])
+    # しっぽ先端まで含む描画範囲をとり、その分だけ拡大タイルを確保する。
+    margin = max(8, int((bubble[2] - bubble[0]) * 0.15))
+    rx0 = max(0, int(min(xs)) - margin)
+    ry0 = max(0, int(min(ys)) - margin)
+    rx1 = min(page_w, int(max(xs)) + margin)
+    ry1 = min(page_h, int(max(ys)) + margin)
+    if rx1 <= rx0 or ry1 <= ry0:
+        return
+    s = BALLOON_SUPERSAMPLE
+    tile = Image.new("RGBA", ((rx1 - rx0) * s, (ry1 - ry0) * s), (0, 0, 0, 0))
+    tile_draw = ImageDraw.Draw(tile)
+    bubble_s = _shift_scale(bubble, rx0, ry0, s)
+    panel_s = _shift_scale(panel_box, rx0, ry0, s)
+    _paint_balloon(tile_draw, dialogue, bubble_s, panel_s, show_tail, speaker_anchor, s)
+    smoothed = tile.resize((rx1 - rx0, ry1 - ry0), Image.LANCZOS)
+    page_image.alpha_composite(smoothed, (rx0, ry0))
+
+
+def _paint_balloon(
+    draw: ImageDraw.ImageDraw,
+    dialogue: Dialogue,
+    bubble: tuple[int, int, int, int],
+    panel_box: tuple[int, int, int, int],
+    show_tail: bool,
+    speaker_anchor: str | None,
+    scale: float,
+) -> None:
+    """拡大タイルへ吹き出し外形を描く。線幅・個数はscaleに合わせる。"""
     outline = (25, 25, 25, 255)
     white = (255, 255, 255, 255)
-    x0, y0, x1, y1 = bubble
+    width3 = max(1, round(3 * scale))
     if dialogue.balloon == "caption":
-        # ナレーションは四角枠。しっぽは付けない。
-        draw.rectangle(bubble, fill=(252, 252, 250, 255), outline=outline, width=3)
+        draw.rectangle(bubble, fill=(252, 252, 250, 255), outline=outline, width=width3)
         return
-    show_tail = dialogue_draws_tail(dialogue)
     if dialogue.balloon == "burst":
-        _draw_burst(draw, bubble, outline, white)
+        _draw_burst(draw, bubble, outline, white, scale)
         if show_tail:
             _draw_tail(
-                draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor
+                draw,
+                dialogue,
+                bubble,
+                panel_box,
+                outline,
+                white,
+                speaker_anchor=speaker_anchor,
+                scale=scale,
             )
         return
     if dialogue.balloon == "cloud":
-        _draw_cloud(draw, bubble, outline, white)
+        _draw_cloud(draw, bubble, outline, white, scale)
         if show_tail:
-            _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor)
+            _draw_cloud_tail(
+                draw, dialogue, bubble, panel_box, outline, white, speaker_anchor, scale
+            )
         return
     # oval（標準の楕円）
-    draw.ellipse(bubble, fill=white, outline=outline, width=3)
+    draw.ellipse(bubble, fill=white, outline=outline, width=width3)
     if show_tail:
-        _draw_tail(draw, dialogue, bubble, panel_box, outline, white, speaker_anchor=speaker_anchor)
+        _draw_tail(
+            draw,
+            dialogue,
+            bubble,
+            panel_box,
+            outline,
+            white,
+            speaker_anchor=speaker_anchor,
+            scale=scale,
+        )
 
 
 def _tail_tip(dialogue: Dialogue, bubble, panel_box, speaker_anchor: str | None = None):
@@ -567,7 +636,15 @@ def _tail_tip(dialogue: Dialogue, bubble, panel_box, speaker_anchor: str | None 
 
 
 def _draw_tail(
-    draw, dialogue, bubble, panel_box, outline, fill, square: bool = False, speaker_anchor=None
+    draw,
+    dialogue,
+    bubble,
+    panel_box,
+    outline,
+    fill,
+    square: bool = False,
+    speaker_anchor=None,
+    scale: float = 1.0,
 ) -> None:
     if dialogue.tail is not None and not dialogue.tail.enabled:
         return
@@ -575,7 +652,7 @@ def _draw_tail(
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
     width_ratio = dialogue.tail.width if dialogue.tail is not None else 0.12
-    base_w = max(12, min((x1 - x0) * width_ratio, 26))
+    base_w = max(12 * scale, min((x1 - x0) * width_ratio, 26 * scale))
     # 付け根は吹き出しの縁に取る。
     dx, dy = tip[0] - cx, tip[1] - cy
     norm = math.hypot(dx, dy) or 1.0
@@ -588,34 +665,39 @@ def _draw_tail(
     p1 = (base_cx + px * base_w / 2, base_cy + py * base_w / 2)
     p2 = (base_cx - px * base_w / 2, base_cy - py * base_w / 2)
     # 付け根（吹き出し内側）の線は描かず、斜辺だけ縁取りして自然に繋げる。
+    width3 = max(1, round(3 * scale))
     draw.polygon([p1, p2, tip], fill=fill)
-    draw.line([p1, tip], fill=outline, width=3)
-    draw.line([p2, tip], fill=outline, width=3)
+    draw.line([p1, tip], fill=outline, width=width3)
+    draw.line([p2, tip], fill=outline, width=width3)
 
 
-def _draw_cloud_tail(draw, dialogue, bubble, panel_box, outline, fill, speaker_anchor=None) -> None:
+def _draw_cloud_tail(
+    draw, dialogue, bubble, panel_box, outline, fill, speaker_anchor=None, scale: float = 1.0
+) -> None:
     if dialogue.tail is not None and not dialogue.tail.enabled:
         return
     x0, y0, x1, y1 = bubble
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
+    width2 = max(1, round(2 * scale))
     for i, t in enumerate((0.45, 0.72, 0.95)):
         bx = cx + (tip[0] - cx) * t
         by = cy + (tip[1] - cy) * t
-        r = max(4, int((x1 - x0) * 0.05 * (1 - i * 0.28)))
-        draw.ellipse((bx - r, by - r, bx + r, by + r), fill=fill, outline=outline, width=2)
+        r = max(round(4 * scale), int((x1 - x0) * 0.05 * (1 - i * 0.28)))
+        draw.ellipse((bx - r, by - r, bx + r, by + r), fill=fill, outline=outline, width=width2)
 
 
-def _draw_cloud(draw, bubble, outline, fill) -> None:
+def _draw_cloud(draw, bubble, outline, fill, scale: float = 1.0) -> None:
     x0, y0, x1, y1 = bubble
     w, h = x1 - x0, y1 - y0
+    width2 = max(1, round(2 * scale))
     draw.rounded_rectangle(
         (x0 + w * 0.06, y0 + h * 0.12, x1 - w * 0.06, y1 - h * 0.12),
         radius=int(min(w, h) * 0.3),
         fill=fill,
     )
-    # 縁にこぶを並べて雲状にする。
-    bumps = max(6, int(w / 60))
+    # 縁にこぶを並べて雲状にする。個数はscaleを除いた実寸で決め、拡大しても数を増やさない。
+    bumps = max(6, int(w / (60 * scale)))
     rb = min(w, h) * 0.12
     for i in range(bumps):
         t = i / bumps
@@ -624,20 +706,21 @@ def _draw_cloud(draw, bubble, outline, fill) -> None:
             (x0 + w * t, y1 - h * 0.12),
         ):
             draw.ellipse(
-                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2
+                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=width2
             )
-    for i in range(max(3, int(h / 60))):
-        t = i / max(3, int(h / 60))
+    vbumps = max(3, int(h / (60 * scale)))
+    for i in range(vbumps):
+        t = i / vbumps
         for cxb, cyb in (
             (x0 + w * 0.06, y0 + h * t),
             (x1 - w * 0.06, y0 + h * t),
         ):
             draw.ellipse(
-                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=2
+                (cxb - rb, cyb - rb, cxb + rb, cyb + rb), fill=fill, outline=outline, width=width2
             )
 
 
-def _draw_burst(draw, bubble, outline, fill) -> None:
+def _draw_burst(draw, bubble, outline, fill, scale: float = 1.0) -> None:
     x0, y0, x1, y1 = bubble
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     rx, ry = (x1 - x0) / 2, (y1 - y0) / 2
@@ -647,7 +730,7 @@ def _draw_burst(draw, bubble, outline, fill) -> None:
         angle = math.pi * i / spikes
         radius = 1.0 if i % 2 == 0 else 0.74
         points.append((cx + math.cos(angle) * rx * radius, cy + math.sin(angle) * ry * radius))
-    draw.polygon(points, fill=fill, outline=outline)
+    draw.polygon(points, fill=fill, outline=outline, width=max(1, round(2 * scale)))
 
 
 # --- SFX ---

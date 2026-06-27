@@ -88,6 +88,7 @@ _BRIEF = {"synopsis": "x", "tone": "", "characters": [], "canon_conditions": []}
 
 def _make_record() -> SimpleNamespace:
     return SimpleNamespace(
+        id="session-test",
         stages_json=json.dumps(story.empty_stages()),
         work_name="",
         instruction="",

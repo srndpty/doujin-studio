@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import shutil
 import uuid
 from asyncio import CancelledError
@@ -130,7 +131,7 @@ def generation_input_hash(manga: MangaProject, panel, export_dir: Path) -> str:
     # 一方seedは実際にbackendへ渡す生成入力なので除外しない。これによりユーザーのseed編集は
     # 検出しつつ、候補採用ではseedを書き換えない（apply_candidate_selection参照）ため、
     # 採用し直しだけで入力変更と誤判定することはない。
-    for volatile in ("status", "message", "prompt_id", "backend"):
+    for volatile in ("status", "message", "prompt_id", "backend", "active_job_id"):
         generation.pop(volatile, None)
     asset_ids = {reference.asset for reference in generated.control_references} | {
         reference.asset for reference in generated.generation.reference_images
@@ -148,6 +149,11 @@ def generation_input_hash(manga: MangaProject, panel, export_dir: Path) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
+
+
+def effective_generation_input_hash(manga: MangaProject, generated_panel, export_dir: Path) -> str:
+    """実生成に使うpanelスナップショットから入力hashを作る。"""
+    return generation_input_hash(manga, generated_panel, export_dir)
 
 
 def apply_candidate_selection(panel, candidate: ImageCandidate) -> None:
@@ -348,6 +354,7 @@ class GenerationService:
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
         candidate_counts: dict[str, int] | None = None,
+        randomize_seed: bool = False,
     ) -> EnqueuedJobs:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
 
@@ -412,6 +419,7 @@ class GenerationService:
                         epoch=record.generation_epoch,
                         status="queued",
                         message=message,
+                        randomize_seed=randomize_seed,
                     )
                     panel.generation.status = "queued"
                     panel.generation.active_job_id = job.id
@@ -443,6 +451,7 @@ class GenerationService:
                             epoch=job.epoch,
                             status=job.status,
                             message=job.message,
+                            randomize_seed=int(job.randomize_seed),
                             candidate_ids_json="[]",
                             created_at=job.created_at,
                             updated_at=job.updated_at,
@@ -475,6 +484,7 @@ class GenerationService:
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
         candidate_counts: dict[str, int] | None = None,
+        randomize_seed: bool = False,
     ) -> EnqueuedJobs:
         """ジョブ登録後、メモリ登録とTask起動までをGenerationServiceへ集約する。"""
         runtime = self.require_runtime()
@@ -487,6 +497,7 @@ class GenerationService:
             expected_epoch=expected_epoch,
             expected_revision=expected_revision,
             candidate_counts=candidate_counts,
+            randomize_seed=randomize_seed,
         )
         for job in jobs:
             runtime.jobs.register_in_memory(job)
@@ -665,7 +676,13 @@ class GenerationService:
             if panel is None:
                 raise RuntimeError("コマが見つかりません")
             prepared_panel = prepare_panel_for_generation(manga, panel)
-            input_hash = generation_input_hash(manga, panel, runtime.settings.export_dir)
+            if job.randomize_seed:
+                # 毎回ランダムな基準seedにし、同じコマでも生成のたびに違う絵が出るようにする。
+                # 候補は base+index で派生するため、末尾4つ分の余裕を残す。
+                prepared_panel.generation.seed = random.randint(0, 2**31 - 5)
+            input_hash = effective_generation_input_hash(
+                manga, prepared_panel, runtime.settings.export_dir
+            )
             manager.update(
                 job,
                 status="running",
@@ -789,8 +806,11 @@ class GenerationService:
                 ) -> bool:
                     if target_panel.generation.active_job_id != job.id:
                         raise JobOwnershipLostError()
-                    latest_hash = generation_input_hash(
-                        latest, target_panel, runtime.settings.export_dir
+                    latest_prepared = prepare_panel_for_generation(latest, target_panel)
+                    if job.randomize_seed:
+                        latest_prepared.generation.seed = prepared_panel.generation.seed
+                    latest_hash = effective_generation_input_hash(
+                        latest, latest_prepared, runtime.settings.export_dir
                     )
                     if latest_hash != job.generation_input_hash:
                         owned_candidate_ids = set(job.candidate_ids)

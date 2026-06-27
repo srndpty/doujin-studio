@@ -50,7 +50,11 @@ const STAGES: { name: StageName; label: string; hint: string }[] = [
   { name: "script", label: "コマ台本", hint: "shot・camera・location・visual prompt・台詞・効果音" }
 ];
 
-const STATUS_LABEL: Record<StageStatus, string> = { empty: "未生成", draft: "未承認", approved: "承認済み" };
+const STATUS_LABEL: Record<StageStatus, string> = {
+  empty: "未生成",
+  draft: "生成済み",
+  approved: "生成済み"
+};
 
 export function StoryPanel<ProjectType>({
   projectId,
@@ -83,6 +87,9 @@ export function StoryPanel<ProjectType>({
   });
   const [message, setMessage] = useState("ストーリー生成セッションを作成してください");
   const [busy, setBusy] = useState(false);
+  const [genProgress, setGenProgress] = useState<{ chars: number; tail: string; seconds: number } | null>(
+    null
+  );
   const activeProjectIdRef = useRef(projectId);
   activeProjectIdRef.current = projectId;
 
@@ -206,17 +213,36 @@ export function StoryPanel<ProjectType>({
 
   async function generateStage(stage: StageName) {
     if (!session) return;
+    const sessionId = session.id;
     await run(async () => {
       await refreshLlm();
       setMessage(`${stage}を生成中…`);
-      const next = await api.post<StorySession>(
-        `/api/story-sessions/${session.id}/stages/${stage}/generate`,
-        { instruction: "" }
-      );
-      syncDrafts(next);
-      setMessage(
-        next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`
-      );
+      const startedAt = Date.now();
+      setGenProgress({ chars: 0, tail: "", seconds: 0 });
+      // 生成POSTがブロックする間、別リクエストで進捗をポーリングして「止まっていない」
+      // ことと受信状況（文字数・出力末尾）を表示する。
+      const timer = window.setInterval(() => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        void api
+          .get<{ chars?: number; tail?: string }>(`/api/story-sessions/${sessionId}/generation-progress`)
+          .then((p) => setGenProgress({ chars: p?.chars ?? 0, tail: p?.tail ?? "", seconds }))
+          .catch(() =>
+            setGenProgress((current) => (current ? { ...current, seconds } : { chars: 0, tail: "", seconds }))
+          );
+      }, 800);
+      try {
+        const next = await api.post<StorySession>(
+          `/api/story-sessions/${sessionId}/stages/${stage}/generate`,
+          { instruction: "" }
+        );
+        syncDrafts(next);
+        setMessage(
+          next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`
+        );
+      } finally {
+        window.clearInterval(timer);
+        setGenProgress(null);
+      }
     });
   }
 
@@ -234,15 +260,6 @@ export function StoryPanel<ProjectType>({
       });
       syncDrafts(next);
       setMessage(`${stage}を保存しました（下流段階は未承認へ戻ります）`);
-    });
-  }
-
-  async function approveStage(stage: StageName) {
-    if (!session) return;
-    await run(async () => {
-      const next = await api.post<StorySession>(`/api/story-sessions/${session.id}/stages/${stage}/approve`);
-      syncDrafts(next);
-      setMessage(`${stage}を承認しました`);
     });
   }
 
@@ -271,21 +288,32 @@ export function StoryPanel<ProjectType>({
     });
   }
 
-  const scriptApproved = session?.stages.script.status === "approved";
+  const scriptReady = Boolean(session && session.stages.script.data);
   const selectedLocalWork = localWorks.find((work) => work.work_id === knowledgeWorkId);
   const canGenerate = useMemo(() => {
     const result: Record<StageName, boolean> = { brief: false, plot: false, pages: false, script: false };
     if (!session) return result;
+    // 前段階が生成済み（データあり）なら次段階を生成できる。承認は不要。
     result.brief = true;
-    result.plot = session.stages.brief.status === "approved";
-    result.pages = session.stages.plot.status === "approved";
-    result.script = session.stages.pages.status === "approved";
+    result.plot = session.stages.brief.data !== null;
+    result.pages = session.stages.plot.data !== null;
+    result.script = session.stages.pages.data !== null;
     return result;
   }, [session]);
 
   return (
     <section className="story-panel">
       <div className="panel-message">{message}</div>
+      {genProgress && (
+        <div className="gen-progress" role="status" aria-live="polite">
+          <div className="gen-progress-meta">
+            <span className="gen-progress-spinner" aria-hidden="true" />
+            生成中… {genProgress.chars > 0 ? `${genProgress.chars}文字を受信` : "モデルの応答を待機"} ・ 経過{" "}
+            {genProgress.seconds}秒
+          </div>
+          {genProgress.tail && <pre className="gen-progress-tail">…{genProgress.tail}</pre>}
+        </div>
+      )}
       {llm && (
         <div className={`llm-band ${llm.provider !== "stub" && llm.connected ? "ok" : "ng"}`}>
           <strong>
@@ -395,12 +423,6 @@ export function StoryPanel<ProjectType>({
                   <button onClick={() => void generateStage(name)} disabled={busy || !canGenerate[name]}>
                     {stage.status === "empty" ? "生成" : "再生成"}
                   </button>
-                  <button
-                    onClick={() => void approveStage(name)}
-                    disabled={busy || !stage.data || stage.status === "approved"}
-                  >
-                    承認
-                  </button>
                 </div>
               </article>
             );
@@ -410,10 +432,10 @@ export function StoryPanel<ProjectType>({
 
       {session && (
         <div className="story-apply">
-          <button className="primary" onClick={applySession} disabled={busy || !scriptApproved}>
+          <button className="primary" onClick={applySession} disabled={busy || !scriptReady}>
             プロジェクトへ適用
           </button>
-          {!scriptApproved && <small className="hint">台本まで承認すると適用できます</small>}
+          {!scriptReady && <small className="hint">コマ台本まで生成すると適用できます</small>}
         </div>
       )}
 

@@ -787,6 +787,53 @@ label {
   gap: 16px;
 }
 
+.gen-progress {
+  margin: -4px 0 12px;
+  background: #f3efe6;
+  border: 1px solid #ddd4c4;
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.gen-progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #46413b;
+}
+
+.gen-progress-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #c9bfa9;
+  border-top-color: #6b5f4a;
+  border-radius: 50%;
+  animation: gen-progress-spin 0.8s linear infinite;
+}
+
+@keyframes gen-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.gen-progress-tail {
+  margin: 0;
+  max-height: 64px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b5f4a;
+  background: #fbf9f4;
+  border-radius: 4px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .knowledge-panel h3,
 .story-panel h3 {
   margin: 0 0 8px;

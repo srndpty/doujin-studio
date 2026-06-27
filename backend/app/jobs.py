@@ -43,6 +43,9 @@ class GenerationJob:
     prompt_id: str | None = None
     # ジョブ開始時のproject世代。構成全置換後の古い候補混入を防ぐ。
     epoch: int = 0
+    # trueなら基準seedを毎回ランダム化する（同じ画像の再現を避ける）。実行時のみの
+    # 指定で、コマのgeneration.seed（再現用の基準値）は書き換えない。
+    randomize_seed: bool = False
     generation_input_hash: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -189,6 +192,7 @@ class JobManager:
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
             prompt_id=record.prompt_id,
             epoch=record.epoch,
+            randomize_seed=bool(record.randomize_seed),
             generation_input_hash=record.generation_input_hash,
             created_at=record.created_at.replace(tzinfo=timezone.utc)
             if record.created_at.tzinfo is None
@@ -256,6 +260,7 @@ class JobManager:
                     panel_id=job.panel_id,
                     candidate_count=job.candidate_count,
                     epoch=job.epoch,
+                    randomize_seed=int(job.randomize_seed),
                     generation_input_hash=job.generation_input_hash,
                     created_at=job.created_at,
                     updated_at=job.updated_at,
@@ -267,6 +272,7 @@ class JobManager:
             record.total = job.total
             record.node = job.node
             record.message = job.message
+            record.randomize_seed = int(job.randomize_seed)
             record.candidate_ids_json = json.dumps(job.candidate_ids)
             record.prompt_id = job.prompt_id
             record.generation_input_hash = job.generation_input_hash
