@@ -69,10 +69,11 @@ if (Test-Path -LiteralPath $desktopMain -PathType Leaf) {
     $workingDirectory = Split-Path -Parent $main
     # ソース版で既存basePath(models/custom_nodes/user)を共有する。データは移動・複製しない。
     if ($BasePath) {
-        $resolvedBase = (Resolve-Path -LiteralPath $BasePath).Path
-        if (-not (Test-Path -LiteralPath $resolvedBase -PathType Container)) {
-            throw "basePathが見つかりません: $resolvedBase"
+        # 存在しないパスでは Resolve-Path 自体が例外になるため、先に存在検査する。
+        if (-not (Test-Path -LiteralPath $BasePath -PathType Container)) {
+            throw "basePathが見つかりません: $BasePath"
         }
+        $resolvedBase = (Resolve-Path -LiteralPath $BasePath).Path
         $arguments += @(
             "--base-directory", $resolvedBase,
             "--user-directory", (Join-Path $resolvedBase "user"),

@@ -38,6 +38,11 @@ $shell = $null
 $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
 if ($pwsh) { $shell = $pwsh.Source } else { $shell = (Get-Command powershell).Source }
 
+# パスをコード文字列へ埋め込む際、単一引用符を '' にエスケープして安全な PS リテラルにする。
+function ConvertTo-PSLiteral([string]$value) {
+    "'" + $value.Replace("'", "''") + "'"
+}
+
 function Test-Comfy([string]$url) {
     try {
         return (Invoke-WebRequest -Uri "$url/system_stats" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200
@@ -57,13 +62,14 @@ function Find-Comfy([int[]]$ports) {
 # 収集したタブ（各 @{Title; Command}）を Windows Terminal の 1 ウィンドウに開く。
 # wt が無い／-SeparateWindows 指定時は従来どおり別ウィンドウで開く。
 function Open-Tabs($tabs) {
+    $setRoot = "Set-Location " + (ConvertTo-PSLiteral $root) + "; "
     $wt = Get-Command wt -ErrorAction SilentlyContinue
     if ($wt -and -not $SeparateWindows) {
         $wtArgs = @()
         for ($i = 0; $i -lt $tabs.Count; $i++) {
             if ($i -gt 0) { $wtArgs += ";" }   # wt のタブ区切り
             # タブ内コマンドの ; や引用符を wt/シェルに誤解析させないため EncodedCommand で渡す。
-            $full = "Set-Location '$root'; " + $tabs[$i].Command
+            $full = $setRoot + $tabs[$i].Command
             $b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($full))
             $wtArgs += @("new-tab", "--title", $tabs[$i].Title, $shell, "-NoExit", "-EncodedCommand", $b64)
         }
@@ -73,7 +79,7 @@ function Open-Tabs($tabs) {
         foreach ($tab in $tabs) {
             Start-Process -FilePath $shell -ArgumentList @(
                 "-NoExit", "-Command",
-                "`$Host.UI.RawUI.WindowTitle='$($tab.Title)'; Set-Location '$root'; $($tab.Command)"
+                "`$Host.UI.RawUI.WindowTitle='$($tab.Title)'; $setRoot$($tab.Command)"
             )
         }
         Write-Host "各プロセスを別ウィンドウで起動しました（wt が無い、または -SeparateWindows）。"
@@ -83,13 +89,15 @@ function Open-Tabs($tabs) {
 $tabs = New-Object System.Collections.Generic.List[object]
 
 # 1) ComfyUI: 既知URL > 検出 > headless起動（タブ追加）
+$launchedComfyHeadless = $false
 if (-not $ComfyBaseUrl) { $ComfyBaseUrl = Find-Comfy $ProbePorts }
 if (-not $ComfyBaseUrl -and $ComfyPath) {
     $port = $ProbePorts[0]
-    $cmd = "& .\scripts\start-comfy-headless.ps1 -ComfyPath '$ComfyPath' -Port $port"
-    if ($ComfyBasePath) { $cmd += " -BasePath '$ComfyBasePath'" }
+    $cmd = "& .\scripts\start-comfy-headless.ps1 -ComfyPath " + (ConvertTo-PSLiteral $ComfyPath) + " -Port $port"
+    if ($ComfyBasePath) { $cmd += " -BasePath " + (ConvertTo-PSLiteral $ComfyBasePath) }
     $tabs.Add(@{ Title = "ComfyUI"; Command = $cmd })
     $ComfyBaseUrl = "http://127.0.0.1:$port"
+    $launchedComfyHeadless = $true
     Write-Host "ComfyUI: $ComfyBaseUrl (headless 起動)"
 } elseif ($ComfyBaseUrl) {
     Write-Host "ComfyUI: $ComfyBaseUrl (connected)"
@@ -100,6 +108,7 @@ if (-not $ComfyBaseUrl -and $ComfyPath) {
 
 # 2) Ollama（任意）: serve を keep_alive=0 で起動。backend へ LLM_* と /free フラグを渡す。
 $backendEnvPrefix = ""
+$ollamaConfigured = $false
 if ($Ollama) {
     if (Get-Command ollama -ErrorAction SilentlyContinue) {
         $ollamaUrl = "http://127.0.0.1:$OllamaPort"
@@ -118,16 +127,19 @@ if ($Ollama) {
             Write-Host "Ollama: serve をタブで起動します（未取得なら 'ollama pull $OllamaModel'）。"
         }
         $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:LLM_TIMEOUT_SECONDS='$LlmTimeout'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
+        $ollamaConfigured = $true
     } else {
-        Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。"
+        Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。LLM は未設定で起動します。"
     }
 }
 
-# 3) backend
-$tabs.Add(@{
-        Title   = "backend"
-        Command = ($backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl '$ComfyBaseUrl' -Port $BackendPort")
-    })
+# 3) backend（headless で ComfyUI を起動した場合は、その疎通を待ってから起動する）
+$waitForComfy = ""
+if ($launchedComfyHeadless) {
+    $waitForComfy = "Write-Host 'ComfyUI の起動を待機中...'; `$deadline=(Get-Date).AddMinutes(3); do { try { if ((Invoke-WebRequest -Uri '$ComfyBaseUrl/system_stats' -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200){ break } } catch {}; Start-Sleep -Seconds 2 } while ((Get-Date) -lt `$deadline); if ((Get-Date) -ge `$deadline){ Write-Warning 'ComfyUI の起動待機がタイムアウトしました。' }; "
+}
+$backendCommand = $waitForComfy + $backendEnvPrefix + "& .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl " + (ConvertTo-PSLiteral $ComfyBaseUrl) + " -Port $BackendPort"
+$tabs.Add(@{ Title = "backend"; Command = $backendCommand })
 
 # 4) frontend
 if (-not $NoFrontend) {
@@ -141,9 +153,11 @@ Write-Host "起動内容:"
 Write-Host "  ComfyUI : $ComfyBaseUrl"
 Write-Host "  backend : http://127.0.0.1:$BackendPort  (確認: /api/comfyui/status, /api/llm/status)"
 if (-not $NoFrontend) { Write-Host "  frontend: http://127.0.0.1:5173" }
-if ($Ollama) {
+if ($ollamaConfigured) {
     Write-Host "  LLM     : Ollama http://127.0.0.1:$OllamaPort (model=$OllamaModel)"
     Write-Host "            台本生成前に ComfyUI を自動 /free（COMFYUI_FREE_BEFORE_LLM=1）→ VRAM 同居なし"
+} elseif ($Ollama) {
+    Write-Host "  LLM     : Ollama は未設定（ollama コマンドが見つかりません）。別途用意してください。"
 } else {
     Write-Host "  LLM     : 別途起動（-Ollama で自動管理。例: LM Studio :1234）"
 }

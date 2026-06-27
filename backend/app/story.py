@@ -291,8 +291,12 @@ async def free_comfyui_vram(settings: Settings) -> None:
     base = settings.comfyui_base_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(f"{base}/free", json={"unload_models": True, "free_memory": True})
-    except Exception as exc:  # 接続不可・未対応でも生成は継続する
+            response = await client.post(
+                f"{base}/free", json={"unload_models": True, "free_memory": True}
+            )
+            # 404/405/500等はhttpxでは例外にならないため明示的に検査する（可観測性）。
+            response.raise_for_status()
+    except Exception as exc:  # 接続不可・HTTPエラー・未対応でも生成は継続する
         logger.debug("ComfyUI /free に失敗しました（VRAM解放はスキップ）: %s", exc)
 
 
