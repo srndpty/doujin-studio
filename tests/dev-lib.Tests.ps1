@@ -28,6 +28,21 @@ Describe "Select-AvailablePort" {
     }
 }
 
+Describe "Test-PortAvailable" {
+    It "未使用の高位ポートは利用可能" {
+        Test-PortAvailable 49219 | Should Be $true
+    }
+    It "listen 中のポートは利用不可" {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 49220)
+        $listener.Start()
+        try {
+            Test-PortAvailable 49220 | Should Be $false
+        } finally {
+            $listener.Stop()
+        }
+    }
+}
+
 Describe "New-WaitForComfyCommand" {
     $cmd = New-WaitForComfyCommand "http://127.0.0.1:8188/system_stats"
     It "成功を ready フラグで明示保持する" {

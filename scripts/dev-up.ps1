@@ -94,6 +94,8 @@ if (-not $ComfyBaseUrl) { $ComfyBaseUrl = Find-Comfy $ProbePorts }
 if (-not $ComfyBaseUrl -and $ComfyPath) {
     # 検出できなかった＝起動する経路。先頭ポート固定ではなく、空いている候補ポートを選ぶ
     # （backend のポートは除外し、既に占有されている 8188 等での bind 失敗を避ける）。
+    # 注意: 確認と headless 起動の間には TOCTOU race が残る。別プロセスが先にポートを取ると
+    # ComfyUI タブが bind に失敗するので、その場合は -ProbePorts に別候補を足して再実行する。
     $candidates = @($ProbePorts | Where-Object { $_ -ne $BackendPort })
     $port = Select-AvailablePort $candidates { param($p) Test-PortAvailable $p }
     $cmd = "& .\scripts\start-comfy-headless.ps1 -ComfyPath " + (ConvertTo-PSLiteral $ComfyPath) + " -Port $port"

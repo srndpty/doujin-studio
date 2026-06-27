@@ -18,12 +18,20 @@ function Select-AvailablePort([int[]]$ports, [scriptblock]$isAvailable) {
 }
 
 # ポートが空いているか。Get-NetTCPConnection が使えない環境では TcpListener の bind で確認する。
-function Test-PortAvailable([int]$port) {
+# fallback の bind は $listen（ComfyUI の -Listen と一致させる）アドレスで試す。
+# 注意: 確認と実際の bind の間には TOCTOU race が残る（別プロセスが先に取得しうる）。
+# bind 失敗時は -ProbePorts に別候補を足して再実行する運用とする（docs参照）。
+function Test-PortAvailable([int]$port, [string]$listen = "127.0.0.1") {
     try {
         return -not (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
     } catch {
         try {
-            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+            $address = switch ($listen) {
+                "0.0.0.0" { [System.Net.IPAddress]::Any }
+                "::" { [System.Net.IPAddress]::IPv6Any }
+                default { [System.Net.IPAddress]::Parse($listen) }
+            }
+            $listener = [System.Net.Sockets.TcpListener]::new($address, $port)
             $listener.Start()
             $listener.Stop()
             return $true
