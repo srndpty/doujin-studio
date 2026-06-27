@@ -192,6 +192,7 @@ class JobManager:
             candidate_ids=json.loads(record.candidate_ids_json or "[]"),
             prompt_id=record.prompt_id,
             epoch=record.epoch,
+            randomize_seed=bool(record.randomize_seed),
             generation_input_hash=record.generation_input_hash,
             created_at=record.created_at.replace(tzinfo=timezone.utc)
             if record.created_at.tzinfo is None
@@ -259,6 +260,7 @@ class JobManager:
                     panel_id=job.panel_id,
                     candidate_count=job.candidate_count,
                     epoch=job.epoch,
+                    randomize_seed=int(job.randomize_seed),
                     generation_input_hash=job.generation_input_hash,
                     created_at=job.created_at,
                     updated_at=job.updated_at,
@@ -270,6 +272,7 @@ class JobManager:
             record.total = job.total
             record.node = job.node
             record.message = job.message
+            record.randomize_seed = int(job.randomize_seed)
             record.candidate_ids_json = json.dumps(job.candidate_ids)
             record.prompt_id = job.prompt_id
             record.generation_input_hash = job.generation_input_hash

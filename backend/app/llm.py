@@ -197,6 +197,8 @@ class OpenAICompatibleClient:
         except httpx.TimeoutException as exc:
             raise LLMError(f"LLM応答がタイムアウトしました: {exc}") from exc
         except httpx.HTTPStatusError as exc:
+            if not chunks and self.json_mode == "auto" and exc.response.status_code == 400:
+                raise RuntimeError("ストリーミング応答が400で拒否されました") from exc
             raise LLMError(
                 f"LLMがエラーを返しました: {exc.response.status_code} {exc.response.text[:200]}"
             ) from exc

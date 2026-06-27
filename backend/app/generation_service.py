@@ -451,6 +451,7 @@ class GenerationService:
                             epoch=job.epoch,
                             status=job.status,
                             message=job.message,
+                            randomize_seed=int(job.randomize_seed),
                             candidate_ids_json="[]",
                             created_at=job.created_at,
                             updated_at=job.updated_at,

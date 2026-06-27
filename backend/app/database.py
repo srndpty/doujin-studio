@@ -44,6 +44,7 @@ class GenerationJobRecord(Base):
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     node: Mapped[str | None] = mapped_column(Text, nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="生成待ちです")
+    randomize_seed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # ComfyUIのprompt_id。キャンセル時にリモート停止(interrupt/queue削除)へ使う。
     prompt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ジョブ開始時のproject世代。候補保存時に現在世代と異なれば破棄する。
@@ -205,6 +206,7 @@ def _migration_001_baseline_schema(connection: Connection) -> None:
             total INTEGER NOT NULL DEFAULT 0,
             node TEXT,
             message TEXT NOT NULL DEFAULT '生成待ちです',
+            randomize_seed INTEGER NOT NULL DEFAULT 0,
             prompt_id TEXT,
             epoch INTEGER NOT NULL DEFAULT 0,
             generation_input_hash TEXT,
@@ -297,6 +299,12 @@ def _migration_001_baseline_schema(connection: Connection) -> None:
         job_columns = _table_columns(connection, "generation_jobs")
         if "prompt_id" not in job_columns:
             connection.execute(text("ALTER TABLE generation_jobs ADD COLUMN prompt_id TEXT"))
+        if "randomize_seed" not in job_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE generation_jobs ADD COLUMN randomize_seed INTEGER NOT NULL DEFAULT 0"
+                )
+            )
         if "epoch" not in job_columns:
             connection.execute(
                 text("ALTER TABLE generation_jobs ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0")

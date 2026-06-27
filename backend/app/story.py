@@ -259,7 +259,10 @@ def invalidate_downstream(stages: dict, stage: str) -> None:
     index = STAGE_ORDER.index(stage)
     for downstream in STAGE_ORDER[index + 1 :]:
         if stages[downstream]["status"] != "empty":
-            stages[downstream]["status"] = "draft"
+            stages[downstream]["data"] = None
+            stages[downstream]["status"] = "empty"
+            stages[downstream]["error"] = None
+            stages[downstream]["warnings"] = []
 
 
 def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:

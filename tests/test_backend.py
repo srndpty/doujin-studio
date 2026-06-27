@@ -634,6 +634,7 @@ def test_shutdown_keeps_queued_job_panels_consistent(tmp_path: Path, monkeypatch
                 # 再開対象はqueuedのまま。所有権も維持し、Manga JSONをerrorにしない。
                 assert panel.generation.status == "queued"
                 assert panel.generation.active_job_id == job["id"]
+                assert db_job.randomize_seed == 1
             else:
                 # 生成中だったジョブはshutdownがerror確定。panelもerrorで揃える。
                 assert db_job.status == "error"
@@ -2123,7 +2124,7 @@ def test_schema_migration_updates_legacy_missing_columns_and_keeps_data(tmp_path
             row[1] for row in session.execute(text("PRAGMA table_info(knowledge_chunks)")).all()
         }
         assert {"revision", "generation_epoch"} <= project_columns
-        assert {"prompt_id", "epoch", "generation_input_hash"} <= job_columns
+        assert {"prompt_id", "epoch", "generation_input_hash", "randomize_seed"} <= job_columns
         assert "meta" in chunk_columns
         project = session.get(ProjectRecord, "legacy")
         assert project is not None
@@ -3748,12 +3749,15 @@ def test_job_manager_restores_running_job_from_database(tmp_path: Path) -> None:
     running_job = manager.create("project", "panel-a", 2)
     manager.update(running_job, status="running", progress=45, message="生成中", prompt_id="pid")
     queued_job = manager.create("project", "panel-b", 1)
+    queued_job.randomize_seed = True
+    manager.persist(queued_job)
 
     restored_manager = JobManager(session_factory)
     to_start, interrupted = restored_manager.restore_pending()
     # 未開始のqueuedジョブだけ再開対象になる。
     assert [job.id for job in to_start] == [queued_job.id]
     assert to_start[0].status == "queued"
+    assert to_start[0].randomize_seed is True
     # runningだったジョブは二重投入を避けるためerror(要再実行)へ。再開はしない。
     assert [job.id for job in interrupted] == [running_job.id]
     recovered_running = restored_manager.get(running_job.id)

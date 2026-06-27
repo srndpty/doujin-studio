@@ -187,7 +187,7 @@ def test_cannot_skip_stage_and_edit_invalidates_downstream(tmp_path: Path) -> No
             client.post(f"/api/story-sessions/{session_id}/stages/{stage}/generate")
             client.post(f"/api/story-sessions/{session_id}/stages/{stage}/approve")
 
-        # 上流briefを編集すると下流が未承認へ戻る。
+        # 上流briefを編集すると下流データは破棄され、古い出力をready扱いしない。
         current = client.get(f"/api/story-sessions/{session_id}").json()
         brief_data = current["stages"]["brief"]["data"]
         brief_data["tone"] = "しっとり"
@@ -195,8 +195,27 @@ def test_cannot_skip_stage_and_edit_invalidates_downstream(tmp_path: Path) -> No
             f"/api/story-sessions/{session_id}/stages/brief", json={"data": brief_data}
         ).json()
         assert edited["stages"]["brief"]["status"] == "draft"
-        assert edited["stages"]["plot"]["status"] == "draft"
-        assert edited["stages"]["script"]["status"] == "draft"
+        assert edited["stages"]["plot"]["status"] == "empty"
+        assert edited["stages"]["plot"]["data"] is None
+        assert edited["stages"]["script"]["status"] == "empty"
+        assert edited["stages"]["script"]["data"] is None
+
+
+def test_invalidated_downstream_stage_cannot_be_applied(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_project(client)
+        session_id = run_full_stub_flow(client, project_id, 4)
+
+        # plot再生成でpages/scriptは古いdataごと無効化される。
+        regenerated = client.post(f"/api/story-sessions/{session_id}/stages/plot/generate")
+        assert regenerated.status_code == 200
+        assert regenerated.json()["stages"]["pages"]["status"] == "empty"
+        assert regenerated.json()["stages"]["script"]["data"] is None
+
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+        applied = client.post(f"/api/story-sessions/{session_id}/apply?revision={revision}")
+        assert applied.status_code == 400
+        assert "台本段階" in applied.json()["detail"]
 
 
 def test_story_session_creation_without_project_change_does_not_consume_revision(
@@ -856,6 +875,67 @@ def test_openai_streaming_partial_failure_does_not_retry_blocking(monkeypatch) -
         assert "途中で切断" in str(exc)
     assert progress == ["途中"]
     assert MockAsyncClient.blocking_calls == 0
+
+
+def test_openai_streaming_400_auto_falls_back_to_blocking(monkeypatch) -> None:
+    import httpx
+
+    class StreamRejectedResponse:
+        status_code = 400
+        text = "response_format is not supported"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def aread(self) -> bytes:
+            return self.text.encode()
+
+        def raise_for_status(self) -> None:
+            request = httpx.Request("POST", "http://x/v1/chat/completions")
+            response = httpx.Response(400, text=self.text, request=request)
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    class BlockingResponse:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": VALID_BRIEF}}]}
+
+    class MockAsyncClient:
+        payloads: list[dict] = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def stream(self, *args, **kwargs) -> StreamRejectedResponse:
+            return StreamRejectedResponse()
+
+        async def post(self, url: str, json: dict) -> BlockingResponse:
+            self.payloads.append(json)
+            return BlockingResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    client = OpenAICompatibleClient("http://x/v1", "model", 5.0, "auto")
+    content = asyncio.run(
+        client.chat([{"role": "user", "content": "hi"}], on_progress=lambda _text: None)
+    )
+
+    assert "海斗" in content
+    assert len(MockAsyncClient.payloads) == 1
+    assert MockAsyncClient.payloads[0]["stream"] is False
 
 
 # --- 莉嘉のtrigger不具合（日本語名trigger）への対策 ---
