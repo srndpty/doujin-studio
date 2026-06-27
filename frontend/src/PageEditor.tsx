@@ -24,6 +24,20 @@ const SCALE = DISPLAY_W / PAGE_W;
 const SNAP = 0.01; // 1%グリッドへスナップ
 
 const LAYOUT_FAMILIES = ["establish", "dialogue", "reveal", "action", "punchline", "silent", "montage"];
+const PANEL_ROLES = [
+  "establish",
+  "dialogue",
+  "reaction",
+  "action",
+  "reveal",
+  "emotional_peak",
+  "silent",
+  "transition",
+  "punchline",
+  "aftermath",
+  "montage"
+];
+const BACKGROUND_DENSITIES = ["", "none", "white", "light", "full"];
 const BALLOON_KINDS = ["oval", "cloud", "burst", "caption", "none"];
 // kind→既定の吹き出し形状（バックエンドのKIND_DEFAULT_BALLOONと一致させる）。
 const KIND_DEFAULT_BALLOON: Record<string, string> = {
@@ -66,7 +80,16 @@ function shapePreset(points: [number, number][] | null | undefined): string {
 }
 
 type Point = [number, number];
-type PreflightIssue = { level: "error" | "warning"; code: string; message: string };
+type PreflightIssue = {
+  level: "error" | "warning";
+  code: string;
+  message: string;
+  page: number;
+  panel_id?: string | null;
+  category?: string;
+  suggestion?: string;
+  fixable?: boolean;
+};
 
 type Props = {
   projectId: string;
@@ -213,6 +236,8 @@ export function PageEditor({
     errors: PreflightIssue[];
     warnings: PreflightIssue[];
   } | null>(null);
+  const [reviewCategory, setReviewCategory] = useState<string>("all");
+  const [showRegions, setShowRegions] = useState(false);
 
   const runPreflight = async () => {
     try {
@@ -364,6 +389,12 @@ export function PageEditor({
   const sortedOverlays = [...(page.overlay_elements ?? [])].sort((a, b) => a.z_index - b.z_index);
   const backOverlays = sortedOverlays.filter((overlay) => overlay.layer === "back");
   const frontOverlays = sortedOverlays.filter((overlay) => overlay.layer === "front");
+  const reviewIssues = [...(preflight?.errors ?? []), ...(preflight?.warnings ?? [])];
+  const reviewCategories = Array.from(new Set(reviewIssues.map((issue) => issue.category ?? "general")));
+  const visibleReviewIssues =
+    reviewCategory === "all"
+      ? reviewIssues
+      : reviewIssues.filter((issue) => (issue.category ?? "general") === reviewCategory);
 
   return (
     <div className="page-editor">
@@ -413,6 +444,14 @@ export function PageEditor({
                   mutatePage((target) => {
                     const p = target.panels.find((item) => item.panel_id === panel.panel_id);
                     if (p && p.sfx[index]) p.sfx[index].box = box;
+                  })
+                }
+                showRegions={showRegions}
+                onMoveCharacterRegion={(characterId, box) =>
+                  mutatePage((target) => {
+                    const p = target.panels.find((item) => item.panel_id === panel.panel_id);
+                    const entry = (p?.character_layout ?? []).find((item) => item.id === characterId);
+                    if (entry) entry.region_box = box;
                   })
                 }
                 showTail={selection?.kind === "dialogue" && selection.panelId === panel.panel_id}
@@ -495,6 +534,30 @@ export function PageEditor({
                 })
               }
             />
+            <DirectingControls
+              page={page}
+              panel={selectedPanel}
+              showRegions={showRegions}
+              onShowRegions={setShowRegions}
+              onPageChange={(patch) =>
+                mutatePage((target) => {
+                  Object.assign(target, patch);
+                })
+              }
+              onPanelChange={(patch) =>
+                mutatePage((target) => {
+                  const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                  if (p) Object.assign(p, patch);
+                })
+              }
+              onCharacterRegion={(characterId, box) =>
+                mutatePage((target) => {
+                  const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                  const entry = (p?.character_layout ?? []).find((item) => item.id === characterId);
+                  if (entry) entry.region_box = box;
+                })
+              }
+            />
           </>
         )}
 
@@ -539,23 +602,39 @@ export function PageEditor({
         </fieldset>
 
         <fieldset>
-          <legend>品質検査（プリフライト）</legend>
+          <legend>漫画レビュー</legend>
           <button disabled={busy} onClick={runPreflight}>
             このページを検査
           </button>
+          {reviewIssues.length > 0 && (
+            <label>
+              レビュー分類
+              <select value={reviewCategory} onChange={(event) => setReviewCategory(event.target.value)}>
+                <option value="all">すべて</option>
+                {reviewCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {preflight && (
             <ul className="preflight-list">
-              {preflight.errors.length === 0 && preflight.warnings.length === 0 && (
-                <li className="ok">問題は見つかりませんでした</li>
-              )}
-              {preflight.errors.map((issue, index) => (
-                <li key={`e${index}`} className="error">
-                  ⛔ {issue.message}
-                </li>
-              ))}
-              {preflight.warnings.map((issue, index) => (
-                <li key={`w${index}`} className="warning">
-                  ⚠ {issue.message}
+              {reviewIssues.length === 0 && <li className="ok">問題は見つかりませんでした</li>}
+              {visibleReviewIssues.map((issue, index) => (
+                <li key={`${issue.level}${index}`} className={issue.level}>
+                  <button
+                    type="button"
+                    disabled={!issue.panel_id}
+                    onClick={() => {
+                      if (issue.panel_id) setSelection({ panelId: issue.panel_id, kind: "panel", index: 0 });
+                    }}
+                  >
+                    {issue.level === "error" ? "エラー" : "警告"} / {issue.category ?? "general"}:{" "}
+                    {issue.message}
+                  </button>
+                  {issue.suggestion && <small>{issue.suggestion}</small>}
                 </li>
               ))}
             </ul>
@@ -597,6 +676,8 @@ type PanelNodeProps = {
   onMoveDialogue: (index: number, box: Box) => void;
   onMoveTail: (index: number, tip: Point) => void;
   onMoveSfx: (index: number, box: Point) => void;
+  showRegions: boolean;
+  onMoveCharacterRegion: (characterId: string, box: Box) => void;
   showTail: boolean;
   selectedDialogue: number;
 };
@@ -734,6 +815,33 @@ function PanelNode(props: PanelNodeProps) {
           listening={false}
         />
       </Group>
+      {props.showRegions &&
+        (panel.character_layout ?? []).map((entry) => {
+          const box = entry.region_box ?? [0.18, 0.08, 0.64, 0.84];
+          const rx = px + box[0] * pw;
+          const ry = py + box[1] * ph;
+          const rw = box[2] * pw;
+          const rh = box[3] * ph;
+          return (
+            <Group
+              key={entry.id}
+              x={rx}
+              y={ry}
+              draggable
+              onDragEnd={(event) =>
+                props.onMoveCharacterRegion(entry.id, [
+                  clamp01(Math.min((event.target.x() - px) / pw, 1 - box[2])),
+                  clamp01(Math.min((event.target.y() - py) / ph, 1 - box[3])),
+                  box[2],
+                  box[3]
+                ])
+              }
+            >
+              <Rect width={rw} height={rh} stroke="#2f7d32" strokeWidth={4} dash={[12, 8]} />
+              <Text x={6} y={6} text={entry.id} fontSize={22} fill="#2f7d32" />
+            </Group>
+          );
+        })}
       {panel.dialogue.map((dialogue, index) => (
         <DialogueNode
           key={index}
@@ -1112,6 +1220,161 @@ function CropControls({
           onChange={(event) => onChange({ crop_offset_y: Number(event.target.value) })}
         />
       </label>
+    </fieldset>
+  );
+}
+
+function DirectingControls({
+  page,
+  panel,
+  showRegions,
+  onShowRegions,
+  onPageChange,
+  onPanelChange,
+  onCharacterRegion
+}: {
+  page: MangaPage;
+  panel: Panel;
+  showRegions: boolean;
+  onShowRegions: (show: boolean) => void;
+  onPageChange: (patch: Partial<MangaPage>) => void;
+  onPanelChange: (patch: Partial<Panel>) => void;
+  onCharacterRegion: (characterId: string, box: Box) => void;
+}) {
+  const textSafeArea = panel.text_safe_area ?? [0.55, 0.05, 0.35, 0.3];
+  const patchTextSafeArea = (index: number, value: number) => {
+    const next = [...textSafeArea] as Box;
+    next[index] = clamp01(value);
+    onPanelChange({ text_safe_area: normalizeBox(next) });
+  };
+  const patchRegion = (characterId: string, current: Box, index: number, value: number) => {
+    const next = [...current] as Box;
+    next[index] = clamp01(value);
+    onCharacterRegion(characterId, normalizeBox(next));
+  };
+
+  return (
+    <fieldset>
+      <legend>漫画演出</legend>
+      <label>
+        ページ目的
+        <input
+          value={page.page_goal ?? ""}
+          onChange={(event) => onPageChange({ page_goal: event.target.value })}
+        />
+      </label>
+      <label>
+        感情曲線
+        <input
+          value={(page.emotional_curve ?? []).join(" / ")}
+          onChange={(event) =>
+            onPageChange({
+              emotional_curve: event.target.value
+                .split("/")
+                .map((item) => item.trim())
+                .filter(Boolean)
+            })
+          }
+        />
+      </label>
+      <label>
+        役割
+        <select value={panel.role ?? ""} onChange={(event) => onPanelChange({ role: event.target.value })}>
+          <option value="">未設定</option>
+          {PANEL_ROLES.map((role) => (
+            <option key={role} value={role}>
+              {role}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        感情
+        <input
+          value={panel.emotion ?? ""}
+          onChange={(event) => onPanelChange({ emotion: event.target.value })}
+        />
+      </label>
+      <label>
+        背景密度
+        <select
+          value={panel.background_density ?? ""}
+          onChange={(event) => onPanelChange({ background_density: event.target.value })}
+        >
+          {BACKGROUND_DENSITIES.map((density) => (
+            <option key={density || "empty"} value={density}>
+              {density || "未設定"}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        構図メモ
+        <textarea
+          value={panel.composition_notes ?? ""}
+          onChange={(event) => onPanelChange({ composition_notes: event.target.value })}
+        />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={panel.text_safe_area != null}
+          onChange={(event) => onPanelChange({ text_safe_area: event.target.checked ? textSafeArea : null })}
+        />
+        写植予定領域を使う
+      </label>
+      {panel.text_safe_area && (
+        <div className="settings-grid">
+          {["x", "y", "幅", "高さ"].map((label, index) => (
+            <label key={label}>
+              {label}
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="1"
+                value={textSafeArea[index]}
+                onChange={(event) => patchTextSafeArea(index, Number(event.target.value))}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+      <label>
+        <input
+          type="checkbox"
+          checked={showRegions}
+          onChange={(event) => onShowRegions(event.target.checked)}
+        />
+        人物領域を表示
+      </label>
+      {(panel.character_layout ?? []).length > 0 && (
+        <div className="region-editor">
+          {(panel.character_layout ?? []).map((entry) => {
+            const box = entry.region_box ?? [0.18, 0.08, 0.64, 0.84];
+            return (
+              <div key={entry.id}>
+                <strong>{entry.id}</strong>
+                <div className="settings-grid">
+                  {["x", "y", "幅", "高さ"].map((label, index) => (
+                    <label key={`${entry.id}-${label}`}>
+                      {label}
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                        value={box[index]}
+                        onChange={(event) => patchRegion(entry.id, box, index, Number(event.target.value))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </fieldset>
   );
 }

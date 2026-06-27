@@ -342,6 +342,17 @@ label {
   padding: 10px;
 }
 
+.regional-binding-settings {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.regional-binding-settings label:first-child {
+  grid-column: 1 / -1;
+}
+
 .location-list textarea {
   min-height: 64px;
   resize: vertical;
@@ -1511,4 +1522,25 @@ button.primary {
 }
 .preflight-list .warning {
   color: #b8860b;
+}
+.preflight-list button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.preflight-list button:disabled {
+  cursor: default;
+}
+.preflight-list small {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.region-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }

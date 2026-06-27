@@ -64,9 +64,23 @@ function sampleManga(): MangaProject {
             panel_id: "p01_01",
             bbox: [0.05, 0.05, 0.9, 0.9],
             shot: "wide",
+            role: "establish",
+            emotion: "",
+            background_density: "",
+            composition_notes: "",
+            text_safe_area: null,
             camera: "",
             location_id: "",
-            characters: [],
+            characters: ["mika"],
+            character_layout: [
+              {
+                id: "mika",
+                position: "center",
+                expression: "",
+                action: "",
+                region_box: [0.2, 0.1, 0.5, 0.8]
+              }
+            ],
             prompt: "",
             image_asset: null,
             image_candidates: [],
@@ -165,5 +179,56 @@ describe("PageEditor", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
     await waitFor(() => expect(screen.getByText("問題は見つかりませんでした")).toBeVisible());
+  });
+
+  it("漫画レビューの警告から対象コマを選び演出情報を編集する", async () => {
+    const onChange = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          errors: [],
+          warnings: [
+            {
+              level: "warning",
+              code: "shot_repetition",
+              message: "同じ画角のコマが3つ続いています",
+              page: 1,
+              panel_id: "p01_01",
+              category: "rhythm",
+              suggestion: "画角を変えてください",
+              fixable: false
+            }
+          ]
+        })
+      )
+    );
+    render(
+      <PageEditor
+        projectId="project"
+        revision={0}
+        manga={sampleManga()}
+        pageNumber={1}
+        assetVersion={1}
+        busy={false}
+        onChange={onChange}
+        onSave={vi.fn()}
+        onSuggest={vi.fn()}
+        onOverlayUpload={vi.fn()}
+        setMessage={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
+    await waitFor(() => expect(screen.getByText("画角を変えてください")).toBeVisible());
+    fireEvent.change(screen.getByLabelText("レビュー分類"), { target: { value: "rhythm" } });
+    fireEvent.click(screen.getByRole("button", { name: /同じ画角/ }));
+
+    fireEvent.change(screen.getByLabelText("ページ目的"), { target: { value: "動揺を見せる" } });
+    fireEvent.change(screen.getByLabelText("役割"), { target: { value: "emotional_peak" } });
+    fireEvent.change(screen.getByLabelText("背景密度"), { target: { value: "light" } });
+    fireEvent.click(screen.getByLabelText("人物領域を表示"));
+
+    expect(onChange).toHaveBeenCalled();
   });
 });
