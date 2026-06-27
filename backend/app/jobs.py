@@ -43,6 +43,9 @@ class GenerationJob:
     prompt_id: str | None = None
     # ジョブ開始時のproject世代。構成全置換後の古い候補混入を防ぐ。
     epoch: int = 0
+    # trueなら基準seedを毎回ランダム化する（同じ画像の再現を避ける）。実行時のみの
+    # 指定で、コマのgeneration.seed（再現用の基準値）は書き換えない。
+    randomize_seed: bool = False
     generation_input_hash: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)

@@ -258,6 +258,31 @@ def test_generate_image_returns_502_when_backend_fails(tmp_path: Path) -> None:
         assert panel["generation"]["status"] == "error"
 
 
+def test_randomize_seed_varies_seed_each_generation(tmp_path: Path) -> None:
+    """randomize_seedで毎回違う基準seedになり、offなら基準seedを再現すること。"""
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+
+        def generate(randomize: bool) -> int:
+            response = client.post(
+                mutation_url(client, project_id, "panels/p01_01/generate-image"),
+                json={"candidate_count": 1, "randomize_seed": randomize},
+            )
+            assert response.status_code == 200, response.text
+            candidates = response.json()["project"]["manga_json"]["pages"][0]["panels"][0][
+                "image_candidates"
+            ]
+            return candidates[-1]["seed"]
+
+        # offならコマの基準seed(p01_01=101)を再現する。
+        assert generate(False) == 101
+        # onなら基準seedと異なり、生成のたびに変わる。
+        first = generate(True)
+        second = generate(True)
+        assert first != 101
+        assert first != second
+
+
 def test_invalid_manga_json_is_rejected(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         response = client.post("/api/projects", json={"title": "不正テスト", "work_name": ""})

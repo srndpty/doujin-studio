@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import shutil
 import uuid
 from asyncio import CancelledError
@@ -348,6 +349,7 @@ class GenerationService:
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
         candidate_counts: dict[str, int] | None = None,
+        randomize_seed: bool = False,
     ) -> EnqueuedJobs:
         """panelのqueued化・job追加・revision更新を同一CASトランザクションで確定する。
 
@@ -412,6 +414,7 @@ class GenerationService:
                         epoch=record.generation_epoch,
                         status="queued",
                         message=message,
+                        randomize_seed=randomize_seed,
                     )
                     panel.generation.status = "queued"
                     panel.generation.active_job_id = job.id
@@ -475,6 +478,7 @@ class GenerationService:
         expected_epoch: int | None = None,
         expected_revision: int | None = None,
         candidate_counts: dict[str, int] | None = None,
+        randomize_seed: bool = False,
     ) -> EnqueuedJobs:
         """ジョブ登録後、メモリ登録とTask起動までをGenerationServiceへ集約する。"""
         runtime = self.require_runtime()
@@ -487,6 +491,7 @@ class GenerationService:
             expected_epoch=expected_epoch,
             expected_revision=expected_revision,
             candidate_counts=candidate_counts,
+            randomize_seed=randomize_seed,
         )
         for job in jobs:
             runtime.jobs.register_in_memory(job)
@@ -665,6 +670,10 @@ class GenerationService:
             if panel is None:
                 raise RuntimeError("コマが見つかりません")
             prepared_panel = prepare_panel_for_generation(manga, panel)
+            if job.randomize_seed:
+                # 毎回ランダムな基準seedにし、同じコマでも生成のたびに違う絵が出るようにする。
+                # 候補は base+index で派生するため、末尾4つ分の余裕を残す。
+                prepared_panel.generation.seed = random.randint(0, 2**31 - 5)
             input_hash = generation_input_hash(manga, panel, runtime.settings.export_dir)
             manager.update(
                 job,

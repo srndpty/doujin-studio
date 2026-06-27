@@ -748,6 +748,8 @@ class PanelPageRenderResult(BaseModel):
 
 class GenerationJobCreate(BaseModel):
     candidate_count: int = Field(default=1, ge=1, le=4)
+    # trueなら基準seedを毎回ランダム化し、同じコマでも違う絵を出す（既定ON）。
+    randomize_seed: bool = True
 
 
 class BatchGenerationJobCreate(BaseModel):
@@ -755,6 +757,8 @@ class BatchGenerationJobCreate(BaseModel):
     candidate_count: int = Field(default=1, ge=1, le=4)
     # trueなら見せ場・複数人物コマの候補数を自動で増やす（candidate_countは下限になる）。
     auto_candidates: bool = False
+    # trueなら基準seedを毎回ランダム化し、同じコマでも違う絵を出す（既定ON）。
+    randomize_seed: bool = True
 
 
 class GenerationJobResponse(BaseModel):

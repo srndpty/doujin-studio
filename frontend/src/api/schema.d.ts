@@ -881,6 +881,11 @@ export interface components {
              * @default false
              */
             auto_candidates: boolean;
+            /**
+             * Randomize Seed
+             * @default true
+             */
+            randomize_seed: boolean;
         };
         /** BatchGenerationJobResult */
         BatchGenerationJobResult: {
@@ -1200,6 +1205,11 @@ export interface components {
              * @default 1
              */
             candidate_count: number;
+            /**
+             * Randomize Seed
+             * @default true
+             */
+            randomize_seed: boolean;
         };
         /** GenerationJobResponse */
         GenerationJobResponse: {

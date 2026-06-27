@@ -2864,6 +2864,11 @@
             "type": "boolean",
             "title": "Auto Candidates",
             "default": false
+          },
+          "randomize_seed": {
+            "type": "boolean",
+            "title": "Randomize Seed",
+            "default": true
           }
         },
         "type": "object",
@@ -3570,6 +3575,11 @@
             "minimum": 1.0,
             "title": "Candidate Count",
             "default": 1
+          },
+          "randomize_seed": {
+            "type": "boolean",
+            "title": "Randomize Seed",
+            "default": true
           }
         },
         "type": "object",
