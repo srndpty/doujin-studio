@@ -153,6 +153,19 @@ cd frontend; npm run dev      # → http://127.0.0.1:5173
 - 原因: LLM 未起動。backend は既定で `http://127.0.0.1:1234/v1`（OpenAI 互換）を見る。
 - 対処: LM Studio 等でモデルをロードしサーバ起動。`/api/llm/status` の `connected` を確認。
 
+### `LLM応答がタイムアウトしました`（特に台本ステージ）
+- 原因: ローカル大型モデルは出力が長く、既定 `LLM_TIMEOUT_SECONDS=180`（3分）では台本生成が
+  間に合わない（Ollama ログに `500 | 3m0s | POST /v1/chat/completions` が出る）。台本は最大3回
+  リトライするため、各回が3分で打ち切られる。
+- 対処: タイムアウトを延ばす。`dev-up.ps1` は `-LlmTimeout 600`（既定600秒）で渡す。
+  既に起動中の backend だけ直すなら、backend タブで Ctrl+C 後:
+  ```powershell
+  $env:LLM_TIMEOUT_SECONDS = "600"
+  & .\scripts\start-backend-comfy.ps1 -ComfyBaseUrl "http://127.0.0.1:8001"
+  ```
+- それでも遅い場合: より小型・高速なモデル（例 `qwen2.5:14b`）にする、知識の参照件数や
+  `LLM_MAX_CONTEXT_CHARS` を絞ってプロンプト長を減らす。
+
 ### 生成時に `missing_nodes` / 生成エラー
 - 原因: `workflows/default.workflow_api.json` のノード構成（positive=11 / negative=12 / seed=19 / size=28 / save=46）と、ComfyUI 側にロードされた workflow・モデルが不一致。キャラ同一性（LoRA・参照画像）を使うには対応ノードを持つ workflow が別途必要。
 - 対処: `/api/comfyui/status` の `missing_nodes` を確認し、workflow とノード ID（`start-backend-comfy.ps1` の `COMFYUI_*_NODE_ID`）を合わせる。

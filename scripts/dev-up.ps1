@@ -22,6 +22,8 @@ param(
     [switch]$Ollama,
     [string]$OllamaModel = "qwen3.6:27b",
     [int]$OllamaPort = 11434,
+    # ローカル大型モデルは台本生成が長い。LLM応答のタイムアウト(秒)を既定より長く取る。
+    [int]$LlmTimeout = 600,
     [switch]$NoFrontend,
     # Windows Terminal のタブにまとめず、従来どおり各プロセスを別ウィンドウで開く。
     [switch]$SeparateWindows
@@ -115,7 +117,7 @@ if ($Ollama) {
             $tabs.Add(@{ Title = "ollama"; Command = "`$env:OLLAMA_KEEP_ALIVE='0'; ollama serve" })
             Write-Host "Ollama: serve をタブで起動します（未取得なら 'ollama pull $OllamaModel'）。"
         }
-        $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
+        $backendEnvPrefix = "`$env:LLM_PROVIDER='openai_compatible'; `$env:LLM_BASE_URL='$ollamaUrl/v1'; `$env:LLM_MODEL='$OllamaModel'; `$env:LLM_TIMEOUT_SECONDS='$LlmTimeout'; `$env:COMFYUI_FREE_BEFORE_LLM='1'; "
     } else {
         Write-Warning "ollama が見つかりません。https://ollama.com からインストールしてください。"
     }
