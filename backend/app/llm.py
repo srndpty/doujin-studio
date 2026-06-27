@@ -106,15 +106,15 @@ class OpenAICompatibleClient:
         on_progress: ProgressCallback | None = None,
     ) -> str:
         # 進捗コールバックがある場合はストリーミングで逐次受信し、UIへ「止まっていない」
-        # ことを見せる。ストリーミングが何らかの理由で失敗したら、生成結果の正しさを
-        # 優先して非ストリーミング経路へフォールバックする（進捗表示は諦める）。
+        # ことを見せる。非対応が応答前に分かった場合だけ通常応答へフォールバックする。
+        # 途中まで受信した後の失敗やHTTPステータスエラーは二重生成を避けるため失敗扱い。
         if on_progress is not None:
             try:
                 return await self._chat_streaming(messages, want_json, on_progress)
             except LLMError:
                 raise
             except Exception as exc:  # noqa: BLE001 - フォールバックして生成自体は継続する
-                logger.debug("ストリーミング生成に失敗しフォールバックします: %s", exc)
+                logger.debug("ストリーミング非対応のため通常応答へフォールバック: %s", exc)
         return await self._chat_blocking(messages, want_json)
 
     async def _chat_blocking(self, messages: list[dict], want_json: bool = True) -> str:
@@ -160,7 +160,7 @@ class OpenAICompatibleClient:
         """stream=Trueで逐次受信し、累積テキストをon_progressへ通知しつつ全文を返す。
 
         OpenAI互換のSSE（`data: {...}` 行、終端は `data: [DONE]`）を解釈する。Ollama・
-        LM Studioいずれもこの形式を返す。失敗時は呼び出し側が非ストリーミングへ退避する。
+        LM Studioいずれもこの形式を返す。
         """
         payload: dict = {
             "model": self.model,
@@ -196,6 +196,14 @@ class OpenAICompatibleClient:
                             on_progress("".join(chunks))
         except httpx.TimeoutException as exc:
             raise LLMError(f"LLM応答がタイムアウトしました: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMError(
+                f"LLMがエラーを返しました: {exc.response.status_code} {exc.response.text[:200]}"
+            ) from exc
+        except Exception as exc:
+            if chunks:
+                raise LLMError(f"LLMストリーミングが途中で切断されました: {exc}") from exc
+            raise
         text = "".join(chunks)
         if not text.strip():
             raise LLMError("LLMからの応答が空でした（ストリーミング）")

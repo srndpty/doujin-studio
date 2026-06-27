@@ -342,7 +342,7 @@ def get_character_chunks(session: Session, work_name: str) -> list[KnowledgeChun
     """作品のキャラクター種別チャンクをrequired優先で返す。"""
     if not work_name:
         return []
-    chunks = (
+    return (
         session.query(KnowledgeChunkRecord)
         .filter(
             KnowledgeChunkRecord.work_name == work_name, KnowledgeChunkRecord.kind == "character"
@@ -354,16 +354,6 @@ def get_character_chunks(session: Session, work_name: str) -> list[KnowledgeChun
         )
         .all()
     )
-    # required(usage昇順で先頭)を優先しつつ、同名キャラの重複は最初の1件に絞る。
-    seen: set[str] = set()
-    unique: list[KnowledgeChunkRecord] = []
-    for chunk in chunks:
-        title = (chunk.title or "").strip()
-        if not title or title in seen:
-            continue
-        seen.add(title)
-        unique.append(chunk)
-    return unique
 
 
 def parse_chunk_image(chunk: KnowledgeChunkRecord) -> dict:

@@ -290,6 +290,7 @@ logger = logging.getLogger(__name__)
 # ローカル単一プロセス前提の軽量な可観測性。生成中はLLM出力の受信状況を保持し、
 # フロントエンドが別リクエストでポーリングして「止まっていないこと」を表示する。
 _GENERATION_PROGRESS: dict[str, dict] = {}
+_ACTIVE_GENERATION_SESSIONS: set[str] = set()
 
 
 def get_generation_progress(session_id: str) -> dict | None:
@@ -298,6 +299,9 @@ def get_generation_progress(session_id: str) -> dict | None:
 
 
 def _start_generation_progress(session_id: str, stage: str) -> None:
+    if session_id in _ACTIVE_GENERATION_SESSIONS:
+        raise StoryError("このストーリーセッションは生成中です", status_code=409)
+    _ACTIVE_GENERATION_SESSIONS.add(session_id)
     timestamp = now_utc().isoformat()
     _GENERATION_PROGRESS[session_id] = {
         "stage": stage,
@@ -311,6 +315,7 @@ def _start_generation_progress(session_id: str, stage: str) -> None:
 
 def _clear_generation_progress(session_id: str) -> None:
     _GENERATION_PROGRESS.pop(session_id, None)
+    _ACTIVE_GENERATION_SESSIONS.discard(session_id)
 
 
 async def free_comfyui_vram(settings: Settings) -> None:
@@ -907,6 +912,32 @@ def _is_weak_trigger(character: Character) -> bool:
     return not _has_ascii_letters(trigger)
 
 
+def _merge_duplicate_character(existing: Character, candidate: Character) -> Character:
+    """同名キャラの重複を、ID維持と情報保持を優先して統合する。"""
+    merged = existing.model_copy(deep=True)
+    if _is_weak_trigger(merged) and not _is_weak_trigger(candidate):
+        merged.trigger_prompt = candidate.trigger_prompt
+
+    aliases = list(merged.aliases)
+    for alias in candidate.aliases:
+        if alias not in aliases:
+            aliases.append(alias)
+    merged.aliases = aliases
+
+    if not merged.appearance_prompt:
+        merged.appearance_prompt = candidate.appearance_prompt
+    if not merged.outfit_prompt:
+        merged.outfit_prompt = candidate.outfit_prompt
+    if not merged.negative_prompt:
+        merged.negative_prompt = candidate.negative_prompt
+    if candidate.lora_name and not merged.lora_name:
+        merged.lora_node_id = candidate.lora_node_id
+        merged.lora_name = candidate.lora_name
+    if not merged.speech_style:
+        merged.speech_style = candidate.speech_style
+    return merged
+
+
 def build_characters_from_knowledge(session: Session, work_name: str) -> list[Character]:
     """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。
 
@@ -941,10 +972,8 @@ def build_characters_from_knowledge(session: Session, work_name: str) -> list[Ch
             order.append(display_name)
             by_display[display_name] = candidate
             continue
-        # 重複時は弱trigger側を、強trigger側で置き換える（順序は最初の登場位置を保つ）。
-        if _is_weak_trigger(existing) and not _is_weak_trigger(candidate):
-            candidate.id = existing.id  # 既存IDを維持して下流の参照を壊さない
-            by_display[display_name] = candidate
+        # 重複時は既存IDと詳細情報を維持し、強いtriggerなど不足分だけ補完する。
+        by_display[display_name] = _merge_duplicate_character(existing, candidate)
 
     characters: list[Character] = []
     for display_name in order:

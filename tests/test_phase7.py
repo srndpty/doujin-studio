@@ -811,6 +811,53 @@ def test_openai_client_parses_and_handles_errors(monkeypatch) -> None:
         assert "タイムアウト" in str(exc)
 
 
+def test_openai_streaming_partial_failure_does_not_retry_blocking(monkeypatch) -> None:
+    import httpx
+
+    class BrokenStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"途中"}}]}'
+            raise httpx.ReadError("切断")
+
+    class MockAsyncClient:
+        blocking_calls = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def stream(self, *args, **kwargs) -> BrokenStreamResponse:
+            return BrokenStreamResponse()
+
+        async def post(self, *args, **kwargs):
+            self.blocking_calls += 1
+            raise AssertionError("途中失敗時にblockingへ再送してはいけない")
+
+    monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+    client = OpenAICompatibleClient("http://x/v1", "model", 5.0, "auto")
+    progress: list[str] = []
+    try:
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}], on_progress=progress.append))
+        assert False, "途中切断はLLMErrorになること"
+    except LLMError as exc:
+        assert "途中で切断" in str(exc)
+    assert progress == ["途中"]
+    assert MockAsyncClient.blocking_calls == 0
+
+
 # --- 莉嘉のtrigger不具合（日本語名trigger）への対策 ---
 
 
@@ -826,6 +873,115 @@ def test_is_weak_trigger_treats_japanese_only_as_weak() -> None:
     # 日本語名そのまま・表示名一致はいずれも弱trigger（素モデルが解釈できない）。
     assert story._is_weak_trigger(japanese) is True
     assert story._is_weak_trigger(booru) is False
+
+
+def test_duplicate_character_merge_keeps_existing_profile(tmp_path: Path) -> None:
+    with make_session(tmp_path) as session:
+        weak = {
+            "kind": "character",
+            "title": "城ヶ崎莉嘉",
+            "content": "詳細プロフィール",
+            "image": {
+                "id": "rika",
+                "aliases": ["莉嘉"],
+                "trigger_prompt": "城ヶ崎莉嘉",
+                "appearance_prompt": "blonde side ponytail",
+                "outfit_prompt": "pink idol costume",
+                "negative_prompt": "bad hands",
+                "lora_node_id": "lora-1",
+                "lora_name": "rika.safetensors",
+                "speech_style": "元気",
+            },
+        }
+        strong = {
+            "kind": "character",
+            "title": "城ヶ崎莉嘉",
+            "content": "強いtriggerだけを持つ行",
+            "image": {
+                "id": "rika_tag",
+                "aliases": ["Rika"],
+                "trigger_prompt": "jougasaki rika, idolmaster cinderella girls",
+            },
+        }
+        knowledge.import_source(
+            session,
+            work_name="シンデレラ",
+            title="characters",
+            doc_type="json",
+            usage="required",
+            content=json.dumps([weak, strong], ensure_ascii=False),
+        )
+        session.commit()
+
+        characters = story.build_characters_from_knowledge(session, "シンデレラ")
+
+    assert len(characters) == 1
+    rika = characters[0]
+    assert rika.id == "rika"
+    assert "jougasaki rika" in rika.trigger_prompt
+    assert rika.aliases == ["莉嘉", "Rika"]
+    assert rika.appearance_prompt == "blonde side ponytail"
+    assert rika.outfit_prompt == "pink idol costume"
+    assert rika.negative_prompt == "bad hands"
+    assert rika.lora_name == "rika.safetensors"
+    assert rika.speech_style == "元気"
+
+
+def test_same_session_generation_rejects_concurrent_request(tmp_path: Path) -> None:
+    class SlowLLM:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def chat(self, messages: list[dict], want_json: bool = True, on_progress=None) -> str:
+            if on_progress is not None:
+                on_progress("途中")
+            self.started.set()
+            await self.release.wait()
+            return VALID_BRIEF
+
+    async def run_case() -> None:
+        factory = create_session_factory(f"sqlite:///{tmp_path / 'concurrent-story.db'}")
+        settings = Settings()
+        with factory() as setup:
+            setup.add(
+                ProjectRecord(
+                    id="p1",
+                    title="t",
+                    work_name="作品",
+                    manga_json="{}",
+                    created_at=db_now_utc(),
+                    updated_at=db_now_utc(),
+                )
+            )
+            setup.commit()
+            record = story.create_session(
+                setup, project_id="p1", work_name="作品", target_pages=4, instruction="日常"
+            )
+            session_id = record.id
+
+        llm = SlowLLM()
+        with factory() as first_session, factory() as second_session:
+            first_record = first_session.get(database.StoryGenerationSessionRecord, session_id)
+            second_record = second_session.get(database.StoryGenerationSessionRecord, session_id)
+            task = asyncio.create_task(
+                story.generate_stage(first_session, llm, settings, first_record, "brief")
+            )
+            await llm.started.wait()
+            assert story.get_generation_progress(session_id)["chars"] == 2
+            try:
+                await story.generate_stage(second_session, llm, settings, second_record, "brief")
+                assert False, "同一sessionの並行生成は拒否すること"
+            except story.StoryError as exc:
+                assert exc.status_code == 409
+            assert story.get_generation_progress(session_id)["chars"] == 2
+            llm.release.set()
+            await task
+        assert story.get_generation_progress(session_id) is None
+
+    asyncio.run(run_case())
 
 
 def test_generation_progress_idle_when_not_generating(tmp_path: Path) -> None:

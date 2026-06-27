@@ -269,10 +269,19 @@ def test_randomize_seed_varies_seed_each_generation(tmp_path: Path) -> None:
                 json={"candidate_count": 1, "randomize_seed": randomize},
             )
             assert response.status_code == 200, response.text
-            candidates = response.json()["project"]["manga_json"]["pages"][0]["panels"][0][
-                "image_candidates"
-            ]
-            return candidates[-1]["seed"]
+            manga_payload = response.json()["project"]["manga_json"]
+            panel_payload = manga_payload["pages"][0]["panels"][0]
+            candidate = panel_payload["image_candidates"][-1]
+            if randomize:
+                manga = MangaProject.model_validate(manga_payload)
+                panel = manga.pages[0].panels[0]
+                panel.generation.seed = candidate["seed"]
+                expected_hash = generation_module.generation_input_hash(
+                    manga, panel, tmp_path / "exports"
+                )
+                latest_job = client.get(f"/api/projects/{project_id}/generation-jobs").json()[0]
+                assert latest_job["generation_input_hash"] == expected_hash
+            return candidate["seed"]
 
         # offならコマの基準seed(p01_01=101)を再現する。
         assert generate(False) == 101
