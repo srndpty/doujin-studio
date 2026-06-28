@@ -1468,18 +1468,19 @@ def script_to_manga(
                     ),
                 )
             )
-        pages.append(
-            Page(
-                page=script_page.page,
-                theme=f"{script_page.page}ページ",
-                layout_template=f"count_{panel_count}",
-                layout_family=family,
-                page_goal=script_page.page_goal,
-                emotional_curve=script_page.emotional_curve,
-                reading_order=[panel.panel_id for panel in panels],
-                panels=panels,
-            )
+        built_page = Page(
+            page=script_page.page,
+            theme=f"{script_page.page}ページ",
+            layout_template=f"count_{panel_count}",
+            layout_family=family,
+            page_goal=script_page.page_goal,
+            emotional_curve=script_page.emotional_curve,
+            reading_order=[panel.panel_id for panel in panels],
+            panels=panels,
         )
+        # 長方形タイルを下敷きに、見せ場へ背面大ゴマ・裁ち落とし・縦ぶち抜き・重ね小コマを自動付与。
+        layout_engine.auto_assign_frames(built_page, base.page_layout, rtl=rtl)
+        pages.append(built_page)
 
     return MangaProject(
         title=base.title,
