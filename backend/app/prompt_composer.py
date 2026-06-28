@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .prompt_normalizer import normalize_prompt
 from .schemas import LoRABinding, MangaProject, Panel, ReferenceImageBinding
 
 # キャラの同一性（LoRA・外見prompt）を抑制する主題モード。
@@ -91,7 +92,10 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
     if manga.color_policy == "full_color":
         positive_parts.append(FULL_COLOR_POSITIVE)
         negative_parts.append(MONOCHROME_NEGATIVE)
-    return merge_prompt_parts(positive_parts), merge_prompt_parts(negative_parts)
+    # 白紙コマを誘発する単独タグ（white/blank/empty space等）を除去し、曖昧な背景指定を
+    # booruタグへ寄せる。merge後に正規化することで、混入したタグを最終promptから除く。
+    positive = normalize_prompt(merge_prompt_parts(positive_parts)).prompt
+    return positive, merge_prompt_parts(negative_parts)
 
 
 def compose_character_regional_prompts(

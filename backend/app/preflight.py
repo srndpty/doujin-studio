@@ -13,6 +13,7 @@ from PIL import Image
 from . import layout_engine
 from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
+from .prompt_normalizer import blank_risk_tags
 from .renderer import (
     PAGE_SIZE,
     TEXT_FLOOR_SIZE,
@@ -71,6 +72,7 @@ def preflight_page(
     issues.extend(_check_sfx_collisions(manga, page))
     issues.extend(_check_sfx_text_language(page))
     issues.extend(_check_monologue_balloon(page))
+    issues.extend(_check_prompt_blank_risk(page))
     issues.extend(_check_panel_shapes(page))
     issues.extend(_check_tail_speaker(page))
     issues.extend(_check_character_setup(manga, page))
@@ -754,6 +756,37 @@ def _check_monologue_balloon(page: Page) -> list[PreflightIssue]:
                         fixable=False,
                     )
                 )
+    return issues
+
+
+def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
+    """白紙コマを誘発するprompt（white/blank/empty space等の単独指定）を検出する。
+
+    生成promptは生成時に正規化されるが、保存済みのpanel.prompt/composition_notesに
+    残る誘発タグを自動修正できるよう、ここでfixableな警告として知らせる（領域: 品質ゲート）。
+    """
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        hits: list[str] = []
+        for text in (panel.prompt, panel.composition_notes):
+            hits.extend(blank_risk_tags(text))
+        if hits:
+            unique = list(dict.fromkeys(hits))
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="prompt_blank_risk",
+                    message=f"白紙化を招くprompt語があります（{', '.join(unique)}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="image_quality",
+                    suggestion=(
+                        "white/blank/empty space等の単独指定を除去し、背景指定はsimple_background"
+                        "等のbooruタグへ寄せてください"
+                    ),
+                    fixable=True,
+                )
+            )
     return issues
 
 
