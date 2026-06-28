@@ -1273,14 +1273,20 @@ def default_region_box(position: str, index: int, total: int) -> tuple[float, fl
         return POSITION_REGION_BOXES["center"]
     margin = 0.04
     gap = 0.04
-    width = max(0.1, (1.0 - margin * 2 - gap * (total - 1)) / total)
-    left = margin + index * (width + gap)
+    row_count = 2 if total > 4 else 1
+    column_count = math.ceil(total / row_count)
+    column = index % column_count
+    row = index // column_count
+    width = (1.0 - margin * 2 - gap * (column_count - 1)) / column_count
+    left = margin + column * (width + gap)
     if position.startswith("upper"):
-        top, height = 0.04, 0.46
+        band_top, band_height = 0.04, 0.46
     elif position.startswith("lower"):
-        top, height = 0.5, 0.46
+        band_top, band_height = 0.5, 0.46
     else:
-        top, height = 0.08, 0.84
+        band_top, band_height = 0.08, 0.84
+    height = (band_height - gap * (row_count - 1)) / row_count
+    top = band_top + row * (height + gap)
     return (round(left, 4), round(top, 4), round(width, 4), round(height, 4))
 
 

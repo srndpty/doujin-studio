@@ -1007,6 +1007,40 @@ def test_regional_binding_rejects_empty_prompt(tmp_path: Path) -> None:
         apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
 
 
+def test_regional_binding_rejects_partial_character_regions(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                regional_prompt="mika_trigger",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            ),
+            PanelCharacter(id="rika", regional_prompt="rika_trigger"),
+        ],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="全キャラにregion_box"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+
+
 def test_panel_xyxy_box_format_round_trips_without_double_conversion() -> None:
     # *_format="xyxy"で入力した値は検証時にxywhへ正規化し、formatもxywhへ固定する。
     # これにより model_dump → 再validate で二重変換されない（保存/再読込の破壊を防ぐ）。

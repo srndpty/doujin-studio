@@ -643,6 +643,19 @@ def test_default_region_splits_same_position_characters() -> None:
     assert boxes[0][0] < boxes[1][0]
 
 
+def test_default_region_handles_many_same_position_characters() -> None:
+    for total in (8, 9):
+        boxes = [story.default_region_box("center", index, total) for index in range(total)]
+        assert len(set(boxes)) == total
+        for x, y, width, height in boxes:
+            assert x >= 0
+            assert y >= 0
+            assert width > 0
+            assert height > 0
+            assert x + width <= 1
+            assert y + height <= 1
+
+
 def test_preflight_warns_overlapping_character_regions() -> None:
     panel = _quality_panel(
         characters=["mika", "rika"],

@@ -487,6 +487,16 @@ def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
     if binding.mode != "attention_couple":
         raise ValueError(f"未対応のregional binding modeです: {binding.mode}")
     regions = compose_character_regional_prompts_from_prepared_panel(panel)
+    region_character_ids = {str(region["character_id"]) for region in regions}
+    missing_regions = [
+        character_id
+        for character_id in panel.characters
+        if character_id not in region_character_ids
+    ]
+    if missing_regions:
+        raise ValueError(
+            "regional workflow有効時は全キャラにregion_boxが必要です: " + ", ".join(missing_regions)
+        )
     if not regions:
         return
     if len(binding.character_prompt_node_ids) < len(regions):
