@@ -986,6 +986,48 @@ def test_production_status_surfaces_quality_errors(tmp_path) -> None:
     assert any("採用画像が未選択" in blocker for blocker in page_status.blockers)
 
 
+def test_production_status_quality_error_prevents_complete(tmp_path) -> None:
+    # 採用済み・レンダリング済みでも、品質エラーが残るページは制作完了にしない。
+    export_dir = tmp_path / "exports"
+    project_id = "proj"
+    panel_asset = export_dir / project_id / "panels" / "candidate.png"
+    panel_asset.parent.mkdir(parents=True)
+    PILImage.new("RGB", (128, 128), (255, 255, 255)).save(panel_asset)
+
+    panel = _quality_panel(
+        image_asset=f"{project_id}/panels/candidate.png",
+        selected_candidate_id="c1",
+        image_candidates=[
+            {
+                "id": "c1",
+                "asset": f"{project_id}/panels/candidate.png",
+                "backend": "stub",
+                "status": "done",
+                "seed": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+    )
+    manga = _quality_manga(panel)
+    page = manga.pages[0]
+    from backend.app.rendering import page_render_hash
+
+    page.render_status = "done"
+    page.render_hash = page_render_hash(manga, page)
+    page_asset = export_dir / project_id / "pages" / f"page_001.{page.render_hash}.png"
+    page_asset.parent.mkdir(parents=True)
+    PILImage.new("RGB", (1200, 1700), (255, 255, 255)).save(page_asset)
+    page.render_asset = f"{project_id}/pages/{page_asset.name}"
+
+    status = build_production_status(project_id, manga, export_dir)
+    assert status.adopted_panels == status.total_panels
+    assert status.rendered_pages == status.total_pages
+    assert any(issue.code == "empty_panel_image" for issue in status.quality_errors)
+    assert status.pages[0].status == "ready"
+    assert status.status == "ready"
+    assert status.blockers == []
+
+
 def test_production_status_surfaces_region_warning(tmp_path) -> None:
     # 複数人物コマで region_box 不足（character_region_missing=warning）が出る。
     export_dir = tmp_path / "exports"

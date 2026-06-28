@@ -182,7 +182,9 @@ def build_production_status(
         quality_errors = [issue for issue in issues if issue.level == "error"]
         quality_warnings = [issue for issue in issues if issue.level == "warning"]
         status: ProductionStatusValue
-        if adopted == total and rendered:
+        # 品質エラーが残るページは、採用済み・レンダリング済みでも制作完了扱いにしない。
+        # blockersは未採用/未レンダリングのまま保ち、品質ゲートはquality_errorsで示す。
+        if adopted == total and rendered and not quality_errors:
             status = "complete"
         elif adopted == total:
             status = "ready"
