@@ -257,7 +257,8 @@ export function App() {
   const [assetVersion, setAssetVersion] = useState(0);
   const [candidateCount, setCandidateCount] = useState(1);
   // 一括生成で見せ場・複数人物コマの候補数を自動的に増やす（candidateCountは下限）。
-  const [autoCandidates, setAutoCandidates] = useState(false);
+  // 悪い候補を採用しにくくするため既定ON。
+  const [autoCandidates, setAutoCandidates] = useState(true);
   // 生成のたびに基準seedをランダム化し、同じコマでも違う絵を出す（既定ON）。
   const [randomizeSeed, setRandomizeSeed] = useState(true);
   const [activeJobIds, setActiveJobIds] = useState<string[]>([]);
@@ -317,10 +318,34 @@ export function App() {
     if (!selected || !currentPanel) return { positive: "", negative: "" };
     return composePromptPreview(selected.manga_json, currentPanel);
   }, [selected, currentPanel]);
-  const visiblePanels = useMemo(
-    () => currentPage?.panels.filter((panel) => !showIncompleteOnly || !panel.selected_candidate_id) ?? [],
-    [currentPage, showIncompleteOnly]
+  // 表示中ページの品質ゲート状態。preflight由来の要修正コマをコマ単位で引けるようにする。
+  const currentPageStatus = useMemo(
+    () => productionStatus?.pages.find((item) => item.page === selectedPage) ?? null,
+    [productionStatus, selectedPage]
   );
+  const qualityPanelIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const issue of currentPageStatus?.quality_errors ?? []) {
+      if (issue.panel_id) ids.add(issue.panel_id);
+    }
+    for (const issue of currentPageStatus?.quality_warnings ?? []) {
+      if (issue.panel_id) ids.add(issue.panel_id);
+    }
+    return ids;
+  }, [currentPageStatus]);
+  // 「未完成のみ」は未採用コマに加え、品質エラー・警告コマも含める（要修正コマへ素早く戻る）。
+  const visiblePanels = useMemo(
+    () =>
+      currentPage?.panels.filter(
+        (panel) => !showIncompleteOnly || !panel.selected_candidate_id || qualityPanelIds.has(panel.panel_id)
+      ) ?? [],
+    [currentPage, showIncompleteOnly, qualityPanelIds]
+  );
+  // 品質警告から対象ページ・対象コマへ直接移動する。
+  const goToPanel = useCallback((page: number, panelId: string | null | undefined) => {
+    setSelectedPage(page);
+    if (panelId) setSelectedPanelId(panelId);
+  }, []);
 
   useEffect(() => {
     void refreshProjects();
@@ -1785,6 +1810,37 @@ export function App() {
                     </ul>
                   </details>
                 )}
+                {((productionStatus.quality_errors ?? []).length > 0 ||
+                  (productionStatus.quality_warnings ?? []).length > 0) && (
+                  <details className="quality-issues" open>
+                    <summary>
+                      要修正コマ {(productionStatus.quality_errors ?? []).length}件
+                      {(productionStatus.quality_warnings ?? []).length > 0
+                        ? ` / 注意 ${(productionStatus.quality_warnings ?? []).length}件`
+                        : ""}
+                    </summary>
+                    <ul>
+                      {[
+                        ...(productionStatus.quality_errors ?? []),
+                        ...(productionStatus.quality_warnings ?? [])
+                      ].map((issue, index) => (
+                        <li key={`${issue.code}-${issue.page}-${issue.panel_id ?? "page"}-${index}`}>
+                          <button
+                            type="button"
+                            className={`quality-issue ${issue.level}`}
+                            onClick={() => goToPanel(issue.page, issue.panel_id)}
+                          >
+                            <span className="quality-issue-where">
+                              {issue.page}p{issue.panel_id ? ` / ${issue.panel_id}` : ""}
+                            </span>
+                            <span className="quality-issue-message">{issue.message}</span>
+                            {issue.suggestion ? <small>{issue.suggestion}</small> : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 {jobHistory.length > 0 && (
                   <details className="job-history">
                     <summary>生成履歴</summary>
@@ -2359,7 +2415,12 @@ export function App() {
                       <button
                         type="button"
                         key={panel.panel_id}
-                        className={currentPanel?.panel_id === panel.panel_id ? "active-panel" : ""}
+                        className={[
+                          currentPanel?.panel_id === panel.panel_id ? "active-panel" : "",
+                          qualityPanelIds.has(panel.panel_id) ? "needs-fix" : ""
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
                         onClick={() => setSelectedPanelId(panel.panel_id)}
                       >
                         <strong>{panel.panel_id}</strong>
@@ -2367,6 +2428,9 @@ export function App() {
                         <small>
                           {panel.generation.backend} / {panel.generation.status}
                         </small>
+                        {qualityPanelIds.has(panel.panel_id) ? (
+                          <em className="quality-flag">要修正</em>
+                        ) : null}
                       </button>
                     ))}
                   </div>
