@@ -564,7 +564,12 @@ export function PageEditor({
                 onChange={(event) =>
                   mutatePage((target) => {
                     const panel = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
-                    if (panel) panel.shape_points = shapePointsForPreset(event.target.value);
+                    if (panel) {
+                      panel.shape_points = shapePointsForPreset(event.target.value);
+                      // 自動枠(frame_points)は描画でshape_pointsより優先されるため、手動で形状を
+                      // 変えたら解除する。残すとユーザーの形状変更が画面にも保存後にも反映されない。
+                      delete panel.frame_points;
+                    }
                   })
                 }
               >

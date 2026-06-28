@@ -1184,9 +1184,13 @@ export function App() {
   async function autofixCurrentProject() {
     if (!selected) return;
     await runTask(async () => {
-      const projectId = selected.id;
+      // 自動修正は現在のローカル編集を確定してから適用する。先に保存しないと未保存の
+      // レイアウト・台詞・プロンプト編集が古いサーバsnapshotで上書きされ失われる。
+      const saved = await saveJsonDraft("自動修正前にManga JSONを保存しました");
+      if (!saved) return;
+      const projectId = saved.id;
       const response = await api.post<ProjectMutationResponse<PreflightFixResult>>(
-        withRevision(`/api/projects/${projectId}/preflight/fix`, selected.revision)
+        withRevision(`/api/projects/${projectId}/preflight/fix`, saved.revision)
       );
       const adopted = await adoptMutationResponse(response);
       if (!adopted.applied || !adopted.project) return;
