@@ -939,12 +939,14 @@ def test_workflow_preset_patches_model_and_sampler(tmp_path: Path) -> None:
 def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
     workflow = sample_workflow()
     workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["52"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
     workflow["51"] = {"class_type": "Region", "inputs": {}}
+    workflow["53"] = {"class_type": "Region", "inputs": {}}
     panel = Panel(
         panel_id="p01_01",
         bbox=(0, 0, 1, 1),
         shot="test",
-        characters=["mika"],
+        characters=["mika", "rika"],
         character_layout=[
             PanelCharacter(
                 id="mika",
@@ -953,7 +955,12 @@ def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
                 action="waving",
                 regional_prompt="jougasaki mika, orange hoodie, smiling, waving",
                 region_box=(0.1, 0.2, 0.3, 0.4),
-            )
+            ),
+            PanelCharacter(
+                id="rika",
+                regional_prompt="jougasaki rika, blue jacket",
+                region_box=(0.5, 0.2, 0.3, 0.4),
+            ),
         ],
         generation=GenerationInfo(
             prompt="jougasaki mika, orange hoodie",
@@ -963,8 +970,8 @@ def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
                 "regional_binding": {
                     "enabled": True,
                     "mode": "attention_couple",
-                    "character_prompt_node_ids": ["50"],
-                    "region_node_ids": ["51"],
+                    "character_prompt_node_ids": ["50", "52"],
+                    "region_node_ids": ["51", "53"],
                 },
             },
         ),
@@ -983,13 +990,18 @@ def test_regional_binding_rejects_empty_prompt(tmp_path: Path) -> None:
     # 避けるためfail-fastする（prepared panel未経由・既存データでも安全側へ倒す）。
     workflow = sample_workflow()
     workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["52"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
     workflow["51"] = {"class_type": "Region", "inputs": {}}
+    workflow["53"] = {"class_type": "Region", "inputs": {}}
     panel = Panel(
         panel_id="p01_01",
         bbox=(0, 0, 1, 1),
         shot="t",
-        characters=["mika"],
-        character_layout=[PanelCharacter(id="mika", region_box=(0.1, 0.2, 0.3, 0.4))],
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", region_box=(0.1, 0.2, 0.3, 0.4)),
+            PanelCharacter(id="rika", regional_prompt="rika", region_box=(0.5, 0.2, 0.3, 0.4)),
+        ],
         generation=GenerationInfo(
             workflow_preset={
                 "id": "regional",
@@ -997,8 +1009,8 @@ def test_regional_binding_rejects_empty_prompt(tmp_path: Path) -> None:
                 "regional_binding": {
                     "enabled": True,
                     "mode": "attention_couple",
-                    "character_prompt_node_ids": ["50"],
-                    "region_node_ids": ["51"],
+                    "character_prompt_node_ids": ["50", "52"],
+                    "region_node_ids": ["51", "53"],
                 },
             },
         ),
@@ -1039,6 +1051,34 @@ def test_regional_binding_rejects_partial_character_regions(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError, match="全キャラにregion_box"):
         apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+
+
+def test_regional_binding_skips_single_character_without_region(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika")],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert patched["50"]["inputs"]["text"] == ""
+    assert patched["51"]["inputs"] == {}
 
 
 def test_panel_xyxy_box_format_round_trips_without_double_conversion() -> None:
@@ -1133,18 +1173,25 @@ def test_regional_binding_uses_separated_character_prompts(tmp_path: Path) -> No
 def test_regional_binding_rejects_non_clip_prompt_node(tmp_path: Path) -> None:
     workflow = sample_workflow()
     workflow["50"] = {"class_type": "KSampler", "inputs": {"text": ""}}
+    workflow["51"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
     workflow["60"] = {"class_type": "Region", "inputs": {}}
+    workflow["61"] = {"class_type": "Region", "inputs": {}}
     panel = Panel(
         panel_id="p01_01",
         bbox=(0, 0, 1, 1),
         shot="test",
-        characters=["mika"],
+        characters=["mika", "rika"],
         character_layout=[
             PanelCharacter(
                 id="mika",
                 regional_prompt="mika_trigger",
                 region_box=(0.1, 0.2, 0.3, 0.4),
-            )
+            ),
+            PanelCharacter(
+                id="rika",
+                regional_prompt="rika_trigger",
+                region_box=(0.5, 0.2, 0.3, 0.4),
+            ),
         ],
         generation=GenerationInfo(
             workflow_preset={
@@ -1153,8 +1200,8 @@ def test_regional_binding_rejects_non_clip_prompt_node(tmp_path: Path) -> None:
                 "regional_binding": {
                     "enabled": True,
                     "mode": "attention_couple",
-                    "character_prompt_node_ids": ["50"],
-                    "region_node_ids": ["60"],
+                    "character_prompt_node_ids": ["50", "51"],
+                    "region_node_ids": ["60", "61"],
                 },
             },
         ),

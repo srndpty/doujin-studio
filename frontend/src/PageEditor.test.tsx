@@ -232,6 +232,71 @@ describe("PageEditor", () => {
     expect(onChange).toHaveBeenCalled();
   });
 
+  it("選択中のレビュー分類が消えたら全件表示に戻す", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: false,
+            errors: [
+              {
+                level: "error",
+                code: "sfx_english_text",
+                message: "英字擬音があります",
+                page: 1,
+                panel_id: "p01_01",
+                category: "sfx",
+                fixable: false
+              }
+            ],
+            warnings: []
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: false,
+            errors: [],
+            warnings: [
+              {
+                level: "warning",
+                code: "shot_repetition",
+                message: "画角が単調です",
+                page: 1,
+                panel_id: "p01_01",
+                category: "rhythm",
+                fixable: false
+              }
+            ]
+          })
+        )
+      );
+    render(
+      <PageEditor
+        projectId="project"
+        revision={0}
+        manga={sampleManga()}
+        pageNumber={1}
+        assetVersion={1}
+        busy={false}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        onSuggest={vi.fn()}
+        onOverlayUpload={vi.fn()}
+        setMessage={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /英字擬音/ })).toBeVisible());
+    fireEvent.change(screen.getByLabelText("レビュー分類"), { target: { value: "sfx" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /画角が単調/ })).toBeVisible());
+    expect(screen.getByLabelText("レビュー分類")).toHaveValue("all");
+  });
+
   it("漫画レビューのSFXエラーから擬音テキストを修正する", async () => {
     const onChange = vi.fn();
     const manga = sampleManga();

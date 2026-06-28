@@ -393,10 +393,12 @@ export function PageEditor({
   const frontOverlays = sortedOverlays.filter((overlay) => overlay.layer === "front");
   const reviewIssues = [...(preflight?.errors ?? []), ...(preflight?.warnings ?? [])];
   const reviewCategories = Array.from(new Set(reviewIssues.map((issue) => issue.category ?? "general")));
+  const activeReviewCategory =
+    reviewCategory === "all" || reviewCategories.includes(reviewCategory) ? reviewCategory : "all";
   const visibleReviewIssues =
-    reviewCategory === "all"
+    activeReviewCategory === "all"
       ? reviewIssues
-      : reviewIssues.filter((issue) => (issue.category ?? "general") === reviewCategory);
+      : reviewIssues.filter((issue) => (issue.category ?? "general") === activeReviewCategory);
 
   return (
     <div className="page-editor">
@@ -624,7 +626,10 @@ export function PageEditor({
           {reviewIssues.length > 0 && (
             <label>
               レビュー分類
-              <select value={reviewCategory} onChange={(event) => setReviewCategory(event.target.value)}>
+              <select
+                value={activeReviewCategory}
+                onChange={(event) => setReviewCategory(event.target.value)}
+              >
                 <option value="all">すべて</option>
                 {reviewCategories.map((category) => (
                   <option key={category} value={category}>
