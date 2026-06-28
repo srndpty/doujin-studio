@@ -113,6 +113,8 @@ type Props = {
     file: File
   ) => Promise<boolean> | boolean;
   setMessage: (text: string) => void;
+  // 親側の制作パネル一覧で選択中のコマ。panel-list→キャンバスの選択同期に使う。
+  selectedPanelId?: string | null;
   // キャンバスでコマを選択したとき、親（制作パネル一覧・生成候補）へ選択を同期する。
   onSelectPanel?: (panelId: string) => void;
   // アセットのキャッシュバスターを進める（同一URLの画像差し替えを反映する）。
@@ -222,6 +224,7 @@ export function PageEditor({
   onSuggest,
   onOverlayUpload,
   setMessage,
+  selectedPanelId,
   onSelectPanel
 }: Props) {
   // 親のonChangeが反映される前でも編集を即時表示できるよう、作業コピーを持つ。
@@ -266,6 +269,15 @@ export function PageEditor({
   useEffect(() => {
     setSelection(null);
   }, [pageNumber, projectId]);
+
+  useEffect(() => {
+    if (!selectedPanelId) return;
+    if (!page?.panels.some((panel) => panel.panel_id === selectedPanelId)) return;
+    setSelection((current) => {
+      if (current?.kind !== "overlay" && current?.panelId === selectedPanelId) return current;
+      return { panelId: selectedPanelId, kind: "panel", index: 0 };
+    });
+  }, [page?.panels, selectedPanelId]);
 
   // パネル選択時にTransformerを取り付ける。
   useEffect(() => {

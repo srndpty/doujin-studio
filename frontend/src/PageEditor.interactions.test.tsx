@@ -198,6 +198,11 @@ describe("PageEditor interactions", () => {
     expect(props.onChange).toHaveBeenCalled();
   });
 
+  it("親側の選択コマをキャンバス選択へ同期する", async () => {
+    setup({ selectedPanelId: "p01_02" });
+    await waitFor(() => expect(screen.getByText(/コマ: p01_02/)).toBeVisible());
+  });
+
   it("吹き出しを選択して種別・縦書き・しっぽを編集する", () => {
     const props = setup();
     // 縦書きは文字間に改行が入るため正規化して一致させる。

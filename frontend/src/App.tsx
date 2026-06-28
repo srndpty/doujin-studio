@@ -1577,6 +1577,7 @@ export function App() {
         assetVersion={assetVersion}
         busy={busy}
         setMessage={setMessage}
+        selectedPanelId={selectedPanelId}
         onSelectPanel={(panelId) => setSelectedPanelId(panelId)}
         onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
         onOverlayUpload={async (manga, pageNumber, overlayId, kind, file) => {
