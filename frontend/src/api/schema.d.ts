@@ -525,6 +525,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/generation-jobs/blank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Blank Panels
+         * @description preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+         *
+         *     seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+         */
+        post: operations["regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/generation-jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -3856,6 +3878,48 @@ export interface operations {
                 "application/json": components["schemas"]["BatchGenerationJobCreate"] | null;
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_BatchGenerationJobResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

@@ -72,6 +72,7 @@ def preflight_page(
     issues.extend(_check_sfx_collisions(manga, page))
     issues.extend(_check_sfx_text_language(page))
     issues.extend(_check_monologue_balloon(page))
+    issues.extend(_check_silent_panels(page))
     issues.extend(_check_prompt_blank_risk(page))
     issues.extend(_check_panel_shapes(page))
     issues.extend(_check_tail_speaker(page))
@@ -790,6 +791,47 @@ def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
                 )
             )
     return issues
+
+
+# 無言が演出意図として自然な役割（沈黙・間・余韻）。これらは無言でも警告しない。
+INTENTIONAL_SILENT_ROLES = {"silent", "transition", "aftermath", "montage"}
+
+
+def _check_silent_panels(page: Page) -> list[PreflightIssue]:
+    """無言の人物コマが多すぎるページを検出する（「無言のコマが多すぎる」対策）。
+
+    人物が描かれるコマ（小物・手・背景コマを除く）で台詞が無く、かつ無言が自然な役割
+    （silent/transition/aftermath/montage）でもないものを「無言コマ」とみなす。これが
+    人物コマの過半かつ3枚以上なら、台詞・反応の追加を促す。台詞の中身は編集判断のため
+    自動修正はしない（fixable=False）。
+    """
+    character_panels = [
+        panel for panel in page.panels if not is_non_character_mode(panel) and panel.characters
+    ]
+    if len(character_panels) < 3:
+        return []
+    silent = [
+        panel
+        for panel in character_panels
+        if not panel.dialogue
+        and _normalize_rhythm_token(panel.role) not in INTENTIONAL_SILENT_ROLES
+    ]
+    if len(silent) >= 3 and len(silent) >= 0.6 * len(character_panels):
+        return [
+            PreflightIssue(
+                level="warning",
+                code="too_many_silent_panels",
+                message=f"無言の人物コマが多すぎます（{len(silent)}/{len(character_panels)}枚）",
+                page=page.page,
+                category="rhythm",
+                suggestion=(
+                    "台詞や短い反応・モノローグを加えるか、無言の意図があるコマは"
+                    "role=silent/transition/aftermathにしてください"
+                ),
+                fixable=False,
+            )
+        ]
+    return []
 
 
 def _check_panel_shapes(page: Page) -> list[PreflightIssue]:

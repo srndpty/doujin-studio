@@ -5175,3 +5175,33 @@ def test_export_folder_open_folder_targets_export_dir(tmp_path: Path, monkeypatc
         response = client.post(f"/api/projects/{project_id}/export/open-folder")
         assert response.status_code == 200
         assert opened and opened[0].name == "export"
+
+
+def test_regenerate_blank_panels_404_when_none(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # 画像未生成のプロジェクトには白紙コマ(empty_panel_image)が存在しない。
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+        assert response.status_code == 404
+
+
+def test_regenerate_blank_panels_targets_only_blank(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        blank_path = export_dir / "blank.png"
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(blank_path)
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        blank_panel_id = manga["pages"][0]["panels"][0]["panel_id"]
+        manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/blank.png"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+        assert response.status_code == 200
+        jobs = response.json()["result"]["jobs"]
+        # 白紙のコマだけが再生成対象になる。
+        assert {job["panel_id"] for job in jobs} == {blank_panel_id}

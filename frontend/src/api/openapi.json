@@ -1923,6 +1923,73 @@
         }
       }
     },
+    "/api/projects/{project_id}/generation-jobs/blank": {
+      "post": {
+        "summary": "Regenerate Blank Panels",
+        "description": "preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。\n\nseedを毎回ランダム化して別の絵を狙う。対象が無ければ404。",
+        "operationId": "regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_BatchGenerationJobResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Regenerate Blank Panels Api Projects  Project Id  Generation Jobs Blank Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/generation-jobs/{job_id}": {
       "get": {
         "summary": "Get Generation Job",

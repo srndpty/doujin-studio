@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
 
+from .. import preflight as preflight_module
 from ..generation_service import (
     apply_candidate_selection,
     ensure_sync_generation_succeeded,
@@ -200,6 +201,46 @@ async def create_batch_generation_jobs(
         expected_revision=revision,
         candidate_counts=candidate_counts,
         randomize_seed=options.randomize_seed,
+    )
+    return to_project_mutation_response(
+        request,
+        project_id,
+        BatchGenerationJobResult(jobs=[to_job_response(job) for job in jobs]),
+        snapshot=jobs.project,
+    )
+
+
+@router.post(
+    "/api/projects/{project_id}/generation-jobs/blank",
+    response_model=ProjectMutationResponse[BatchGenerationJobResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+async def regenerate_blank_panels(
+    project_id: str,
+    request: Request,
+    revision: int,
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
+    """preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+
+    seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+    """
+    settings = request.app.state.settings
+    manga = request.app.state.mutation.require_revision(project_id, revision).manga
+    issues = preflight_module.preflight_project(manga, settings.export_dir)
+    blank_ids = [
+        issue.panel_id for issue in issues if issue.code == "empty_panel_image" and issue.panel_id
+    ]
+    target_ids = list(dict.fromkeys(blank_ids))
+    if not target_ids:
+        raise HTTPException(status_code=404, detail="白紙コマが見つかりません")
+    jobs = request.app.state.generation.start(
+        project_id,
+        target_ids,
+        1,
+        "白紙コマの再生成キューへ登録しました",
+        skip_active=True,
+        expected_revision=revision,
+        randomize_seed=True,
     )
     return to_project_mutation_response(
         request,

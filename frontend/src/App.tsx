@@ -1202,6 +1202,40 @@ export function App() {
     });
   }
 
+  async function regenerateBlankPanels() {
+    if (!selected) return;
+    await runTask(async () => {
+      const projectId = selected.id;
+      const response = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
+        withRevision(`/api/projects/${projectId}/generation-jobs/blank`, selected.revision)
+      );
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      const jobs = adopted.result.jobs;
+      if (jobs.length === 0) {
+        setMessage("白紙コマはありません");
+        return;
+      }
+      setActiveJobIds(jobs.map((job) => job.id));
+      try {
+        await waitForBatchJobs(jobs, "白紙コマを再生成中");
+      } finally {
+        setActiveJobIds([]);
+        await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
+      }
+      if (selectedProjectIdRef.current !== projectId) return;
+      const latest = await reloadSelectedProject(projectId);
+      if (!latest || latest.id !== projectId) return;
+      // 再生成したコマを含むページを描き直してプレビューを更新する。
+      await renderAllPages(projectId, latest);
+      setAssetVersion((value) => value + 1);
+      await refreshProductionStatus(projectId);
+      setMessage(`白紙コマ${jobs.length}件を再生成しました`);
+      showToast(`白紙コマ${jobs.length}件を再生成しました`);
+    });
+  }
+
   async function openExportFolder() {
     if (!selected) return;
     await runTask(async () => {
@@ -1870,6 +1904,21 @@ export function App() {
                       >
                         自動修正
                       </button>
+                      {(productionStatus.quality_errors ?? []).some(
+                        (issue) => issue.code === "empty_panel_image"
+                      ) && (
+                        <button
+                          type="button"
+                          className="quality-autofix"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            void regenerateBlankPanels();
+                          }}
+                          disabled={busy}
+                        >
+                          白紙コマを再生成
+                        </button>
+                      )}
                     </summary>
                     <ul>
                       {[

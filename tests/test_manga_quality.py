@@ -1088,3 +1088,56 @@ def test_script_panel_xyxy_box_format_round_trips() -> None:
     reloaded = ScriptPanel.model_validate(panel.model_dump())
     assert reloaded.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
     assert reloaded.character_directives[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+
+
+# --- 無言コマ検査 ---
+
+
+def _silent_project(panels: list[Panel]) -> tuple[MangaProject, Page]:
+    page = Page(page=1, theme="t", layout_template="o", panels=panels)
+    manga = MangaProject(
+        title="t",
+        characters=[Character(id="a", display_name="A", trigger_prompt="a")],
+        pages=[page],
+    )
+    return manga, page
+
+
+def _char_panel(panel_id: str, *, dialogue=None, role: str = "dialogue") -> Panel:
+    return Panel(
+        panel_id=panel_id,
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        shot="medium",
+        role=role,
+        characters=["a"],
+        dialogue=dialogue or [],
+    )
+
+
+def test_too_many_silent_panels_warns() -> None:
+    manga, page = _silent_project(
+        [_char_panel(f"p{i}") for i in range(1, 5)]  # 人物コマ4枚すべて無言
+    )
+    issues = preflight.preflight_page(manga, page, 0)
+    silent = [issue for issue in issues if issue.code == "too_many_silent_panels"]
+    assert len(silent) == 1
+    assert silent[0].level == "warning"
+
+
+def test_silent_panels_not_warned_when_dialogue_present() -> None:
+    panels = [
+        _char_panel("p1", dialogue=[Dialogue(speaker="a", text="やあ")]),
+        _char_panel("p2", dialogue=[Dialogue(speaker="a", text="うん")]),
+        _char_panel("p3", dialogue=[Dialogue(speaker="a", text="そう")]),
+        _char_panel("p4"),
+    ]
+    manga, page = _silent_project(panels)
+    issues = preflight.preflight_page(manga, page, 0)
+    assert not any(issue.code == "too_many_silent_panels" for issue in issues)
+
+
+def test_intentional_silent_roles_not_warned() -> None:
+    panels = [_char_panel(f"p{i}", role="silent") for i in range(1, 5)]
+    manga, page = _silent_project(panels)
+    issues = preflight.preflight_page(manga, page, 0)
+    assert not any(issue.code == "too_many_silent_panels" for issue in issues)
