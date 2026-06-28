@@ -963,6 +963,147 @@
         }
       }
     },
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix": {
+      "post": {
+        "summary": "Autofix Page Endpoint",
+        "operationId": "autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PreflightFixResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Autofix Page Endpoint Api Projects  Project Id  Pages  Page Number  Preflight Fix Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/preflight/fix": {
+      "post": {
+        "summary": "Autofix Project Endpoint",
+        "operationId": "autofix_project_endpoint_api_projects__project_id__preflight_fix_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PreflightFixResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Autofix Project Endpoint Api Projects  Project Id  Preflight Fix Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/pages/{page_number}/render": {
       "post": {
         "summary": "Render Page Endpoint",
@@ -5161,6 +5302,31 @@
         ],
         "title": "PanelPageRenderResult"
       },
+      "PreflightFixResult": {
+        "properties": {
+          "fixed_count": {
+            "type": "integer",
+            "title": "Fixed Count"
+          },
+          "fixed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fixed"
+          },
+          "preflight": {
+            "$ref": "#/components/schemas/PreflightResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fixed_count",
+          "preflight"
+        ],
+        "title": "PreflightFixResult",
+        "description": "preflight自動修正の結果。適用件数と説明、修正後の再検査結果を返す。"
+      },
       "PreflightIssue": {
         "properties": {
           "level": {
@@ -5605,6 +5771,27 @@
           "result"
         ],
         "title": "ProjectMutationResponse[PanelPageRenderResult]"
+      },
+      "ProjectMutationResponse_PreflightFixResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/PreflightFixResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[PreflightFixResult]"
       },
       "ProjectMutationResponse_ProjectRenderResult_": {
         "properties": {

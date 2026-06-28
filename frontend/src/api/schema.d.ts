@@ -303,6 +303,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Autofix Page Endpoint */
+        post: operations["autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/preflight/fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Autofix Project Endpoint */
+        post: operations["autofix_project_endpoint_api_projects__project_id__preflight_fix_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/pages/{page_number}/render": {
         parameters: {
             query?: never;
@@ -1926,6 +1960,17 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /**
+         * PreflightFixResult
+         * @description preflight自動修正の結果。適用件数と説明、修正後の再検査結果を返す。
+         */
+        PreflightFixResult: {
+            /** Fixed Count */
+            fixed_count: number;
+            /** Fixed */
+            fixed?: string[];
+            preflight: components["schemas"]["PreflightResponse"];
+        };
         /** PreflightIssue */
         PreflightIssue: {
             /**
@@ -2121,6 +2166,13 @@ export interface components {
             /** Latest Revision */
             latest_revision: number;
             result: components["schemas"]["PanelPageRenderResult"];
+        };
+        /** ProjectMutationResponse[PreflightFixResult] */
+        ProjectMutationResponse_PreflightFixResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
+            result: components["schemas"]["PreflightFixResult"];
         };
         /** ProjectMutationResponse[ProjectRenderResult] */
         ProjectMutationResponse_ProjectRenderResult_: {
@@ -3185,6 +3237,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreflightResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                page_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_PreflightFixResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autofix_project_endpoint_api_projects__project_id__preflight_fix_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_PreflightFixResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
                 };
             };
             /** @description Validation Error */

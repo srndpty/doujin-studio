@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
+from ..autofix import autofix_manga
 from ..deletion import remove_deletion_fence, write_deletion_fence
 from ..generator import generate_four_page_name
 from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
@@ -35,6 +36,7 @@ from ..schemas import (
     PageRenderResult,
     PanelControlReference,
     PanelPageRenderResult,
+    PreflightFixResult,
     PreflightResponse,
     ProjectCreate,
     ProjectDeletionResponse,
@@ -594,6 +596,67 @@ def preflight_project_endpoint(project_id: str, request: Request) -> PreflightRe
     manga = parse_manga_json(load_project_record(request, project_id).manga_json)
     issues = preflight_module.preflight_project(manga, request.app.state.settings.export_dir)
     return _to_preflight_response(project_id, None, issues)
+
+
+@router.post(
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix",
+    response_model=ProjectMutationResponse[PreflightFixResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def autofix_page_endpoint(
+    project_id: str, page_number: int, request: Request, revision: int
+) -> ProjectMutationResponse[PreflightFixResult]:
+    return _run_autofix(request, project_id, revision, page_number)
+
+
+@router.post(
+    "/api/projects/{project_id}/preflight/fix",
+    response_model=ProjectMutationResponse[PreflightFixResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def autofix_project_endpoint(
+    project_id: str, request: Request, revision: int
+) -> ProjectMutationResponse[PreflightFixResult]:
+    return _run_autofix(request, project_id, revision, None)
+
+
+def _run_autofix(
+    request: Request, project_id: str, revision: int, page_number: int | None
+) -> ProjectMutationResponse[PreflightFixResult]:
+    export_dir = request.app.state.settings.export_dir
+
+    def mutate(manga: MangaProject) -> list[str]:
+        if page_number is not None and not any(p.page == page_number for p in manga.pages):
+            raise HTTPException(status_code=404, detail="ページが見つかりません")
+        messages = autofix_manga(manga, page_number)
+        if messages:
+            # 修正で描画入力が変わったページは未レンダリングへ戻す。
+            affected = {int(text.split("ページ")[0]) for text in messages if "ページ" in text}
+            for page in manga.pages:
+                if page.page in affected:
+                    mark_page_dirty(page)
+        return messages
+
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
+    )
+    fixed = mutation_result.result
+    manga = mutation_result.project.manga
+    if page_number is not None:
+        page = next(item for item in manga.pages if item.page == page_number)
+        issues = preflight_module.preflight_page(manga, page, export_dir=export_dir)
+    else:
+        issues = preflight_module.preflight_project(manga, export_dir)
+    return to_project_mutation_response(
+        request,
+        project_id,
+        PreflightFixResult(
+            fixed_count=len(fixed),
+            fixed=fixed,
+            preflight=_to_preflight_response(project_id, page_number, issues),
+        ),
+        snapshot=mutation_result.project,
+    )
 
 
 @router.post(

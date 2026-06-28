@@ -802,6 +802,14 @@ class PreflightResponse(BaseModel):
     warnings: list[PreflightIssue] = Field(default_factory=list)
 
 
+class PreflightFixResult(BaseModel):
+    """preflight自動修正の結果。適用件数と説明、修正後の再検査結果を返す。"""
+
+    fixed_count: int
+    fixed: list[str] = Field(default_factory=list)
+    preflight: PreflightResponse
+
+
 class PageRenderResult(BaseModel):
     page: int
     page_asset: str

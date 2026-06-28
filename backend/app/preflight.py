@@ -22,7 +22,7 @@ from .renderer import (
     sfx_bbox_px,
 )
 from .schemas import Character, Dialogue, MangaProject, Page, Panel, PreflightIssue
-from .story import panel_shape_allowed
+from .story import normalize_sfx_text, panel_shape_allowed
 
 # 画像メトリクス検査のしきい値。
 WHITE_PIXEL_MIN = 240  # 各チャンネルがこの値以上なら「ほぼ白」とみなす
@@ -723,6 +723,8 @@ def _check_sfx_text_language(page: Page) -> list[PreflightIssue]:
     for panel in page.panels:
         for sfx in panel.sfx:
             if _is_ascii_letter_dominant(sfx.text):
+                # 辞書で日本語化できる語だけ自動修正可能にする。未知語は手動修正を促す。
+                convertible = normalize_sfx_text(sfx.text) != sfx.text
                 issues.append(
                     PreflightIssue(
                         level="error",
@@ -732,7 +734,7 @@ def _check_sfx_text_language(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="sfx",
                         suggestion="擬音は日本語表記にしてください（例: bang→バン）",
-                        fixable=False,
+                        fixable=convertible,
                     )
                 )
     return issues
@@ -753,7 +755,7 @@ def _check_monologue_balloon(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="balloon",
                         suggestion="独白は矩形のキャプション(caption)を基本にしてください",
-                        fixable=False,
+                        fixable=True,
                     )
                 )
     return issues
@@ -857,7 +859,7 @@ def _check_tail_speaker(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="balloon",
                         suggestion="しっぽ先端を話者の人物領域へ向けてください",
-                        fixable=False,
+                        fixable=True,
                     )
                 )
     return issues

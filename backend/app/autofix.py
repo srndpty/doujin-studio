@@ -1,0 +1,111 @@
+"""preflightのfixableな品質問題を自動修正する。
+
+mutate関数の中でMangaProjectを書き換える。決定的に直せる問題だけを対象にし、適用した
+修正の説明文（日本語）を返す。対象は領域: 品質ゲートで``fixable=True``として検出する：
+
+- prompt_blank_risk: panel.prompt/composition_notesから白紙誘発語を除去しbooru寄せ
+- monologue_cloud_balloon: 独白の丸泡(cloud)を矩形キャプション(caption)へ
+- sfx_english_text: 辞書にある英字擬音を日本語写植へ
+- tail_not_pointing_to_speaker: しっぽ先端を話者領域中心へ寄せる
+"""
+
+from __future__ import annotations
+
+import math
+
+from .preflight import TAIL_SPEAKER_MAX_DISTANCE, _speaker_center
+from .prompt_normalizer import normalize_prompt
+from .schemas import MangaProject, Page
+from .story import normalize_sfx_text
+
+
+def _clamp_unit(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _fix_prompt_blank_risk(page: Page) -> list[str]:
+    messages: list[str] = []
+    for panel in page.panels:
+        applied: list[str] = []
+        prompt_result = normalize_prompt(panel.prompt)
+        if prompt_result.changed:
+            panel.prompt = prompt_result.prompt
+            applied.extend(prompt_result.removed)
+            applied.extend(before for before, _after in prompt_result.replaced)
+        notes_result = normalize_prompt(panel.composition_notes)
+        if notes_result.changed:
+            panel.composition_notes = notes_result.prompt
+            applied.extend(notes_result.removed)
+            applied.extend(before for before, _after in notes_result.replaced)
+        if applied:
+            unique = list(dict.fromkeys(applied))
+            messages.append(
+                f"{page.page}ページ {panel.panel_id}: 白紙誘発語を整理（{', '.join(unique)}）"
+            )
+    return messages
+
+
+def _fix_monologue_balloon(page: Page) -> list[str]:
+    messages: list[str] = []
+    for panel in page.panels:
+        for dialogue in panel.dialogue:
+            if dialogue.kind == "monologue" and dialogue.balloon == "cloud":
+                dialogue.balloon = "caption"
+                messages.append(
+                    f"{page.page}ページ {panel.panel_id}: 独白の吹き出しをキャプションへ変更"
+                )
+    return messages
+
+
+def _fix_sfx_language(page: Page) -> list[str]:
+    messages: list[str] = []
+    for panel in page.panels:
+        for sfx in panel.sfx:
+            normalized = normalize_sfx_text(sfx.text)
+            if normalized != sfx.text:
+                messages.append(
+                    f"{page.page}ページ {panel.panel_id}: 擬音「{sfx.text}」を「{normalized}」へ"
+                )
+                sfx.text = normalized
+    return messages
+
+
+def _fix_balloon_tails(page: Page) -> list[str]:
+    messages: list[str] = []
+    for panel in page.panels:
+        for dialogue in panel.dialogue:
+            if not dialogue.on_screen or dialogue.balloon in {"caption", "none"}:
+                continue
+            tail = dialogue.tail
+            if tail is None or not tail.enabled:
+                continue
+            center = _speaker_center(dialogue, panel)
+            if center is None:
+                continue
+            distance = math.hypot(tail.tip[0] - center[0], tail.tip[1] - center[1])
+            if distance > TAIL_SPEAKER_MAX_DISTANCE:
+                tail.tip = (_clamp_unit(center[0]), _clamp_unit(center[1]))
+                messages.append(
+                    f"{page.page}ページ {panel.panel_id}: しっぽを話者（{dialogue.speaker}）へ向け直し"
+                )
+    return messages
+
+
+def autofix_page(page: Page) -> list[str]:
+    """1ページ分のfixableな問題を修正し、適用した修正の説明を返す。"""
+    messages: list[str] = []
+    messages.extend(_fix_prompt_blank_risk(page))
+    messages.extend(_fix_monologue_balloon(page))
+    messages.extend(_fix_sfx_language(page))
+    messages.extend(_fix_balloon_tails(page))
+    return messages
+
+
+def autofix_manga(manga: MangaProject, page_number: int | None = None) -> list[str]:
+    """fixableな問題を自動修正する。page_number指定時はそのページのみ対象にする。"""
+    messages: list[str] = []
+    for page in manga.pages:
+        if page_number is not None and page.page != page_number:
+            continue
+        messages.extend(autofix_page(page))
+    return messages

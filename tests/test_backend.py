@@ -5105,3 +5105,41 @@ def test_mixed_color_policy_relaxes_monochrome_negative() -> None:
     assert "english sound effects" in mixed_negative
     assert "grayscale" in full_negative
     assert "grayscale" not in mixed_negative
+
+
+def test_preflight_autofix_endpoint_strips_blank_risk(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["pages"][0]["panels"][0]["prompt"] = "white, empty space, smile"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "preflight/fix"))
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["fixed_count"] >= 1
+        # 修正後の再検査で白紙リスク警告は残らない。
+        codes = {issue["code"] for issue in result["preflight"]["warnings"]}
+        assert "prompt_blank_risk" not in codes
+        saved = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        tags = saved["pages"][0]["panels"][0]["prompt"].split(", ")
+        assert "white" not in tags and "empty space" not in tags
+
+
+def test_preflight_autofix_page_scope(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["pages"][0]["panels"][0]["prompt"] = "white, smile"
+        manga["pages"][1]["panels"][0]["prompt"] = "blank, smile"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        page_number = manga["pages"][1]["page"]
+        response = client.post(
+            mutation_url(client, project_id, f"pages/{page_number}/preflight/fix")
+        )
+        assert response.status_code == 200
+        saved = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 対象ページのみ修正、他ページは据え置き。
+        assert "white" in saved["pages"][0]["panels"][0]["prompt"]
+        assert "blank" not in saved["pages"][1]["panels"][0]["prompt"]
