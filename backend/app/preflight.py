@@ -622,7 +622,51 @@ def _check_character_regions(page: Page) -> list[PreflightIssue]:
                     fixable=False,
                 )
             )
+        entries = [
+            entry
+            for entry in panel.character_layout
+            if entry.id in panel.characters and entry.region_box is not None
+        ]
+        for left_index, left_entry in enumerate(entries):
+            assert left_entry.region_box is not None
+            for right_entry in entries[left_index + 1 :]:
+                assert right_entry.region_box is not None
+                iou = _unit_box_iou(left_entry.region_box, right_entry.region_box)
+                if iou >= 0.5:
+                    issues.append(
+                        PreflightIssue(
+                            level="warning",
+                            code="character_region_overlap",
+                            message=(
+                                "複数キャラの人物領域が大きく重なっています"
+                                f"（{left_entry.id}, {right_entry.id}）"
+                            ),
+                            page=page.page,
+                            panel_id=panel.panel_id,
+                            category="character",
+                            suggestion=(
+                                "各キャラのregion_boxを分けるか、positionを左右・上下に分散してください"
+                            ),
+                            fixable=False,
+                        )
+                    )
     return issues
+
+
+def _unit_box_iou(
+    left: tuple[float, float, float, float], right: tuple[float, float, float, float]
+) -> float:
+    lx, ly, lw, lh = left
+    rx, ry, rw, rh = right
+    ix0 = max(lx, rx)
+    iy0 = max(ly, ry)
+    ix1 = min(lx + lw, rx + rw)
+    iy1 = min(ly + lh, ry + rh)
+    intersection = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    if intersection <= 0:
+        return 0.0
+    union = lw * lh + rw * rh - intersection
+    return intersection / union if union > 0 else 0.0
 
 
 def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:

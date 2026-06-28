@@ -159,6 +159,12 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
         ),
         None,
     )
+    regional_prompts = {
+        str(region["character_id"]): str(region["prompt"])
+        for region in compose_character_regional_prompts(manga, panel)
+    }
+    for entry in prepared.character_layout:
+        entry.regional_prompt = regional_prompts.get(entry.id, "")
     if is_non_character_mode(panel):
         # 小物・手・背景コマではキャラLoRA/参照画像を適用しない。
         location = next((item for item in manga.locations if item.id == panel.location_id), None)

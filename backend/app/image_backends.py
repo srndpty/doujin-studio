@@ -484,6 +484,8 @@ def apply_panel_to_workflow(
 def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
     if binding is None or not binding.enabled:
         return
+    if binding.mode != "attention_couple":
+        raise ValueError(f"未対応のregional binding modeです: {binding.mode}")
     regions = compose_character_regional_prompts_from_prepared_panel(panel)
     if not regions:
         return
@@ -491,6 +493,7 @@ def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
         raise ValueError("regional workflowのキャラpromptノード数が不足しています")
     if len(binding.region_node_ids) < len(regions):
         raise ValueError("regional workflowの領域ノード数が不足しています")
+    validate_attention_couple_binding(workflow, binding, len(regions))
     for index, region in enumerate(regions):
         prompt_node_id = binding.character_prompt_node_ids[index]
         region_node_id = binding.region_node_ids[index]
@@ -508,22 +511,37 @@ def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
         node["inputs"]["region"] = f"{x},{y},{width},{height}"
 
 
+def validate_attention_couple_binding(workflow: dict, binding, region_count: int) -> None:
+    prompt_ids = binding.character_prompt_node_ids[:region_count]
+    region_ids = binding.region_node_ids[:region_count]
+    for node_id in prompt_ids:
+        node = workflow.get(node_id)
+        if not node or not isinstance(node.get("inputs"), dict):
+            raise ValueError(f"regional promptノードがworkflowにありません: {node_id}")
+        class_type = str(node.get("class_type", ""))
+        if "CLIPTextEncode" not in class_type:
+            raise ValueError(f"regional promptノードはCLIPTextEncode系にしてください: {node_id}")
+    for node_id in region_ids:
+        node = workflow.get(node_id)
+        if not node or not isinstance(node.get("inputs"), dict):
+            raise ValueError(f"regional領域ノードがworkflowにありません: {node_id}")
+        class_type = str(node.get("class_type", ""))
+        if class_type and not any(token in class_type.lower() for token in ("region", "area")):
+            raise ValueError(f"regional領域ノードの種類が想定外です: {node_id} ({class_type})")
+
+
 def compose_character_regional_prompts_from_prepared_panel(panel: Panel) -> list[dict[str, object]]:
     """prepare_panel_for_generation後のpanelからregional入力を作る。
 
-    生成直前はMangaProject全体を持たないため、通常promptへ統合済みの情報ではなく、
-    character_layoutの領域とgeneration.reference/loras前の人物IDを使う。promptは
-    character_layoutの演技語だけでなく、既に合成済みpositiveからも補強されるよう、
-    panel.generation.promptを共通文脈として併記する。
+    regional promptはキャラ単位に解決済みのregional_promptだけを使い、全キャラを含む
+    通常positive promptを混ぜない。
     """
     regions: list[dict[str, object]] = []
     for entry in panel.character_layout:
         if entry.id not in panel.characters or entry.region_box is None:
             continue
-        prompt = ", ".join(
-            part
-            for part in [entry.expression, entry.action, panel.generation.prompt or panel.prompt]
-            if part
+        prompt = entry.regional_prompt or ", ".join(
+            part for part in [entry.expression, entry.action] if part
         )
         regions.append({"character_id": entry.id, "prompt": prompt, "region_box": entry.region_box})
     return regions

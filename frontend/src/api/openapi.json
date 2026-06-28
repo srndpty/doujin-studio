@@ -4861,6 +4861,15 @@
             "title": "Composition Notes",
             "default": ""
           },
+          "text_safe_area_format": {
+            "type": "string",
+            "enum": [
+              "xywh",
+              "xyxy"
+            ],
+            "title": "Text Safe Area Format",
+            "default": "xywh"
+          },
           "text_safe_area": {
             "anyOf": [
               {
@@ -5014,6 +5023,20 @@
             "type": "string",
             "title": "Action",
             "default": ""
+          },
+          "regional_prompt": {
+            "type": "string",
+            "title": "Regional Prompt",
+            "default": ""
+          },
+          "region_box_format": {
+            "type": "string",
+            "enum": [
+              "xywh",
+              "xyxy"
+            ],
+            "title": "Region Box Format",
+            "default": "xywh"
           },
           "region_box": {
             "anyOf": [

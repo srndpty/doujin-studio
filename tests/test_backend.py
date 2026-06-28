@@ -48,6 +48,7 @@ from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
 from backend.app.rendering import RenderInputChangedError
 from backend.app.schemas import (
+    Character,
     Dialogue,
     GenerationInfo,
     ImageCandidate,
@@ -950,6 +951,7 @@ def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
                 position="upper_left",
                 expression="smiling",
                 action="waving",
+                regional_prompt="jougasaki mika, orange hoodie, smiling, waving",
                 region_box=(0.1, 0.2, 0.3, 0.4),
             )
         ],
@@ -974,6 +976,102 @@ def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
     assert patched["51"]["inputs"]["y"] == 0.2
     assert patched["51"]["inputs"]["width"] == 0.3
     assert patched["51"]["inputs"]["height"] == 0.4
+
+
+def test_regional_binding_uses_separated_character_prompts(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["60"] = {"class_type": "Region", "inputs": {}}
+    workflow["61"] = {"class_type": "Region", "inputs": {}}
+    manga = MangaProject(
+        title="regional",
+        characters=[
+            Character(
+                id="mika",
+                display_name="美嘉",
+                trigger_prompt="mika_trigger",
+                appearance_prompt="pink hair",
+                outfit_prompt="orange hoodie",
+            ),
+            Character(
+                id="rika",
+                display_name="莉嘉",
+                trigger_prompt="rika_trigger",
+                appearance_prompt="blonde twin tails",
+                outfit_prompt="blue jacket",
+            ),
+        ],
+        workflow_presets=[
+            {
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50", "51"],
+                    "region_node_ids": ["60", "61"],
+                },
+            }
+        ],
+        active_workflow_preset_id="regional",
+    )
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", position="upper_left", region_box=(0.0, 0.0, 0.5, 1.0)),
+            PanelCharacter(id="rika", position="upper_right", region_box=(0.5, 0.0, 0.5, 1.0)),
+        ],
+        generation=GenerationInfo(prompt="shared scene prompt"),
+    )
+    prepared = prepare_panel_for_generation(manga, panel)
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), prepared, "prefix")
+    first = patched["50"]["inputs"]["text"]
+    second = patched["51"]["inputs"]["text"]
+    assert "mika_trigger" in first
+    assert "orange hoodie" in first
+    assert "rika_trigger" not in first
+    assert "blue jacket" not in first
+    assert "rika_trigger" in second
+    assert "blue jacket" in second
+    assert "mika_trigger" not in second
+    assert "orange hoodie" not in second
+
+
+def test_regional_binding_rejects_non_clip_prompt_node(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "KSampler", "inputs": {"text": ""}}
+    workflow["60"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                regional_prompt="mika_trigger",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            )
+        ],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["60"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="CLIPTextEncode"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
 
 
 def test_existing_manga_json_gets_new_defaults() -> None:

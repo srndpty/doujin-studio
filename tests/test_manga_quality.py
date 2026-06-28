@@ -559,20 +559,43 @@ def test_script_directive_region_box_is_preserved() -> None:
     assert manga.pages[0].panels[0].character_layout[0].region_box == (0.1, 0.2, 0.3, 0.4)
 
 
-def test_script_boxes_accept_xyxy_from_llm() -> None:
+def test_script_boxes_accept_explicit_xyxy_from_llm() -> None:
     panel = ScriptPanel(
         shot="close",
+        text_safe_area_format="xyxy",
         text_safe_area=[0.65, 0.72, 0.92, 0.88],
         character_directives=[
             {
                 "name": "美嘉",
                 "position": "center",
+                "region_box_format": "xyxy",
                 "region_box": [0.65, 0.72, 0.92, 0.88],
             }
         ],
     )
     assert panel.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
     assert panel.character_directives[0].region_box == pytest.approx((0.65, 0.72, 0.27, 0.16))
+
+
+def test_ambiguous_box_without_format_stays_xywh() -> None:
+    panel = ScriptPanel(
+        shot="close",
+        text_safe_area=[0.1, 0.1, 0.7, 0.7],
+        character_directives=[
+            {
+                "name": "美嘉",
+                "position": "center",
+                "region_box": [0.1, 0.1, 0.7, 0.7],
+            }
+        ],
+    )
+    assert panel.text_safe_area == pytest.approx((0.1, 0.1, 0.7, 0.7))
+    assert panel.character_directives[0].region_box == pytest.approx((0.1, 0.1, 0.7, 0.7))
+
+
+def test_xyxy_without_format_is_validation_error() -> None:
+    with pytest.raises(ValueError, match="text_safe_area"):
+        ScriptPanel(shot="close", text_safe_area=[0.65, 0.72, 0.92, 0.88])
 
 
 def test_directive_only_character_is_kept() -> None:
@@ -595,6 +618,41 @@ def test_directive_only_character_is_kept() -> None:
     assert drawn.subject_mode == "character_scene"
     assert drawn.characters == ["mika"]
     assert drawn.character_layout[0].expression == "smiling"
+
+
+def test_default_region_splits_same_position_characters() -> None:
+    base = MangaProject(
+        title="t",
+        characters=[
+            Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl"),
+            Character(id="rika", display_name="莉嘉", trigger_prompt="rika 1girl"),
+        ],
+    )
+    panel = ScriptPanel(
+        shot="duo",
+        characters=["美嘉", "莉嘉"],
+        character_directives=[
+            ScriptCharacter(name="美嘉", position="center"),
+            ScriptCharacter(name="莉嘉", position="center"),
+        ],
+    )
+    script = ScriptStage(pages=[ScriptPage(page=page, panels=[panel]) for page in range(1, 5)])
+    manga = story.script_to_manga(script, base)
+    boxes = [entry.region_box for entry in manga.pages[0].panels[0].character_layout]
+    assert boxes[0] != boxes[1]
+    assert boxes[0][0] < boxes[1][0]
+
+
+def test_preflight_warns_overlapping_character_regions() -> None:
+    panel = _quality_panel(
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", region_box=(0.1, 0.1, 0.6, 0.8)),
+            PanelCharacter(id="rika", region_box=(0.12, 0.12, 0.6, 0.8)),
+        ],
+    )
+    issues = _quality_issues(panel)
+    assert any(i.code == "character_region_overlap" for i in issues)
 
 
 def test_unresolved_directive_does_not_inject_page_characters() -> None:

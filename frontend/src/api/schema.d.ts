@@ -1794,6 +1794,12 @@ export interface components {
              * @default
              */
             composition_notes: string;
+            /**
+             * Text Safe Area Format
+             * @default xywh
+             * @enum {string}
+             */
+            text_safe_area_format: "xywh" | "xyxy";
             /** Text Safe Area */
             text_safe_area?: [
                 number,
@@ -1868,6 +1874,17 @@ export interface components {
              * @default
              */
             action: string;
+            /**
+             * Regional Prompt
+             * @default
+             */
+            regional_prompt: string;
+            /**
+             * Region Box Format
+             * @default xywh
+             * @enum {string}
+             */
+            region_box_format: "xywh" | "xyxy";
             /** Region Box */
             region_box?: [
                 number,

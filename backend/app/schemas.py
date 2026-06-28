@@ -4,9 +4,10 @@ import math
 from datetime import datetime
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 Point = tuple[float, float]
+UnitBoxFormat = Literal["xywh", "xyxy"]
 
 
 def _orient(a: Point, b: Point, c: Point) -> float:
@@ -215,8 +216,9 @@ def _validate_unit_box(
 
 def _normalize_unit_box(
     value: object,
+    box_format: UnitBoxFormat = "xywh",
 ) -> tuple[float, float, float, float] | None:
-    """[x,y,w,h]を基本に、LLMが返しがちな[x1,y1,x2,y2]も受け入れる。"""
+    """box形式は明示契約に従って[x,y,w,h]へ正規化する。"""
     if value is None:
         return None
     if not isinstance(value, (list, tuple)) or len(value) != 4:
@@ -225,12 +227,10 @@ def _normalize_unit_box(
         left, top, third, fourth = (float(item) for item in value)
     except (TypeError, ValueError):
         raise ValueError("boxは数値4要素で指定してください") from None
+    if box_format == "xyxy":
+        return (left, top, third - left, fourth - top)
     if min(left, top, third, fourth) < 0:
         return (left, top, third, fourth)
-    if left + third <= 1 and top + fourth <= 1:
-        return (left, top, third, fourth)
-    if third <= 1 and fourth <= 1 and third > left and fourth > top:
-        return (left, top, third - left, fourth - top)
     return (left, top, third, fourth)
 
 
@@ -360,13 +360,19 @@ class PanelCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    # 生成直前に解決したキャラ単位prompt。regional workflowでは全体promptを混ぜない。
+    regional_prompt: str = ""
+    region_box_format: UnitBoxFormat = "xywh"
     # コマ内の人物領域（x, y, w, h）。regional workflowの領域分離に使う。
     region_box: tuple[float, float, float, float] | None = None
 
     @field_validator("region_box", mode="before")
     @classmethod
-    def validate_region_box(cls, value) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(_normalize_unit_box(value), "region_box")
+    def validate_region_box(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("region_box_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
 
 
 class Panel(BaseModel):
@@ -389,6 +395,7 @@ class Panel(BaseModel):
     background_density: str = ""
     composition_notes: str = ""
     # 写植予定領域。画像生成時に重要な顔や手を置かない余白として扱う。
+    text_safe_area_format: UnitBoxFormat = "xywh"
     text_safe_area: tuple[float, float, float, float] | None = None
     # 強調度（1=控えめ、5=見せ場）。レイアウトエンジンが面積配分に使う。
     emphasis: int = Field(default=2, ge=1, le=5)
@@ -417,8 +424,11 @@ class Panel(BaseModel):
 
     @field_validator("text_safe_area", mode="before")
     @classmethod
-    def validate_text_safe_area(cls, value) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(_normalize_unit_box(value), "text_safe_area")
+    def validate_text_safe_area(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("text_safe_area_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "text_safe_area")
 
     @model_validator(mode="after")
     def validate_character_layout(self) -> "Panel":
@@ -1122,6 +1132,7 @@ class ScriptCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    region_box_format: UnitBoxFormat = "xywh"
     region_box: tuple[float, float, float, float] | None = None
 
     @field_validator("name", "expression", "action", mode="before")
@@ -1153,8 +1164,11 @@ class ScriptCharacter(BaseModel):
 
     @field_validator("region_box", mode="before")
     @classmethod
-    def validate_region_box(cls, value) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(_normalize_unit_box(value), "region_box")
+    def validate_region_box(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("region_box_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
 
 
 class ScriptPanel(BaseModel):
@@ -1166,6 +1180,7 @@ class ScriptPanel(BaseModel):
     emotion: str = ""
     background_density: str = ""
     composition_notes: str = ""
+    text_safe_area_format: UnitBoxFormat = "xywh"
     text_safe_area: tuple[float, float, float, float] | None = None
     location: str = ""
     visual_prompt: str = ""
@@ -1196,8 +1211,11 @@ class ScriptPanel(BaseModel):
 
     @field_validator("text_safe_area", mode="before")
     @classmethod
-    def validate_text_safe_area(cls, value) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(_normalize_unit_box(value), "text_safe_area")
+    def validate_text_safe_area(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("text_safe_area_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "text_safe_area")
 
     @field_validator("characters", mode="before")
     @classmethod

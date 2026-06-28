@@ -478,6 +478,8 @@ def stage_instruction_text(stage: str) -> str:
             "panels(1〜9個)を持ちます。"
             "各コマは shot, camera, role, emotion, background_density, location, visual_prompt, "
             "composition_notes, text_safe_area, characters([string]), dialogue, sfx を持ちます。"
+            "text_safe_areaは [x,y,width,height] 形式で、right/bottom座標ではありません。"
+            'xyxy形式を使う場合だけ text_safe_area_format:"xyxy" を併記してください。'
             "roleは establish/dialogue/reaction/action/reveal/emotional_peak/silent/transition/"
             "punchline/aftermath から選びます。"
             "emotionはそのコマで読者に伝える感情ビートを短く書きます。"
@@ -486,7 +488,8 @@ def stage_instruction_text(stage: str) -> str:
             "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
             "可能なら character_directives: [{name, position, expression, action}] も出力し、"
             "人物ごとの画面内位置(position: upper_left/upper_right/lower_left/lower_right/center)、"
-            "表情(expression)、動作(action)、region_box([x,y,w,h])を英語/数値で指定してください"
+            "表情(expression)、動作(action)、region_box([x,y,width,height])を英語/数値で指定してください"
+            '（xyxy形式を使う場合だけ region_box_format:"xyxy" を併記してください）'
             "（画像生成promptと領域分離へ反映されます）。"
             "dialogueは [{speaker, text, kind, on_screen}] の配列です。"
             "kindは speech(会話)/monologue(独白・心の声)/narration(ナレーション・地の文)/shout(叫び) から選びます。"
@@ -1264,12 +1267,21 @@ def normalize_script_role(value: str) -> str:
 
 def default_region_box(position: str, index: int, total: int) -> tuple[float, float, float, float]:
     """人物領域が未指定のとき、位置指定と人数から決定的な初期領域を作る。"""
-    if position in POSITION_REGION_BOXES:
+    if total <= 1 and position in POSITION_REGION_BOXES:
         return POSITION_REGION_BOXES[position]
     if total <= 1:
         return POSITION_REGION_BOXES["center"]
-    width = 1.0 / total
-    return (round(index * width, 4), 0.05, round(width, 4), 0.9)
+    margin = 0.04
+    gap = 0.04
+    width = max(0.1, (1.0 - margin * 2 - gap * (total - 1)) / total)
+    left = margin + index * (width + gap)
+    if position.startswith("upper"):
+        top, height = 0.04, 0.46
+    elif position.startswith("lower"):
+        top, height = 0.5, 0.46
+    else:
+        top, height = 0.08, 0.84
+    return (round(left, 4), round(top, 4), round(width, 4), round(height, 4))
 
 
 def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
@@ -1359,13 +1371,24 @@ def script_to_manga(
                 directive_id = match_character_id(directive.name, base.characters)
                 if directive_id and directive_id not in directive_by_id:
                     directive_by_id[directive_id] = directive
-            character_layout = []
+            default_positions: dict[str, str] = {}
             for i, character_id in enumerate(character_ids):
                 directive = directive_by_id.get(character_id)
-                if directive is not None:
-                    position = directive.position
-                else:
-                    position = _SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center"
+                default_positions[character_id] = (
+                    directive.position
+                    if directive is not None
+                    else (_SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center")
+                )
+            position_counts: dict[str, int] = {}
+            position_indices: dict[str, int] = {}
+            for position in default_positions.values():
+                position_counts[position] = position_counts.get(position, 0) + 1
+            character_layout = []
+            for character_id in character_ids:
+                directive = directive_by_id.get(character_id)
+                position = default_positions[character_id]
+                position_index = position_indices.get(position, 0)
+                position_indices[position] = position_index + 1
                 character_layout.append(
                     PanelCharacter(
                         id=character_id,
@@ -1375,7 +1398,9 @@ def script_to_manga(
                         region_box=(
                             directive.region_box
                             if directive and directive.region_box is not None
-                            else default_region_box(position, i, len(character_ids))
+                            else default_region_box(
+                                position, position_index, position_counts[position]
+                            )
                         ),
                     )
                 )
