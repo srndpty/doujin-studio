@@ -2863,7 +2863,7 @@
           "auto_candidates": {
             "type": "boolean",
             "title": "Auto Candidates",
-            "default": false
+            "default": true
           },
           "randomize_seed": {
             "type": "boolean",
@@ -4734,6 +4734,20 @@
             },
             "type": "array",
             "title": "Blockers"
+          },
+          "quality_errors": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Quality Errors"
+          },
+          "quality_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Quality Warnings"
           }
         },
         "type": "object",
@@ -5699,6 +5713,20 @@
             },
             "type": "array",
             "title": "Blockers"
+          },
+          "quality_errors": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Quality Errors"
+          },
+          "quality_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightIssue"
+            },
+            "type": "array",
+            "title": "Quality Warnings"
           }
         },
         "type": "object",
