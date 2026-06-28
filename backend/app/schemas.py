@@ -213,6 +213,27 @@ def _validate_unit_box(
     return value
 
 
+def _normalize_unit_box(
+    value: object,
+) -> tuple[float, float, float, float] | None:
+    """[x,y,w,h]を基本に、LLMが返しがちな[x1,y1,x2,y2]も受け入れる。"""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise ValueError("boxは4要素の配列で指定してください")
+    try:
+        left, top, third, fourth = (float(item) for item in value)
+    except (TypeError, ValueError):
+        raise ValueError("boxは数値4要素で指定してください") from None
+    if min(left, top, third, fourth) < 0:
+        return (left, top, third, fourth)
+    if left + third <= 1 and top + fourth <= 1:
+        return (left, top, third, fourth)
+    if third <= 1 and fourth <= 1 and third > left and fourth > top:
+        return (left, top, third - left, fourth - top)
+    return (left, top, third, fourth)
+
+
 class RegionalWorkflowBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -342,12 +363,10 @@ class PanelCharacter(BaseModel):
     # コマ内の人物領域（x, y, w, h）。regional workflowの領域分離に使う。
     region_box: tuple[float, float, float, float] | None = None
 
-    @field_validator("region_box")
+    @field_validator("region_box", mode="before")
     @classmethod
-    def validate_region_box(
-        cls, value: tuple[float, float, float, float] | None
-    ) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(value, "region_box")
+    def validate_region_box(cls, value) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(_normalize_unit_box(value), "region_box")
 
 
 class Panel(BaseModel):
@@ -396,12 +415,10 @@ class Panel(BaseModel):
         assert validated is not None
         return validated
 
-    @field_validator("text_safe_area")
+    @field_validator("text_safe_area", mode="before")
     @classmethod
-    def validate_text_safe_area(
-        cls, value: tuple[float, float, float, float] | None
-    ) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(value, "text_safe_area")
+    def validate_text_safe_area(cls, value) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(_normalize_unit_box(value), "text_safe_area")
 
     @model_validator(mode="after")
     def validate_character_layout(self) -> "Panel":
@@ -1134,12 +1151,10 @@ class ScriptCharacter(BaseModel):
         valid = {"upper_left", "upper_right", "lower_left", "lower_right", "center"}
         return normalized if normalized in valid else "center"
 
-    @field_validator("region_box")
+    @field_validator("region_box", mode="before")
     @classmethod
-    def validate_region_box(
-        cls, value: tuple[float, float, float, float] | None
-    ) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(value, "region_box")
+    def validate_region_box(cls, value) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(_normalize_unit_box(value), "region_box")
 
 
 class ScriptPanel(BaseModel):
@@ -1179,12 +1194,10 @@ class ScriptPanel(BaseModel):
             return str(value)
         return value
 
-    @field_validator("text_safe_area")
+    @field_validator("text_safe_area", mode="before")
     @classmethod
-    def validate_text_safe_area(
-        cls, value: tuple[float, float, float, float] | None
-    ) -> tuple[float, float, float, float] | None:
-        return _validate_unit_box(value, "text_safe_area")
+    def validate_text_safe_area(cls, value) -> tuple[float, float, float, float] | None:
+        return _validate_unit_box(_normalize_unit_box(value), "text_safe_area")
 
     @field_validator("characters", mode="before")
     @classmethod

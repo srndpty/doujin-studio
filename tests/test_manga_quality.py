@@ -559,6 +559,22 @@ def test_script_directive_region_box_is_preserved() -> None:
     assert manga.pages[0].panels[0].character_layout[0].region_box == (0.1, 0.2, 0.3, 0.4)
 
 
+def test_script_boxes_accept_xyxy_from_llm() -> None:
+    panel = ScriptPanel(
+        shot="close",
+        text_safe_area=[0.65, 0.72, 0.92, 0.88],
+        character_directives=[
+            {
+                "name": "美嘉",
+                "position": "center",
+                "region_box": [0.65, 0.72, 0.92, 0.88],
+            }
+        ],
+    )
+    assert panel.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert panel.character_directives[0].region_box == pytest.approx((0.65, 0.72, 0.27, 0.16))
+
+
 def test_directive_only_character_is_kept() -> None:
     # charactersへの列挙を漏らしても、character_directivesの人物は取りこぼさない（Medium回帰）。
     base = MangaProject(
