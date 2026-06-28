@@ -1262,7 +1262,7 @@ describe("AppのManga JSON保存", () => {
     render(<App />);
     fireEvent.click(await screen.findByText("本"));
     await screen.findByDisplayValue("本");
-    fireEvent.click(screen.getByRole("button", { name: "ページ編集" }));
+    // 制作・編集タブ（既定）にページ編集キャンバスが統合されている。
     fireEvent.click(await screen.findByRole("button", { name: "保存（レイアウト確定）" }));
 
     // typed 409 が handleProjectMutationError に渡り、最新projectが採用される。

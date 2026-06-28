@@ -113,6 +113,8 @@ type Props = {
     file: File
   ) => Promise<boolean> | boolean;
   setMessage: (text: string) => void;
+  // キャンバスでコマを選択したとき、親（制作パネル一覧・生成候補）へ選択を同期する。
+  onSelectPanel?: (panelId: string) => void;
   // アセットのキャッシュバスターを進める（同一URLの画像差し替えを反映する）。
 };
 
@@ -219,7 +221,8 @@ export function PageEditor({
   onSave,
   onSuggest,
   onOverlayUpload,
-  setMessage
+  setMessage,
+  onSelectPanel
 }: Props) {
   // 親のonChangeが反映される前でも編集を即時表示できるよう、作業コピーを持つ。
   const [manga, setManga] = useState<MangaProject>(mangaProp);
@@ -413,59 +416,66 @@ export function PageEditor({
         >
           <Layer scaleX={SCALE} scaleY={SCALE}>
             {backOverlays.map(renderOverlay)}
-            {page.panels.map((panel) => (
-              <PanelNode
-                key={panel.panel_id}
-                panel={panel}
-                version={assetVersion}
-                readingNumber={readingIndex(panel.panel_id)}
-                selected={selection?.kind === "panel" && selection.panelId === panel.panel_id}
-                registerRef={(node: Konva.Rect | null) => {
-                  if (node) rectRefs.current[panel.panel_id] = node;
-                }}
-                onSelect={() => setSelection({ panelId: panel.panel_id, kind: "panel", index: 0 })}
-                onBbox={(bbox: [number, number, number, number]) => updatePanelBbox(panel.panel_id, bbox)}
-                onSelectDialogue={(index: number) =>
-                  setSelection({ panelId: panel.panel_id, kind: "dialogue", index })
-                }
-                onSelectSfx={(index: number) => setSelection({ panelId: panel.panel_id, kind: "sfx", index })}
-                onMoveDialogue={(index: number, box: [number, number, number, number]) =>
-                  mutatePage((target) => {
-                    const p = target.panels.find((item) => item.panel_id === panel.panel_id);
-                    if (p && p.dialogue[index]) p.dialogue[index].box = box;
-                  })
-                }
-                onMoveTail={(index: number, tip: [number, number]) =>
-                  mutatePage((target) => {
-                    const p = target.panels.find((item) => item.panel_id === panel.panel_id);
-                    if (p && p.dialogue[index]) {
-                      const tail = p.dialogue[index].tail ?? { enabled: true, base: 0.5, width: 0.16 };
-                      p.dialogue[index].tail = { ...tail, tip };
-                    }
-                  })
-                }
-                onMoveSfx={(index: number, box: [number, number]) =>
-                  mutatePage((target) => {
-                    const p = target.panels.find((item) => item.panel_id === panel.panel_id);
-                    if (p && p.sfx[index]) p.sfx[index].box = box;
-                  })
-                }
-                showRegions={showRegions}
-                onMoveCharacterRegion={(characterId, box) =>
-                  mutatePage((target) => {
-                    const p = target.panels.find((item) => item.panel_id === panel.panel_id);
-                    const entry = (p?.character_layout ?? []).find((item) => item.id === characterId);
-                    if (entry) entry.region_box = box;
-                  })
-                }
-                showTail={selection?.kind === "dialogue" && selection.panelId === panel.panel_id}
-                selectedDialogue={
-                  selection?.kind === "dialogue" && selection.panelId === panel.panel_id
-                    ? selection.index
-                    : -1
-                }
-              />
-            ))}
+            {[...page.panels]
+              .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
+              .map((panel) => (
+                <PanelNode
+                  key={panel.panel_id}
+                  panel={panel}
+                  version={assetVersion}
+                  readingNumber={readingIndex(panel.panel_id)}
+                  selected={selection?.kind === "panel" && selection.panelId === panel.panel_id}
+                  registerRef={(node: Konva.Rect | null) => {
+                    if (node) rectRefs.current[panel.panel_id] = node;
+                  }}
+                  onSelect={() => {
+                    setSelection({ panelId: panel.panel_id, kind: "panel", index: 0 });
+                    onSelectPanel?.(panel.panel_id);
+                  }}
+                  onBbox={(bbox: [number, number, number, number]) => updatePanelBbox(panel.panel_id, bbox)}
+                  onSelectDialogue={(index: number) =>
+                    setSelection({ panelId: panel.panel_id, kind: "dialogue", index })
+                  }
+                  onSelectSfx={(index: number) =>
+                    setSelection({ panelId: panel.panel_id, kind: "sfx", index })
+                  }
+                  onMoveDialogue={(index: number, box: [number, number, number, number]) =>
+                    mutatePage((target) => {
+                      const p = target.panels.find((item) => item.panel_id === panel.panel_id);
+                      if (p && p.dialogue[index]) p.dialogue[index].box = box;
+                    })
+                  }
+                  onMoveTail={(index: number, tip: [number, number]) =>
+                    mutatePage((target) => {
+                      const p = target.panels.find((item) => item.panel_id === panel.panel_id);
+                      if (p && p.dialogue[index]) {
+                        const tail = p.dialogue[index].tail ?? { enabled: true, base: 0.5, width: 0.16 };
+                        p.dialogue[index].tail = { ...tail, tip };
+                      }
+                    })
+                  }
+                  onMoveSfx={(index: number, box: [number, number]) =>
+                    mutatePage((target) => {
+                      const p = target.panels.find((item) => item.panel_id === panel.panel_id);
+                      if (p && p.sfx[index]) p.sfx[index].box = box;
+                    })
+                  }
+                  showRegions={showRegions}
+                  onMoveCharacterRegion={(characterId, box) =>
+                    mutatePage((target) => {
+                      const p = target.panels.find((item) => item.panel_id === panel.panel_id);
+                      const entry = (p?.character_layout ?? []).find((item) => item.id === characterId);
+                      if (entry) entry.region_box = box;
+                    })
+                  }
+                  showTail={selection?.kind === "dialogue" && selection.panelId === panel.panel_id}
+                  selectedDialogue={
+                    selection?.kind === "dialogue" && selection.panelId === panel.panel_id
+                      ? selection.index
+                      : -1
+                  }
+                />
+              ))}
             {frontOverlays.map(renderOverlay)}
             <Transformer
               ref={transformerRef}
@@ -711,7 +721,26 @@ function PanelNode(props: PanelNodeProps) {
   const [px, py, pw, ph] = panel.bbox.map(
     (value: number, i: number) => value * (i % 2 === 0 ? PAGE_W : PAGE_H)
   );
-  const polygonPoints = panel.shape_points?.flatMap(([x, y]) => [px + x * pw, py + y * ph]) ?? [];
+  // コマ枠ポリゴン（ページピクセル）。frame_pointsを正本とし、無ければbbox相対のshape_points、
+  // それも無ければ矩形。ページレンダラーと同じ形でキャンバスに描く（写植・形状の見た目を一致させる）。
+  const framePagePoints: number[] | null = panel.frame_points
+    ? panel.frame_points.flatMap(([x, y]) => [x * PAGE_W, y * PAGE_H])
+    : panel.shape_points
+      ? panel.shape_points.flatMap(([x, y]) => [px + x * pw, py + y * ph])
+      : null;
+  // 画像のフィット矩形。frame_pointsはページ外（裁ち落とし）へ広がるため、その外接矩形へ合わせる。
+  let renderX = px;
+  let renderY = py;
+  let renderW = pw;
+  let renderH = ph;
+  if (panel.frame_points && panel.frame_points.length > 0) {
+    const fxs = panel.frame_points.map(([x]) => x * PAGE_W);
+    const fys = panel.frame_points.map(([, y]) => y * PAGE_H);
+    renderX = Math.min(...fxs);
+    renderY = Math.min(...fys);
+    renderW = Math.max(...fxs) - renderX;
+    renderH = Math.max(...fys) - renderY;
+  }
 
   const handleTransform = (node: Konva.Rect) => {
     const scaleX = node.scaleX();
@@ -729,7 +758,7 @@ function PanelNode(props: PanelNodeProps) {
 
   const placement = useMemo(() => {
     if (!image) return null;
-    return computeImagePlacement(image.width, image.height, pw, ph, {
+    return computeImagePlacement(image.width, image.height, renderW, renderH, {
       fitMode: panel.generation.fit_mode,
       anchor: panel.generation.crop_anchor,
       scale: panel.generation.crop_scale,
@@ -742,8 +771,8 @@ function PanelNode(props: PanelNodeProps) {
     });
   }, [
     image,
-    pw,
-    ph,
+    renderW,
+    renderH,
     panel.generation.fit_mode,
     panel.generation.crop_anchor,
     panel.generation?.crop_scale,
@@ -756,31 +785,33 @@ function PanelNode(props: PanelNodeProps) {
   return (
     <Group>
       <Group
-        clipX={panel.shape_points ? undefined : px}
-        clipY={panel.shape_points ? undefined : py}
-        clipWidth={panel.shape_points ? undefined : pw}
-        clipHeight={panel.shape_points ? undefined : ph}
+        clipX={framePagePoints ? undefined : px}
+        clipY={framePagePoints ? undefined : py}
+        clipWidth={framePagePoints ? undefined : pw}
+        clipHeight={framePagePoints ? undefined : ph}
         clipFunc={
-          panel.shape_points
+          framePagePoints
             ? (context) => {
                 context.beginPath();
-                panel.shape_points?.forEach(([x, y], index) => {
-                  if (index === 0) context.moveTo(px + x * pw, py + y * ph);
-                  else context.lineTo(px + x * pw, py + y * ph);
-                });
+                for (let i = 0; i < framePagePoints.length; i += 2) {
+                  const x = framePagePoints[i];
+                  const y = framePagePoints[i + 1];
+                  if (i === 0) context.moveTo(x, y);
+                  else context.lineTo(x, y);
+                }
                 context.closePath();
               }
             : undefined
         }
       >
         {panel.generation.fit_mode === "contain" && (
-          <Rect x={px} y={py} width={pw} height={ph} fill="#f5f5f2" listening={false} />
+          <Rect x={renderX} y={renderY} width={renderW} height={renderH} fill="#f5f5f2" listening={false} />
         )}
         {image && placement && (
           <KonvaImage
             image={image}
-            x={px + placement.x}
-            y={py + placement.y}
+            x={renderX + placement.x}
+            y={renderY + placement.y}
             width={placement.width}
             height={placement.height}
           />
@@ -792,7 +823,7 @@ function PanelNode(props: PanelNodeProps) {
         y={py}
         width={pw}
         height={ph}
-        stroke={panel.shape_points ? "transparent" : selected ? "#2b6cff" : "#141414"}
+        stroke={framePagePoints ? "transparent" : selected ? "#2b6cff" : "#141414"}
         strokeWidth={selected ? 6 : 4}
         draggable
         onClick={onSelect}
@@ -808,9 +839,9 @@ function PanelNode(props: PanelNodeProps) {
         onTransformEnd={(event) => handleTransform(event.target as Konva.Rect)}
         fill="rgba(0,0,0,0.001)"
       />
-      {panel.shape_points && (
+      {framePagePoints && (
         <Line
-          points={polygonPoints}
+          points={framePagePoints}
           closed
           stroke={selected ? "#2b6cff" : "#141414"}
           strokeWidth={selected ? 6 : 4}
