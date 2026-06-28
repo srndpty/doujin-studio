@@ -5105,3 +5105,233 @@ def test_mixed_color_policy_relaxes_monochrome_negative() -> None:
     assert "english sound effects" in mixed_negative
     assert "grayscale" in full_negative
     assert "grayscale" not in mixed_negative
+
+
+def test_preflight_autofix_endpoint_strips_blank_risk(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["pages"][0]["panels"][0]["prompt"] = "white, empty space, smile"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "preflight/fix"))
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["fixed_count"] >= 1
+        # 修正後の再検査で白紙リスク警告は残らない。
+        codes = {issue["code"] for issue in result["preflight"]["warnings"]}
+        assert "prompt_blank_risk" not in codes
+        saved = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        tags = saved["pages"][0]["panels"][0]["prompt"].split(", ")
+        assert "white" not in tags and "empty space" not in tags
+
+
+def test_preflight_autofix_page_scope(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        manga["pages"][0]["panels"][0]["prompt"] = "white, smile"
+        manga["pages"][1]["panels"][0]["prompt"] = "blank, smile"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        page_number = manga["pages"][1]["page"]
+        response = client.post(
+            mutation_url(client, project_id, f"pages/{page_number}/preflight/fix")
+        )
+        assert response.status_code == 200
+        saved = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 対象ページのみ修正、他ページは据え置き。
+        assert "white" in saved["pages"][0]["panels"][0]["prompt"]
+        assert "blank" not in saved["pages"][1]["panels"][0]["prompt"]
+
+
+def test_preflight_autofix_noop_does_not_consume_revision(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        detail = client.get(f"/api/projects/{project_id}").json()
+        revision = detail["revision"]
+
+        response = client.post(f"/api/projects/{project_id}/preflight/fix?revision={revision}")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["result"]["fixed_count"] == 0
+        assert payload["project"]["revision"] == revision
+
+        manga = payload["project"]["manga_json"]
+        manga["pages"][0]["panels"][0]["shot"] = "changed"
+        save = client.put(f"/api/projects/{project_id}/manga-json?revision={revision}", json=manga)
+        assert save.status_code == 200
+
+
+def test_frame_points_change_dirties_page_and_changes_render_hash(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        rendered = client.post(mutation_url(client, project_id, "render"))
+        assert rendered.status_code == 200
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        before_hash = manga["pages"][0]["render_hash"]
+        panel = manga["pages"][0]["panels"][0]
+        x, y, w, h = panel["bbox"]
+        panel["frame_points"] = [
+            [x, y],
+            [x + w, y],
+            [x + w * 0.9, y + h],
+            [x, y + h],
+        ]
+
+        saved = put_manga(client, project_id, manga)
+        assert saved.status_code == 200
+        saved_page = saved.json()["project"]["manga_json"]["pages"][0]
+        assert saved_page["render_status"] == "pending"
+        assert saved_page["render_hash"] is None
+
+        rerendered = client.post(mutation_url(client, project_id, "render"))
+        assert rerendered.status_code == 200
+        after_hash = rerendered.json()["project"]["manga_json"]["pages"][0]["render_hash"]
+        assert after_hash and after_hash != before_hash
+
+
+def test_z_index_change_dirties_page_and_rerenders(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+        detail = client.get(f"/api/projects/{project_id}").json()
+        manga = detail["manga_json"]
+        before_hash = manga["pages"][0]["render_hash"]
+        manga["pages"][0]["panels"][0]["z_index"] = 3
+
+        saved = put_manga(client, project_id, manga)
+        assert saved.status_code == 200
+        saved_page = saved.json()["project"]["manga_json"]["pages"][0]
+        assert saved_page["render_status"] == "pending"
+
+        rerendered = client.post(mutation_url(client, project_id, "render"))
+        assert rerendered.status_code == 200
+        after_hash = rerendered.json()["project"]["manga_json"]["pages"][0]["render_hash"]
+        assert after_hash and after_hash != before_hash
+
+
+def test_export_folder_outputs_images_and_metadata(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "export/folder"))
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["page_count"] == 4
+        folder = Path(result["folder_path"])
+        assert folder.is_dir()
+        assert folder.name.startswith("export-r")
+        assert (folder.parent / "latest-export.txt").read_text(encoding="utf-8") == folder.name
+        pages = sorted(p.name for p in folder.glob("page_*.png"))
+        assert pages == ["page_001.png", "page_002.png", "page_003.png", "page_004.png"]
+        assert (folder / "manga.json").is_file()
+        metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["page_count"] == 4
+        assert metadata["panels"]
+        assert "seed" in metadata["panels"][0]
+
+
+def test_export_folder_open_folder_targets_export_dir(tmp_path: Path, monkeypatch) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(projects_router, "open_in_file_manager", lambda path: opened.append(path))
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        client.post(mutation_url(client, project_id, "render"))
+        client.post(mutation_url(client, project_id, "export/folder"))
+        response = client.post(f"/api/projects/{project_id}/export/open-folder")
+        assert response.status_code == 200
+        assert opened and opened[0].name.startswith("export-r")
+
+
+def test_export_folder_copy_failure_leaves_no_public_export(tmp_path: Path, monkeypatch) -> None:
+    def fail_once(*args, **kwargs):
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(rendering_module.shutil, "copy2", fail_once)
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+        with pytest.raises(OSError, match="copy failed"):
+            client.post(mutation_url(client, project_id, "export/folder"))
+        project_dir = tmp_path / "exports" / project_id
+        assert not list(project_dir.glob("export-r*"))
+        assert not (project_dir / "latest-export.txt").exists()
+
+
+def test_export_folder_commit_conflict_does_not_publish_folder(tmp_path: Path, monkeypatch) -> None:
+    def conflict(*_args, **_kwargs):
+        raise RenderInputChangedError()
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+        monkeypatch.setattr(
+            client.app.state.rendering,
+            "commit_rendered_pages",
+            conflict,
+        )
+        response = client.post(mutation_url(client, project_id, "export/folder"))
+        assert response.status_code == 409
+        project_dir = tmp_path / "exports" / project_id
+        assert not list(project_dir.glob("export-r*"))
+        assert not (project_dir / "latest-export.txt").exists()
+
+
+def test_export_folder_parallel_requests_publish_complete_folders(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
+
+        def export_once():
+            return client.post(f"/api/projects/{project_id}/export/folder?revision={revision}")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(lambda _: export_once(), range(2)))
+
+        assert {response.status_code for response in responses} <= {200, 409}
+        assert any(response.status_code == 200 for response in responses)
+        folders = [
+            Path(response.json()["result"]["folder_path"])
+            for response in responses
+            if response.status_code == 200
+        ]
+        assert len({folder.name for folder in folders}) == len(folders)
+        for folder in folders:
+            assert (folder / "manga.json").is_file()
+            assert len(list(folder.glob("page_*.png"))) == 4
+        project_dir = tmp_path / "exports" / project_id
+        assert not list((project_dir / ".folder-staging").glob("*"))
+
+
+def test_regenerate_blank_panels_404_when_none(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        # 画像未生成のプロジェクトには白紙コマ(empty_panel_image)が存在しない。
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+        assert response.status_code == 404
+
+
+def test_regenerate_blank_panels_targets_only_blank(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        blank_path = export_dir / "blank.png"
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(blank_path)
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        blank_panel_id = manga["pages"][0]["panels"][0]["panel_id"]
+        manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/blank.png"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+        assert response.status_code == 200
+        jobs = response.json()["result"]["jobs"]
+        # 白紙のコマだけが再生成対象になる。
+        assert {job["panel_id"] for job in jobs} == {blank_panel_id}

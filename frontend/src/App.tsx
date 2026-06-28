@@ -37,7 +37,7 @@ type Schemas = components["schemas"];
 
 const PageEditor = lazy(() => import("./PageEditor").then((module) => ({ default: module.PageEditor })));
 
-type WorkspaceTab = "production" | "editor" | "knowledge" | "story";
+type WorkspaceTab = "production" | "knowledge" | "story";
 
 export type Dialogue = {
   speaker: string;
@@ -74,6 +74,12 @@ export type Panel = {
   panel_id: string;
   bbox: [number, number, number, number];
   shape_points?: [number, number][] | null;
+  // ページ座標(0..1、裁ち落とし用に-0.05..1.05)のコマ枠ポリゴン。レイアウトの正本。
+  frame_points?: [number, number][] | null;
+  // コマの重なり順（大きいほど手前）。
+  z_index?: number;
+  frame_role?: "normal" | "background" | "bleed" | "overlap" | "vertical_splash" | "cut_in";
+  frame_source?: "auto" | "manual";
   shot: string;
   subject_mode?: "character_scene" | "reaction" | "prop_insert" | "hand_insert" | "background";
   role?: string;
@@ -226,10 +232,10 @@ type Adopted<R> = {
 };
 type EmptyMutationResult = Schemas["EmptyMutationResult"];
 type PageRenderResult = Schemas["PageRenderResult"];
-type PanelImageGenerationResult = Schemas["PanelImageGenerationResult"];
 type PanelPageRenderResult = Schemas["PanelPageRenderResult"];
 type BatchGenerationJobResult = Schemas["BatchGenerationJobResult"];
-type ExportResult = Schemas["ExportResult"];
+type FolderExportResult = Schemas["FolderExportResult"];
+type PreflightFixResult = Schemas["PreflightFixResult"];
 type ReferenceAssetResult = Schemas["ReferenceAssetResult"];
 
 type TaskProgress = {
@@ -252,6 +258,9 @@ export function App() {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
   const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
   const [message, setMessage] = useState("準備完了");
+  // 保存・出力などの完了を一時的に知らせるトースト。
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [assetVersion, setAssetVersion] = useState(0);
@@ -286,6 +295,15 @@ export function App() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     const baseTitle = document.title.replace(/^\(\d+\/\d+\)\s*/, "");
@@ -850,6 +868,8 @@ export function App() {
       setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
       setMessage("全ページの画像生成とレンダリングが完了しました");
+      showToast("全ページ生成が完了しました");
+      playCompletionSound();
       notifyCompletion("全ページ生成が完了しました", latest.title);
     });
   }
@@ -911,6 +931,42 @@ export function App() {
   function notifyCompletion(title: string, body: string): void {
     if ("Notification" in window && Notification.permission === "granted") {
       new Notification(title, { body });
+    }
+  }
+
+  function showToast(text: string): void {
+    setToast(text);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 4000);
+  }
+
+  // 全ページ生成完了をシステム音の代わりにWeb Audioの短い完了音で知らせる。
+  // OS固有のシステム音はブラウザから鳴らせないため、二音の上昇チャイムで代替する。
+  function playCompletionSound(): void {
+    try {
+      type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
+      const AudioContextClass = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const now = context.currentTime;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+      gain.connect(context.destination);
+      [880, 1320].forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, now + index * 0.18);
+        oscillator.connect(gain);
+        oscillator.start(now + index * 0.18);
+        oscillator.stop(now + index * 0.18 + 0.4);
+      });
+      window.setTimeout(() => void context.close(), 1200);
+    } catch {
+      // 音声が出せない環境では黙って無視する（完了通知はトースト・Notificationで担保）。
     }
   }
 
@@ -1086,36 +1142,6 @@ export function App() {
     });
   }
 
-  async function useStubForCurrentPanel() {
-    if (!selected || !currentPanel) return;
-    await runTask(async () => {
-      const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
-      if (!saved) return;
-      const projectId = saved.id;
-      // use-stubの応答を先に反映する。renderが失敗してもrevisionが古いまま残らない。
-      const stubResponse = await api.post<ProjectMutationResponse<PanelImageGenerationResult>>(
-        withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`, saved.revision)
-      );
-      const stubAdopted = await adoptMutationResponse(stubResponse);
-      if (!stubAdopted.applied || !stubAdopted.project) return;
-      const pageResponse = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
-        withRevision(
-          `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`,
-          stubAdopted.project.revision
-        )
-      );
-      const pageAdopted = await adoptMutationResponse(pageResponse);
-      if (!pageAdopted.applied || !pageAdopted.project) return;
-      applyRenderedPageAsset(pageAdopted, selectedPage);
-      if (pageAdopted.resynced) {
-        setMessage("構成が更新されたためstub結果を再同期しました");
-        return;
-      }
-      setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
-      await refreshProductionStatus(projectId);
-    });
-  }
-
   async function renderCurrentPanelPage() {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
@@ -1137,20 +1163,81 @@ export function App() {
     });
   }
 
-  async function exportCbz() {
+  async function exportFolder() {
     if (!selected) return;
     await runTask(async () => {
       const projectId = selected.id;
-      const response = await api.post<ProjectMutationResponse<ExportResult>>(
-        withRevision(`/api/projects/${projectId}/export/cbz`, selected.revision)
+      const response = await api.post<ProjectMutationResponse<FolderExportResult>>(
+        withRevision(`/api/projects/${projectId}/export/folder`, selected.revision)
       );
       const adopted = await adoptMutationResponse(response);
       if (!adopted.applied || !adopted.project) return;
       const { result } = adopted;
       const warnings = result.warnings ?? [];
       const warning = warnings.length ? ` / 警告 ${warnings.length}件` : "";
-      setMessage(`CBZを書き出しました: ${result.absolute_path}${warning}`);
+      setMessage(`フォルダへ書き出しました: ${result.folder_path}${warning}`);
+      showToast(`${result.folder_path} に保存しました`);
       await refreshProductionStatus(projectId);
+    });
+  }
+
+  async function autofixCurrentProject() {
+    if (!selected) return;
+    await runTask(async () => {
+      // 自動修正は現在のローカル編集を確定してから適用する。先に保存しないと未保存の
+      // レイアウト・台詞・プロンプト編集が古いサーバsnapshotで上書きされ失われる。
+      const saved = await saveJsonDraft("自動修正前にManga JSONを保存しました");
+      if (!saved) return;
+      const projectId = saved.id;
+      const response = await api.post<ProjectMutationResponse<PreflightFixResult>>(
+        withRevision(`/api/projects/${projectId}/preflight/fix`, saved.revision)
+      );
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      const fixedCount = adopted.result.fixed_count;
+      setMessage(
+        fixedCount > 0
+          ? `品質問題を${fixedCount}件自動修正しました`
+          : "自動修正できる品質問題はありませんでした"
+      );
+      showToast(
+        fixedCount > 0 ? `品質問題を${fixedCount}件自動修正しました` : "自動修正対象はありませんでした"
+      );
+      await refreshProductionStatus(projectId);
+    });
+  }
+
+  async function regenerateBlankPanels() {
+    if (!selected) return;
+    await runTask(async () => {
+      const projectId = selected.id;
+      const response = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
+        withRevision(`/api/projects/${projectId}/generation-jobs/blank`, selected.revision)
+      );
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      const jobs = adopted.result.jobs;
+      if (jobs.length === 0) {
+        setMessage("白紙コマはありません");
+        return;
+      }
+      setActiveJobIds(jobs.map((job) => job.id));
+      try {
+        await waitForBatchJobs(jobs, "白紙コマを再生成中");
+      } finally {
+        setActiveJobIds([]);
+        await refreshJobHistory(projectId);
+        await reloadSelectedProject(projectId);
+      }
+      if (selectedProjectIdRef.current !== projectId) return;
+      const latest = await reloadSelectedProject(projectId);
+      if (!latest || latest.id !== projectId) return;
+      // 再生成したコマを含むページを描き直してプレビューを更新する。
+      await renderAllPages(projectId, latest);
+      setAssetVersion((value) => value + 1);
+      await refreshProductionStatus(projectId);
+      setMessage(`白紙コマ${jobs.length}件を再生成しました`);
+      showToast(`白紙コマ${jobs.length}件を再生成しました`);
     });
   }
 
@@ -1483,6 +1570,111 @@ export function App() {
 
   const progressPercent = progress ? Math.round((progress.current / Math.max(progress.total, 1)) * 100) : 0;
 
+  // 制作・編集タブの中央キャンバス。ページレンダラーと同じレイアウト計算で、コマ形状・写植・
+  // 重なりを編集しながら確認できる単一の編集面（制作と編集の分離を解消する）。
+  const pageEditorElement = selected ? (
+    <Suspense fallback={<p className="hint">ページ編集機能を読み込んでいます...</p>}>
+      <PageEditor
+        projectId={selected.id}
+        revision={selected.revision}
+        manga={selected.manga_json}
+        pageNumber={selectedPage}
+        assetVersion={assetVersion}
+        busy={busy}
+        setMessage={setMessage}
+        selectedPanelId={selectedPanelId}
+        onSelectPanel={(panelId) => setSelectedPanelId(panelId)}
+        onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
+        onOverlayUpload={async (manga, pageNumber, overlayId, kind, file) => {
+          const projectId = selected.id;
+          try {
+            const saved = await adoptMutationResponse(
+              await putMangaJson(projectId, selected.revision, manga)
+            );
+            if (!saved.applied || !saved.project) return false;
+            const response = await api.postBinary<ProjectMutationResponse<ReferenceAssetResult>>(
+              withRevision(
+                `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlayId)}/${kind}`,
+                saved.project.revision
+              ),
+              file
+            );
+            const adopted = await adoptMutationResponse(response);
+            if (adopted.applied && adopted.project) {
+              setAssetVersion((value) => value + 1);
+            }
+            return adopted.applied && !!adopted.project && !adopted.resynced;
+          } catch (error) {
+            if (await handleProjectMutationError(error)) return false;
+            throw error;
+          }
+        }}
+        onSave={async (manga) => {
+          if (!selected) return;
+          const projectId = selected.id;
+          const pageNumber = selectedPage;
+          setBusy(true);
+          try {
+            // 保存成功時点のrevisionを先に反映する。直後のrenderが失敗しても、
+            // サーバが進めたrevisionとselectedが乖離して次の保存が誤409にならないように。
+            const saved = await adoptMutationResponse(
+              await putMangaJson(projectId, selected.revision, manga)
+            );
+            if (!saved.applied || !saved.project) return;
+            const rendered = await api.post<ProjectMutationResponse<PageRenderResult>>(
+              withRevision(`/api/projects/${projectId}/pages/${pageNumber}/render`, saved.project.revision)
+            );
+            // 生成されたページPNGをプレビューへ反映する。
+            const renderedAdopted = await adoptMutationResponse(rendered);
+            if (!renderedAdopted.applied || !renderedAdopted.project) return;
+            applyRenderedPageAsset(renderedAdopted, pageNumber);
+            if (renderedAdopted.resynced) {
+              setMessage("構成が更新されたためページを再同期しました");
+              return;
+            }
+            setMessage("レイアウトを保存し、ページ画像を更新しました");
+          } catch (error) {
+            // typed 409(revision競合等)は最新project採用＋派生状態再同期へ寄せる。
+            if (await handleProjectMutationError(error)) return;
+            setMessage(`保存に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+        onSuggest={async (family) => {
+          if (!selected) return;
+          const projectId = selected.id;
+          const pageNumber = selectedPage;
+          setBusy(true);
+          try {
+            // 未保存の編集を先に保存する。再レイアウトAPIは保存済みManga JSONを基準に動くため、
+            // 保存しないと直前のコマ移動・吹き出し・overlay編集が失われる。
+            const saved = await adoptMutationResponse(
+              await putMangaJson(projectId, selected.revision, selected.manga_json)
+            );
+            if (!saved.applied || !saved.project) return;
+            const response = await api.post<ProjectMutationResponse<Schemas["LayoutSuggestResult"]>>(
+              withRevision(
+                `/api/projects/${projectId}/pages/${pageNumber}/layout/suggest`,
+                saved.project.revision
+              ),
+              { family }
+            );
+            const adopted = await adoptMutationResponse(response);
+            if (!adopted.applied || !adopted.project) return;
+            const { result } = adopted;
+            setMessage(`レイアウトを再提案しました（${result.layout_family}）`);
+          } catch (error) {
+            if (await handleProjectMutationError(error)) return;
+            setMessage(`再提案に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    </Suspense>
+  ) : null;
+
   return (
     <div className={`app-shell ${sidebarOpen ? "" : "sidebar-closed"}`}>
       <aside className="sidebar">
@@ -1577,9 +1769,13 @@ export function App() {
               <RefreshCw size={17} />
               レンダリング
             </button>
-            <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}>
+            <button
+              title="ページ画像とmanga.json・メタデータをフォルダへ書き出す"
+              onClick={exportFolder}
+              disabled={!selected || busy}
+            >
               <Download size={17} />
-              CBZ
+              フォルダ書き出し
             </button>
             <button title="保存先を開く" onClick={openExportFolder} disabled={!selected || busy}>
               <FolderOpen size={17} />
@@ -1600,14 +1796,7 @@ export function App() {
             className={activeTab === "production" ? "active" : ""}
             onClick={() => setActiveTab("production")}
           >
-            制作
-          </button>
-          <button
-            className={activeTab === "editor" ? "active" : ""}
-            onClick={() => setActiveTab("editor")}
-            disabled={!selected}
-          >
-            ページ編集
+            制作・編集
           </button>
           <button
             className={activeTab === "knowledge" ? "active" : ""}
@@ -1632,114 +1821,6 @@ export function App() {
             />
             {activeJobIds.length > 0 && <button onClick={cancelActiveJob}>キャンセル</button>}
           </section>
-        )}
-
-        {activeTab === "editor" && selected && (
-          <Suspense fallback={<p className="hint">ページ編集機能を読み込んでいます...</p>}>
-            <PageEditor
-              projectId={selected.id}
-              revision={selected.revision}
-              manga={selected.manga_json}
-              pageNumber={selectedPage}
-              assetVersion={assetVersion}
-              busy={busy}
-              setMessage={setMessage}
-              onChange={(manga, revision) => applyProjectMutation(selected.id, manga, revision)}
-              onOverlayUpload={async (manga, pageNumber, overlayId, kind, file) => {
-                const projectId = selected.id;
-                try {
-                  const saved = await adoptMutationResponse(
-                    await putMangaJson(projectId, selected.revision, manga)
-                  );
-                  if (!saved.applied || !saved.project) return false;
-                  const response = await api.postBinary<ProjectMutationResponse<ReferenceAssetResult>>(
-                    withRevision(
-                      `/api/projects/${projectId}/pages/${pageNumber}/overlays/${encodeURIComponent(overlayId)}/${kind}`,
-                      saved.project.revision
-                    ),
-                    file
-                  );
-                  const adopted = await adoptMutationResponse(response);
-                  if (adopted.applied && adopted.project) {
-                    setAssetVersion((value) => value + 1);
-                  }
-                  return adopted.applied && !!adopted.project && !adopted.resynced;
-                } catch (error) {
-                  if (await handleProjectMutationError(error)) return false;
-                  throw error;
-                }
-              }}
-              onSave={async (manga) => {
-                if (!selected) return;
-                const projectId = selected.id;
-                const pageNumber = selectedPage;
-                setBusy(true);
-                try {
-                  // 保存成功時点のrevisionを先に反映する。直後のrenderが失敗しても、
-                  // サーバが進めたrevisionとselectedが乖離して次の保存が誤409にならないように。
-                  const saved = await adoptMutationResponse(
-                    await putMangaJson(projectId, selected.revision, manga)
-                  );
-                  if (!saved.applied || !saved.project) return;
-                  const rendered = await api.post<ProjectMutationResponse<PageRenderResult>>(
-                    withRevision(
-                      `/api/projects/${projectId}/pages/${pageNumber}/render`,
-                      saved.project.revision
-                    )
-                  );
-                  // 生成されたページPNGを制作タブのプレビューへ反映する。
-                  const renderedAdopted = await adoptMutationResponse(rendered);
-                  if (!renderedAdopted.applied || !renderedAdopted.project) return;
-                  applyRenderedPageAsset(renderedAdopted, pageNumber);
-                  if (renderedAdopted.resynced) {
-                    setMessage("構成が更新されたためページを再同期しました");
-                    return;
-                  }
-                  setMessage("レイアウトを保存し、ページ画像を更新しました");
-                } catch (error) {
-                  // typed 409(revision競合等)は最新project採用＋派生状態再同期へ寄せる。
-                  if (await handleProjectMutationError(error)) return;
-                  setMessage(
-                    `保存に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              onSuggest={async (family) => {
-                if (!selected) return;
-                const projectId = selected.id;
-                const pageNumber = selectedPage;
-                setBusy(true);
-                try {
-                  // 未保存の編集を先に保存する。再レイアウトAPIは保存済みManga JSONを基準に動くため、
-                  // 保存しないと直前のコマ移動・吹き出し・overlay編集が失われる。
-                  const saved = await adoptMutationResponse(
-                    await putMangaJson(projectId, selected.revision, selected.manga_json)
-                  );
-                  if (!saved.applied || !saved.project) return;
-                  const response = await api.post<ProjectMutationResponse<Schemas["LayoutSuggestResult"]>>(
-                    withRevision(
-                      `/api/projects/${projectId}/pages/${pageNumber}/layout/suggest`,
-                      saved.project.revision
-                    ),
-                    { family }
-                  );
-                  const adopted = await adoptMutationResponse(response);
-                  if (!adopted.applied || !adopted.project) return;
-                  const { result } = adopted;
-                  setMessage(`レイアウトを再提案しました（${result.layout_family}）`);
-                } catch (error) {
-                  if (await handleProjectMutationError(error)) return;
-                  setMessage(
-                    `再提案に失敗しました: ${error instanceof Error ? error.message : "不明なエラー"}`
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            />
-          </Suspense>
         )}
 
         {activeTab === "knowledge" && <KnowledgePanel defaultWorkName={selected?.work_name ?? ""} />}
@@ -1818,6 +1899,32 @@ export function App() {
                       {(productionStatus.quality_warnings ?? []).length > 0
                         ? ` / 注意 ${(productionStatus.quality_warnings ?? []).length}件`
                         : ""}
+                      <button
+                        type="button"
+                        className="quality-autofix"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void autofixCurrentProject();
+                        }}
+                        disabled={busy}
+                      >
+                        自動修正
+                      </button>
+                      {(productionStatus.quality_errors ?? []).some(
+                        (issue) => issue.code === "empty_panel_image"
+                      ) && (
+                        <button
+                          type="button"
+                          className="quality-autofix"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            void regenerateBlankPanels();
+                          }}
+                          disabled={busy}
+                        >
+                          白紙コマを再生成
+                        </button>
+                      )}
                     </summary>
                     <ul>
                       {[
@@ -2386,9 +2493,6 @@ export function App() {
                           onClick={() => setSelectedPage(page)}
                         >
                           {page}p
-                          {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
-                            ? " 完了"
-                            : ""}
                         </button>
                       ))}
                   </div>
@@ -2400,14 +2504,18 @@ export function App() {
                     />
                     未完成のみ
                   </label>
-                  <div className="page-frame">
-                    {pageAssets[selectedPage - 1] ? (
-                      <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
-                    ) : (
+                  <div className="page-canvas-host">
+                    {pageEditorElement ?? (
                       <div className="page-placeholder">
                         <strong>{currentPage ? `${currentPage.page}ページ` : "未生成"}</strong>
                         <span>{currentPage?.theme ?? "ネーム生成後にプレビューできます"}</span>
                       </div>
+                    )}
+                    {pageAssets[selectedPage - 1] && (
+                      <details className="rendered-result">
+                        <summary>最終レンダリング結果</summary>
+                        <img src={assetUrl(pageAssets[selectedPage - 1])} alt={`${selectedPage}ページ`} />
+                      </details>
                     )}
                   </div>
                   <div className="panel-list">
@@ -2886,26 +2994,36 @@ export function App() {
                       <small className="empty-candidates">生成すると候補がここに保存されます</small>
                     )}
                     <div className="actions">
-                      <button onClick={generateCurrentPanelImage} disabled={busy}>
-                        画像生成
+                      <button
+                        title="選択中のコマを生成（既定でseedをランダム化し別の絵を出す）"
+                        onClick={generateCurrentPanelImage}
+                        disabled={busy}
+                      >
+                        選択コマを生成
                       </button>
-                      <button onClick={generateCurrentPanelImage} disabled={busy}>
-                        再生成
+                      <button
+                        title="このページのコマをまとめて生成"
+                        onClick={generateCurrentPageImages}
+                        disabled={busy}
+                      >
+                        ページを生成
                       </button>
-                      <button onClick={generateCurrentPageImages} disabled={busy}>
-                        ページ内全コマ生成
+                      <button title="全ページのコマを生成" onClick={generateAllPageImages} disabled={busy}>
+                        全ページを生成
                       </button>
-                      <button onClick={generateAllPageImages} disabled={busy}>
-                        全ページ生成
+                      <button
+                        title="写植を反映してこのページを書き出す"
+                        onClick={renderCurrentPanelPage}
+                        disabled={busy}
+                      >
+                        ページを書き出し
                       </button>
-                      <button onClick={renderCurrentPanelPage} disabled={busy}>
-                        写植更新
-                      </button>
-                      <button onClick={renderCurrentPanelPage} disabled={busy}>
-                        ページ更新
-                      </button>
-                      <button onClick={useStubForCurrentPanel} disabled={busy}>
-                        stubへ戻す
+                      <button
+                        title="自動修正できる品質問題をまとめて直す"
+                        onClick={autofixCurrentProject}
+                        disabled={busy}
+                      >
+                        自動修正
                       </button>
                     </div>
                   </div>
@@ -2973,6 +3091,11 @@ export function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {toast && (
+        <div className="toast" role="status" aria-live="polite">
+          {toast}
         </div>
       )}
     </div>

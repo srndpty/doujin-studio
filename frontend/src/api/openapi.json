@@ -963,6 +963,147 @@
         }
       }
     },
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix": {
+      "post": {
+        "summary": "Autofix Page Endpoint",
+        "operationId": "autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PreflightFixResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Autofix Page Endpoint Api Projects  Project Id  Pages  Page Number  Preflight Fix Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/preflight/fix": {
+      "post": {
+        "summary": "Autofix Project Endpoint",
+        "operationId": "autofix_project_endpoint_api_projects__project_id__preflight_fix_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_PreflightFixResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Autofix Project Endpoint Api Projects  Project Id  Preflight Fix Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/pages/{page_number}/render": {
       "post": {
         "summary": "Render Page Endpoint",
@@ -1162,6 +1303,72 @@
                     }
                   ],
                   "title": "Response 409 Export Project Cbz Api Projects  Project Id  Export Cbz Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/export/folder": {
+      "post": {
+        "summary": "Export Project Folder",
+        "operationId": "export_project_folder_api_projects__project_id__export_folder_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_FolderExportResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Export Project Folder Api Projects  Project Id  Export Folder Post"
                 }
               }
             }
@@ -1699,6 +1906,73 @@
                     "$ref": "#/components/schemas/GenerationJobResponse"
                   },
                   "title": "Response List Generation Jobs Api Projects  Project Id  Generation Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/generation-jobs/blank": {
+      "post": {
+        "summary": "Regenerate Blank Panels",
+        "description": "preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。\n\nseedを毎回ランダム化して別の絵を狙う。対象が無ければ404。",
+        "operationId": "regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_BatchGenerationJobResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Regenerate Blank Panels Api Projects  Project Id  Generation Jobs Blank Post"
                 }
               }
             }
@@ -3230,6 +3504,32 @@
           "absolute_path"
         ],
         "title": "ExportResult"
+      },
+      "FolderExportResult": {
+        "properties": {
+          "folder_path": {
+            "type": "string",
+            "title": "Folder Path"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder_path",
+          "page_count"
+        ],
+        "title": "FolderExportResult",
+        "description": "フォルダ出力の結果。出力先の絶対パスとページ数を返す。"
       },
       "FontInfo": {
         "properties": {
@@ -4839,6 +5139,57 @@
             ],
             "title": "Shape Points"
           },
+          "frame_points": {
+            "anyOf": [
+              {
+                "items": {
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array",
+                  "maxItems": 2,
+                  "minItems": 2
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Points"
+          },
+          "z_index": {
+            "type": "integer",
+            "title": "Z Index",
+            "default": 0
+          },
+          "frame_role": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "background",
+              "bleed",
+              "overlap",
+              "vertical_splash",
+              "cut_in"
+            ],
+            "title": "Frame Role",
+            "default": "normal"
+          },
+          "frame_source": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Frame Source",
+            "default": "auto"
+          },
           "shot": {
             "type": "string",
             "title": "Shot"
@@ -5160,6 +5511,31 @@
           "page_asset"
         ],
         "title": "PanelPageRenderResult"
+      },
+      "PreflightFixResult": {
+        "properties": {
+          "fixed_count": {
+            "type": "integer",
+            "title": "Fixed Count"
+          },
+          "fixed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fixed"
+          },
+          "preflight": {
+            "$ref": "#/components/schemas/PreflightResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fixed_count",
+          "preflight"
+        ],
+        "title": "PreflightFixResult",
+        "description": "preflight自動修正の結果。適用件数と説明、修正後の再検査結果を返す。"
       },
       "PreflightIssue": {
         "properties": {
@@ -5501,6 +5877,27 @@
         ],
         "title": "ProjectMutationResponse[ExportResult]"
       },
+      "ProjectMutationResponse_FolderExportResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/FolderExportResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[FolderExportResult]"
+      },
       "ProjectMutationResponse_GenerationJobResponse_": {
         "properties": {
           "project": {
@@ -5605,6 +6002,27 @@
           "result"
         ],
         "title": "ProjectMutationResponse[PanelPageRenderResult]"
+      },
+      "ProjectMutationResponse_PreflightFixResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/PreflightFixResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[PreflightFixResult]"
       },
       "ProjectMutationResponse_ProjectRenderResult_": {
         "properties": {

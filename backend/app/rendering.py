@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -54,7 +55,8 @@ ProductionStatusValue = Literal["incomplete", "ready", "complete"]
 # ファイル名で再公開され、古いキャッシュページと衝突しなくなる。
 # 履歴: 1=初期, 2=縦書き句読点を右上クロップ配置・全角チルダ等の回転対応,
 #       3=波ダッシュの向き反転・三点リーダの実インク中央寄せ・吹き出しのアンチエイリアス
-RENDER_ENGINE_VERSION = 3
+#       4=frame_points/shape_pointsとパネル単位z-index描画順をシグネチャへ反映
+RENDER_ENGINE_VERSION = 4
 
 
 class RenderInputChangedError(Exception):
@@ -268,6 +270,10 @@ def page_render_signature(manga: MangaProject, page) -> str:
             {
                 "panel_id": panel.panel_id,
                 "bbox": panel.bbox,
+                "shape_points": panel.shape_points,
+                "frame_points": panel.frame_points,
+                "z_index": panel.z_index,
+                "frame_role": panel.frame_role,
                 "image_asset": panel.image_asset,
                 "dialogue": [line.model_dump() for line in panel.dialogue],
                 "sfx": [item.model_dump() for item in panel.sfx],
@@ -418,6 +424,74 @@ def export_confirmed_cbz(
         return target
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _build_export_metadata(manga: MangaProject) -> dict:
+    """フォルダ出力に同梱する生成条件メタデータ（再現用）。"""
+    panels_meta: list[dict] = []
+    for page in manga.pages:
+        for panel in page.panels:
+            gen = panel.generation
+            panels_meta.append(
+                {
+                    "page": page.page,
+                    "panel_id": panel.panel_id,
+                    "backend": gen.backend,
+                    "status": gen.status,
+                    "seed": gen.seed,
+                    "prompt": gen.prompt,
+                    "negative_prompt": gen.negative_prompt,
+                    "workflow_preset_id": gen.workflow_preset_id,
+                }
+            )
+    return {
+        "title": manga.title,
+        "work_name": manga.work_name,
+        "page_count": len(manga.pages),
+        "reading_direction": manga.reading_direction,
+        "panels": panels_meta,
+    }
+
+
+def export_folder(
+    project_id: str,
+    manga: MangaProject,
+    page_assets: list[Path],
+    export_dir: Path,
+    revision: int,
+) -> Path:
+    """確定済みページ画像とmanga.json・生成メタデータをフォルダへ並べる。
+
+    CBZの代替。中身が画像だけのアーカイブは扱いにくいため、画像と再現用メタを素のまま
+    フォルダへ出力し、アーカイブ化は利用者へ委ねる（領域: 出力）。
+    """
+    root = export_dir / project_id
+    manifest_hash = hashlib.sha256(
+        "\n".join(asset.name for asset in sorted(page_assets)).encode("utf-8")
+    ).hexdigest()[:16]
+    staging = root / ".folder-staging" / f"revision-{revision}-{uuid.uuid4().hex}"
+    final = root / f"export-r{revision}-{manifest_hash}-{uuid.uuid4().hex}"
+    pointer_tmp = root / f".latest-export-{uuid.uuid4().hex}.txt"
+    pointer = root / "latest-export.txt"
+    try:
+        staging.mkdir(parents=True, exist_ok=False)
+        for index, asset in enumerate(sorted(page_assets), start=1):
+            shutil.copy2(asset, staging / f"page_{index:03d}.png")
+        (staging / "manga.json").write_text(manga.model_dump_json(indent=2), encoding="utf-8")
+        (staging / "metadata.json").write_text(
+            json.dumps(_build_export_metadata(manga), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(staging, final)
+        pointer_tmp.write_text(final.name, encoding="utf-8")
+        os.replace(pointer_tmp, pointer)
+        return final
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            pointer_tmp.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("folder export pointer cleanup失敗: %s", pointer_tmp, exc_info=True)
 
 
 class RenderingService:

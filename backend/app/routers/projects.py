@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, HTTPException, Request, Response, status
 from .. import layout_engine
 from .. import preflight as preflight_module
 from ..assets import path_to_asset_id, safe_component, stable_asset_name
+from ..autofix import autofix_manga
 from ..deletion import remove_deletion_fence, write_deletion_fence
 from ..generator import generate_four_page_name
 from ..mutation import ProjectRevisionConflictError, RenderCommitConflictError, mark_page_dirty
@@ -27,6 +28,7 @@ from ..schemas import (
     CharacterReferenceResult,
     EmptyMutationResult,
     ExportResult,
+    FolderExportResult,
     GenerateNameRequest,
     LayoutSuggestRequest,
     LayoutSuggestResult,
@@ -35,6 +37,7 @@ from ..schemas import (
     PageRenderResult,
     PanelControlReference,
     PanelPageRenderResult,
+    PreflightFixResult,
     PreflightResponse,
     ProjectCreate,
     ProjectDeletionResponse,
@@ -597,6 +600,90 @@ def preflight_project_endpoint(project_id: str, request: Request) -> PreflightRe
 
 
 @router.post(
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix",
+    response_model=ProjectMutationResponse[PreflightFixResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def autofix_page_endpoint(
+    project_id: str, page_number: int, request: Request, revision: int
+) -> ProjectMutationResponse[PreflightFixResult]:
+    return _run_autofix(request, project_id, revision, page_number)
+
+
+@router.post(
+    "/api/projects/{project_id}/preflight/fix",
+    response_model=ProjectMutationResponse[PreflightFixResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def autofix_project_endpoint(
+    project_id: str, request: Request, revision: int
+) -> ProjectMutationResponse[PreflightFixResult]:
+    return _run_autofix(request, project_id, revision, None)
+
+
+def _run_autofix(
+    request: Request, project_id: str, revision: int, page_number: int | None
+) -> ProjectMutationResponse[PreflightFixResult]:
+    export_dir = request.app.state.settings.export_dir
+    checked = request.app.state.mutation.require_revision(project_id, revision)
+
+    if page_number is not None and not any(p.page == page_number for p in checked.manga.pages):
+        raise HTTPException(status_code=404, detail="ページが見つかりません")
+
+    dry_run = checked.manga.model_copy(deep=True)
+    planned = autofix_manga(dry_run, page_number)
+    if not planned:
+        issues = (
+            preflight_module.preflight_page(
+                checked.manga,
+                next(item for item in checked.manga.pages if item.page == page_number),
+                export_dir=export_dir,
+            )
+            if page_number is not None
+            else preflight_module.preflight_project(checked.manga, export_dir)
+        )
+        return to_project_mutation_response(
+            request,
+            project_id,
+            PreflightFixResult(
+                fixed_count=0,
+                fixed=[],
+                preflight=_to_preflight_response(project_id, page_number, issues),
+            ),
+            snapshot=checked,
+        )
+
+    def mutate(manga: MangaProject) -> list[str]:
+        changes = autofix_manga(manga, page_number)
+        affected = {change.page for change in changes}
+        for page in manga.pages:
+            if page.page in affected:
+                mark_page_dirty(page)
+        return [change.message for change in changes]
+
+    mutation_result = request.app.state.mutation.mutate_user(
+        project_id, expected_revision=revision, mutate=mutate
+    )
+    fixed = mutation_result.result
+    manga = mutation_result.project.manga
+    if page_number is not None:
+        page = next(item for item in manga.pages if item.page == page_number)
+        issues = preflight_module.preflight_page(manga, page, export_dir=export_dir)
+    else:
+        issues = preflight_module.preflight_project(manga, export_dir)
+    return to_project_mutation_response(
+        request,
+        project_id,
+        PreflightFixResult(
+            fixed_count=len(fixed),
+            fixed=fixed,
+            preflight=_to_preflight_response(project_id, page_number, issues),
+        ),
+        snapshot=mutation_result.project,
+    )
+
+
+@router.post(
     "/api/projects/{project_id}/pages/{page_number}/render",
     response_model=ProjectMutationResponse[PageRenderResult],
     responses=PROJECT_MUTATION_ERROR_RESPONSES,
@@ -691,6 +778,32 @@ def export_project_cbz(
 
 
 @router.post(
+    "/api/projects/{project_id}/export/folder",
+    response_model=ProjectMutationResponse[FolderExportResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def export_project_folder(
+    project_id: str, request: Request, revision: int
+) -> ProjectMutationResponse[FolderExportResult]:
+    try:
+        result = request.app.state.project_render.export_folder(
+            project_id, expected_revision=revision
+        )
+    except (RenderCommitConflictError, RenderInputChangedError) as exc:
+        raise ProjectRevisionConflictError(project_id, revision) from exc
+    return to_project_mutation_response(
+        request,
+        project_id,
+        FolderExportResult(
+            folder_path=str(result.folder_path.resolve()),
+            page_count=result.page_count,
+            warnings=result.warnings,
+        ),
+        snapshot=result.project,
+    )
+
+
+@router.post(
     "/api/projects/{project_id}/export/open-folder",
     response_model=OpenExportFolderResponse,
 )
@@ -701,14 +814,32 @@ def open_project_export_folder(project_id: str, request: Request) -> OpenExportF
     if project_dir.parent != export_dir:
         raise HTTPException(status_code=400, detail="出力フォルダが不正です")
     project_dir.mkdir(parents=True, exist_ok=True)
-    cbz_files = list(project_dir.glob("*.cbz"))
-    cbz_path = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
-    open_in_file_manager(cbz_path)
+    # 新標準のフォルダ出力(export/)があればそれを開く。無ければ旧CBZ、最後にプロジェクト直下。
+    latest_export = project_dir / "latest-export.txt"
+    target = project_dir
+    if latest_export.is_file():
+        try:
+            name = latest_export.read_text(encoding="utf-8").strip()
+        except OSError:
+            name = ""
+        candidate = project_dir / name
+        if name == Path(name).name and candidate.is_dir():
+            target = candidate
+    if target == project_dir:
+        export_dirs = [path for path in project_dir.glob("export-r*") if path.is_dir()]
+        if export_dirs:
+            target = max(export_dirs, key=lambda path: path.stat().st_mtime)
+        else:
+            cbz_files = list(project_dir.glob("*.cbz"))
+            target = (
+                max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+            )
+    open_in_file_manager(target)
     return OpenExportFolderResponse(
         project_id=project_id,
         folder_path=str(project_dir),
-        cbz_path=str(cbz_path),
-        cbz_exists=cbz_path.is_file(),
+        cbz_path=str(target),
+        cbz_exists=target.is_file(),
     )
 
 

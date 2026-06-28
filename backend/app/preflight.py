@@ -13,6 +13,7 @@ from PIL import Image
 from . import layout_engine
 from .assets import resolve_asset_path
 from .prompt_composer import is_non_character_mode
+from .prompt_normalizer import blank_risk_tags
 from .renderer import (
     PAGE_SIZE,
     TEXT_FLOOR_SIZE,
@@ -21,7 +22,7 @@ from .renderer import (
     sfx_bbox_px,
 )
 from .schemas import Character, Dialogue, MangaProject, Page, Panel, PreflightIssue
-from .story import panel_shape_allowed
+from .story import normalize_sfx_text, panel_shape_allowed
 
 # 画像メトリクス検査のしきい値。
 WHITE_PIXEL_MIN = 240  # 各チャンネルがこの値以上なら「ほぼ白」とみなす
@@ -71,6 +72,8 @@ def preflight_page(
     issues.extend(_check_sfx_collisions(manga, page))
     issues.extend(_check_sfx_text_language(page))
     issues.extend(_check_monologue_balloon(page))
+    issues.extend(_check_silent_panels(page))
+    issues.extend(_check_prompt_blank_risk(page))
     issues.extend(_check_panel_shapes(page))
     issues.extend(_check_tail_speaker(page))
     issues.extend(_check_character_setup(manga, page))
@@ -721,6 +724,8 @@ def _check_sfx_text_language(page: Page) -> list[PreflightIssue]:
     for panel in page.panels:
         for sfx in panel.sfx:
             if _is_ascii_letter_dominant(sfx.text):
+                # 辞書で日本語化できる語だけ自動修正可能にする。未知語は手動修正を促す。
+                convertible = normalize_sfx_text(sfx.text) != sfx.text
                 issues.append(
                     PreflightIssue(
                         level="error",
@@ -730,7 +735,7 @@ def _check_sfx_text_language(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="sfx",
                         suggestion="擬音は日本語表記にしてください（例: bang→バン）",
-                        fixable=False,
+                        fixable=convertible,
                     )
                 )
     return issues
@@ -751,10 +756,82 @@ def _check_monologue_balloon(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="balloon",
                         suggestion="独白は矩形のキャプション(caption)を基本にしてください",
-                        fixable=False,
+                        fixable=True,
                     )
                 )
     return issues
+
+
+def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
+    """白紙コマを誘発するprompt（white/blank/empty space等の単独指定）を検出する。
+
+    生成promptは生成時に正規化されるが、保存済みのpanel.prompt/composition_notesに
+    残る誘発タグを自動修正できるよう、ここでfixableな警告として知らせる（領域: 品質ゲート）。
+    """
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        hits: list[str] = []
+        for text in (panel.prompt, panel.composition_notes):
+            hits.extend(blank_risk_tags(text))
+        if hits:
+            unique = list(dict.fromkeys(hits))
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="prompt_blank_risk",
+                    message=f"白紙化を招くprompt語があります（{', '.join(unique)}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="image_quality",
+                    suggestion=(
+                        "white/blank/empty space等の単独指定を除去し、背景指定はsimple_background"
+                        "等のbooruタグへ寄せてください"
+                    ),
+                    fixable=True,
+                )
+            )
+    return issues
+
+
+# 無言が演出意図として自然な役割（沈黙・間・余韻）。これらは無言でも警告しない。
+INTENTIONAL_SILENT_ROLES = {"silent", "transition", "aftermath", "montage"}
+
+
+def _check_silent_panels(page: Page) -> list[PreflightIssue]:
+    """無言の人物コマが多すぎるページを検出する（「無言のコマが多すぎる」対策）。
+
+    人物が描かれるコマ（小物・手・背景コマを除く）で台詞が無く、かつ無言が自然な役割
+    （silent/transition/aftermath/montage）でもないものを「無言コマ」とみなす。これが
+    人物コマの過半かつ3枚以上なら、台詞・反応の追加を促す。台詞の中身は編集判断のため
+    自動修正はしない（fixable=False）。
+    """
+    character_panels = [
+        panel for panel in page.panels if not is_non_character_mode(panel) and panel.characters
+    ]
+    if len(character_panels) < 3:
+        return []
+    silent = [
+        panel
+        for panel in character_panels
+        if not panel.dialogue
+        and _normalize_rhythm_token(panel.role) not in INTENTIONAL_SILENT_ROLES
+    ]
+    if len(silent) >= 3 and len(silent) >= 0.6 * len(character_panels):
+        return [
+            PreflightIssue(
+                level="warning",
+                code="too_many_silent_panels",
+                message=f"無言の人物コマが多すぎます（{len(silent)}/{len(character_panels)}枚）",
+                page=page.page,
+                category="rhythm",
+                suggestion=(
+                    "台詞や短い反応・モノローグを加えるか、無言の意図があるコマは"
+                    "role=silent/transition/aftermathにしてください"
+                ),
+                fixable=False,
+            )
+        ]
+    return []
 
 
 def _check_panel_shapes(page: Page) -> list[PreflightIssue]:
@@ -824,7 +901,7 @@ def _check_tail_speaker(page: Page) -> list[PreflightIssue]:
                         panel_id=panel.panel_id,
                         category="balloon",
                         suggestion="しっぽ先端を話者の人物領域へ向けてください",
-                        fixable=False,
+                        fixable=True,
                     )
                 )
     return issues

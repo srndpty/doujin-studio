@@ -335,7 +335,7 @@ describe("AppのManga JSON保存", () => {
     ).toBeGreaterThan(1);
   });
 
-  it("プロジェクト切替後は古いCBZ応答を現在の編集状態へ反映しない", async () => {
+  it("プロジェクト切替後は", async () => {
     const p2Manga = { ...manga, title: "プロジェクト2" };
     let resolveCbz!: (response: Response) => void;
     const delayedCbz = new Promise<Response>((resolve) => {
@@ -343,7 +343,7 @@ describe("AppのManga JSON保存", () => {
     });
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (init?.method === "POST" && url === "/api/projects/p1/export/cbz?revision=0") {
+      if (init?.method === "POST" && url === "/api/projects/p1/export/folder?revision=0") {
         return delayedCbz;
       }
       if (url === "/api/projects") {
@@ -401,7 +401,7 @@ describe("AppのManga JSON保存", () => {
     const { container } = render(<App />);
     fireEvent.click(await screen.findByText("テスト本"));
     await screen.findByDisplayValue("テスト本");
-    fireEvent.click(screen.getByTitle("CBZを書き出す"));
+    fireEvent.click(screen.getByTitle("ページ画像とmanga.json・メタデータをフォルダへ書き出す"));
     fireEvent.click(screen.getByText("プロジェクト2"));
     await screen.findByDisplayValue("プロジェクト2");
 
@@ -415,7 +415,7 @@ describe("AppのManga JSON保存", () => {
             revision: 9,
             manga_json: { ...manga, title: "遅延したプロジェクト1" }
           },
-          result: { cbz_asset: "p1/old.cbz", absolute_path: "old.cbz", warnings: [] }
+          result: { folder_path: "p1/export", page_count: 4, warnings: [] }
         }),
         { headers: { "Content-Type": "application/json" } }
       )
@@ -434,7 +434,7 @@ describe("AppのManga JSON保存", () => {
     });
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url = String(input);
-      if (init?.method === "POST" && url.includes("/export/cbz")) {
+      if (init?.method === "POST" && url.includes("/export/folder")) {
         return delayedCbz;
       }
       if (url === "/api/projects") {
@@ -483,7 +483,7 @@ describe("AppのManga JSON保存", () => {
     const { container } = render(<App />);
     fireEvent.click(await screen.findByText("最新本"));
     await screen.findByDisplayValue("最新本");
-    fireEvent.click(screen.getByTitle("CBZを書き出す"));
+    fireEvent.click(screen.getByTitle("ページ画像とmanga.json・メタデータをフォルダへ書き出す"));
 
     // 遅延CBZ応答は古いrevision 3のsnapshotを返す。
     resolveCbz(
@@ -497,7 +497,7 @@ describe("AppのManga JSON保存", () => {
             manga_json: { ...manga, title: "巻き戻し版" }
           },
           latest_revision: 5,
-          result: { cbz_asset: "p1/old.cbz", absolute_path: "old.cbz", warnings: [] }
+          result: { folder_path: "p1/export", page_count: 4, warnings: [] }
         }),
         { headers: { "Content-Type": "application/json" } }
       )
@@ -687,7 +687,7 @@ describe("AppのManga JSON保存", () => {
     render(<App />);
     fireEvent.click(await screen.findByText("プロジェクト1"));
     await screen.findByDisplayValue("プロジェクト1");
-    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+    fireEvent.click(await screen.findByRole("button", { name: "選択コマを生成" }));
     await waitFor(() => expect(putStarted).toBe(true));
 
     fireEvent.click(screen.getByText("プロジェクト2"));
@@ -1001,7 +1001,7 @@ describe("AppのManga JSON保存", () => {
     const { container } = render(<App />);
     fireEvent.click(await screen.findByText("rev11"));
     await screen.findByDisplayValue("rev11");
-    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+    fireEvent.click(await screen.findByRole("button", { name: "選択コマを生成" }));
 
     // 古いrevision 10のrender応答が来ても、JSON・タイトルはrevision 11のまま。
     await waitFor(() => expect(renderCalls).toBe(1));
@@ -1114,7 +1114,7 @@ describe("AppのManga JSON保存", () => {
     const { container } = render(<App />);
     fireEvent.click(await screen.findByText("本"));
     await screen.findByDisplayValue("本");
-    fireEvent.click(await screen.findByRole("button", { name: "画像生成" }));
+    fireEvent.click(await screen.findByRole("button", { name: "選択コマを生成" }));
 
     await waitFor(() =>
       expect(
@@ -1262,14 +1262,14 @@ describe("AppのManga JSON保存", () => {
     render(<App />);
     fireEvent.click(await screen.findByText("本"));
     await screen.findByDisplayValue("本");
-    fireEvent.click(screen.getByRole("button", { name: "ページ編集" }));
+    // 制作・編集タブ（既定）にページ編集キャンバスが統合されている。
     fireEvent.click(await screen.findByRole("button", { name: "保存（レイアウト確定）" }));
 
     // typed 409 が handleProjectMutationError に渡り、最新projectが採用される。
     await waitFor(() => expect(screen.getByLabelText("本のタイトル")).toHaveValue("競合で進んだ最新"));
   });
 
-  it.each(["画像生成", "ページ内全コマ生成", "全ページ生成"])(
+  it.each(["選択コマを生成", "ページを生成", "全ページを生成"])(
     "%s完了後のrender-pageには最新revisionを送る",
     async (buttonName) => {
       const mangaWithPanel = {

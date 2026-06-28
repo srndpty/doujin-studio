@@ -11,7 +11,18 @@ from __future__ import annotations
 import math
 
 from .generator import compute_generation_size
-from .schemas import Page, PageLayoutSettings
+from .schemas import Page, PageLayoutSettings, Panel
+
+# 裁ち落としでページ外へはみ出す量（frame_pointsの許容範囲-0.05..1.05に合わせる）。
+BLEED = 0.05
+# コマ枠の頂点が同士で接する/触れると判定する許容差。
+EDGE_EPS = 0.02
+# 見せ場（背面大ゴマ・裁ち落とし候補）になりうる役割。
+HERO_ROLES = frozenset({"reveal", "punchline", "emotional_peak", "establish"})
+# 裁ち落とし（端まで塗る）にしてよい役割。
+BLEED_ROLES = frozenset({"reveal", "punchline", "emotional_peak", "establish", "action"})
+# 重ね小コマ（カットイン）にしてよい小コマの役割。
+CUT_IN_ROLES = frozenset({"reaction", "silent", "dialogue", "aftermath", "transition"})
 
 # 拡張テンプレートファミリー。
 LAYOUT_FAMILIES = [
@@ -262,10 +273,227 @@ def relayout_page(
         panel.generation.height = height
     page.layout_family = chosen
     page.reading_order = [panel.panel_id for panel in page.panels]
+    # 長方形タイルを下敷きに、見せ場へ背面大ゴマ・裁ち落とし・縦ぶち抜き・重ね小コマを自動付与する。
+    auto_assign_frames(page, settings, rtl=rtl)
     page.layout_locked = False
     page.render_status = "pending"
     page.rendered_at = None
     return page
+
+
+def _normalize_role(value: str) -> str:
+    return (value or "").strip().casefold().replace(" ", "_").replace("-", "_")
+
+
+def _clamp_frame(value: float) -> float:
+    """frame_pointsの許容範囲(-0.05..1.05)へ丸める。"""
+    return max(-BLEED, min(1.0 + BLEED, value))
+
+
+def _rect_frame(bbox: Box) -> list[tuple[float, float]]:
+    x, y, w, h = bbox
+    return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+
+def _touched_edges(bbox: Box, margin: float) -> set[str]:
+    """コマがページ外周余白に接している辺（裁ち落とし候補）を返す。"""
+    x, y, w, h = bbox
+    edges: set[str] = set()
+    if x <= margin + EDGE_EPS:
+        edges.add("left")
+    if x + w >= 1.0 - margin - EDGE_EPS:
+        edges.add("right")
+    if y <= margin + EDGE_EPS:
+        edges.add("top")
+    if y + h >= 1.0 - margin - EDGE_EPS:
+        edges.add("bottom")
+    return edges
+
+
+def _rect_polygon(x0: float, y0: float, x1: float, y1: float) -> list[tuple[float, float]]:
+    return [
+        (_clamp_frame(x0), _clamp_frame(y0)),
+        (_clamp_frame(x1), _clamp_frame(y0)),
+        (_clamp_frame(x1), _clamp_frame(y1)),
+        (_clamp_frame(x0), _clamp_frame(y1)),
+    ]
+
+
+def _bleed_polygon(
+    bbox: Box, edges: set[str], expand_untouched: float = 0.0
+) -> list[tuple[float, float]]:
+    """接した辺をページ外(裁ち落とし)へ、それ以外を任意量だけ外側へ広げた矩形枠。"""
+    x, y, w, h = bbox
+    x0, y0, x1, y1 = x, y, x + w, y + h
+    x0 = -BLEED if "left" in edges else x0 - expand_untouched
+    x1 = 1.0 + BLEED if "right" in edges else x1 + expand_untouched
+    y0 = -BLEED if "top" in edges else y0 - expand_untouched
+    y1 = 1.0 + BLEED if "bottom" in edges else y1 + expand_untouched
+    return _rect_polygon(x0, y0, x1, y1)
+
+
+def _bbox_area(bbox: Box) -> float:
+    return bbox[2] * bbox[3]
+
+
+def _bbox_center(bbox: Box) -> tuple[float, float]:
+    return (bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2)
+
+
+def _select_hero(panels: list[Panel]) -> Panel | None:
+    """ページの見せ場コマ（背面大ゴマ候補）を1枚選ぶ。
+
+    変形コマ(shape_points)は既存の斜めコマ演出を尊重して対象外。役割が見せ場で
+    強調度4以上のうち、強調度→面積→出現順で最も強い1枚を選ぶ。
+    """
+    candidates = [
+        panel
+        for panel in panels
+        if panel.frame_source != "manual"
+        and panel.shape_points is None
+        and _normalize_role(panel.role) in HERO_ROLES
+        and panel.emphasis >= 4
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda panel: (panel.emphasis, _bbox_area(panel.bbox)))
+
+
+def _cut_in_polygon(small: Box, hero: Box) -> list[tuple[float, float]]:
+    """小コマを見せ場コマ側へはみ出させた重ねコマ枠を作る。"""
+    over = 0.06
+    x, y, w, h = small
+    x0, y0, x1, y1 = x, y, x + w, y + h
+    sx, sy = _bbox_center(small)
+    hx, hy = _bbox_center(hero)
+    # 中心差が大きい軸方向へ、見せ場コマへ食い込ませる。
+    if abs(hx - sx) >= abs(hy - sy):
+        if hx < sx:
+            x0 -= over
+        else:
+            x1 += over
+    else:
+        if hy < sy:
+            y0 -= over
+        else:
+            y1 += over
+    return _rect_polygon(x0, y0, x1, y1)
+
+
+def auto_assign_frames(
+    page: Page, settings: PageLayoutSettings | None = None, rtl: bool = True
+) -> None:
+    """長方形タイル(bbox)を下敷きに、見せ場コマへ特殊なコマ枠を自動付与する。
+
+    役割・強調度・人物数・ページ目的から、背面大ゴマ(background)、裁ち落とし(bleed)、
+    縦ぶち抜き(vertical_splash)、重ね小コマ(cut_in)を選び、frame_points/z_index/
+    frame_roleを設定する。bboxは外接矩形のまま変えないため、読み順・ガター等の既存検査と
+    整合する（重なりはframe_pointsの拡張とz_indexで表現する）。変形コマ(shape_points)は
+    既存の斜めコマ演出として尊重し、本処理の対象外にする。
+    """
+    settings = settings or PageLayoutSettings()
+    margin = settings.outer_margin
+    gutter = settings.gutter
+    panels = page.panels
+
+    # 既存の自動枠をリセットしてから再付与する（再提案で多重適用しない）。
+    # 利用者が調整したmanual枠は保持する。
+    # shape_points由来の斜めコマには触れない。
+    for panel in panels:
+        if panel.frame_source == "manual":
+            continue
+        if panel.shape_points is None:
+            panel.frame_points = None
+        panel.frame_role = "normal"
+        panel.z_index = 0
+
+    if len(panels) < 2:
+        return
+
+    hero = _select_hero(panels)
+    assigned: set[str] = set()
+
+    if hero is not None:
+        edges = _touched_edges(hero.bbox, margin)
+        x, y, w, h = hero.bbox
+        single_character = len(hero.characters) == 1
+        tall = h >= w and h >= 0.45
+        if single_character and tall:
+            # 立ち絵の縦ぶち抜き。上下を裁ち落として全段ぶち抜きに見せる。
+            hero.frame_points = _bleed_polygon(hero.bbox, {"top", "bottom"})
+            hero.frame_role = "vertical_splash"
+        else:
+            # 背面大ゴマ。接した辺は裁ち落とし、それ以外もガター分だけ広げ、奥に敷く。
+            hero.frame_points = _bleed_polygon(hero.bbox, edges, expand_untouched=gutter)
+            hero.frame_role = "background"
+        hero.frame_source = "auto"
+        hero.z_index = 0
+        assigned.add(hero.panel_id)
+
+        # 見せ場の手前に重ねる小コマ（カットイン）を1枚選ぶ。
+        cut_in = _select_cut_in(panels, hero, assigned)
+        if cut_in is not None:
+            cut_in.frame_points = _cut_in_polygon(cut_in.bbox, hero.bbox)
+            cut_in.frame_role = "cut_in"
+            cut_in.frame_source = "auto"
+            cut_in.z_index = 2
+            assigned.add(cut_in.panel_id)
+
+    # 残りの見せ場コマのうち、ページ端に接するものを裁ち落としにする。
+    for panel in panels:
+        if (
+            panel.panel_id in assigned
+            or panel.frame_source == "manual"
+            or panel.shape_points is not None
+        ):
+            continue
+        if _normalize_role(panel.role) not in BLEED_ROLES or panel.emphasis < 4:
+            continue
+        edges = _touched_edges(panel.bbox, margin)
+        if not edges:
+            continue
+        panel.frame_points = _bleed_polygon(panel.bbox, edges)
+        panel.frame_role = "bleed"
+        panel.frame_source = "auto"
+        assigned.add(panel.panel_id)
+
+
+def _select_cut_in(panels: list[Panel], hero: Panel, assigned: set[str]) -> Panel | None:
+    """見せ場コマに隣接する小さな反応・間コマを重ね小コマ候補として選ぶ。"""
+    candidates = [
+        panel
+        for panel in panels
+        if panel.panel_id not in assigned
+        and panel.frame_source != "manual"
+        and panel.shape_points is None
+        and panel.emphasis <= 2
+        and (
+            _normalize_role(panel.role) in CUT_IN_ROLES
+            or panel.subject_mode in {"prop_insert", "hand_insert", "reaction"}
+        )
+        and _is_adjacent(panel.bbox, hero.bbox)
+    ]
+    if not candidates:
+        return None
+    # 最も小さいコマを重ねる（見せ場を隠しすぎない）。
+    return min(candidates, key=lambda panel: _bbox_area(panel.bbox))
+
+
+def _is_adjacent(a: Box, b: Box, tolerance: float = 0.06) -> bool:
+    """2つのbboxが隣接（辺を共有またはガターを挟んで近接）しているか。"""
+    ax0, ay0, aw, ah = a
+    bx0, by0, bw, bh = b
+    ax1, ay1, bx1, by1 = ax0 + aw, ay0 + ah, bx0 + bw, by0 + bh
+    x_gap = max(ax0, bx0) - min(ax1, bx1)
+    y_gap = max(ay0, by0) - min(ay1, by1)
+    x_overlap = min(ax1, bx1) - max(ax0, bx0)
+    y_overlap = min(ay1, by1) - max(ay0, by0)
+    # 一方の軸で重なり、もう一方の軸の隙間がガター程度なら隣接とみなす。
+    if x_overlap > 0 and y_gap <= tolerance:
+        return True
+    if y_overlap > 0 and x_gap <= tolerance:
+        return True
+    return False
 
 
 def derive_emphasis(role: str) -> int:

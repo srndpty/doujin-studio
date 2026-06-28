@@ -7,6 +7,7 @@ cleanup」のworkflowをここへ集約する。RouterはHTTP境界(decode→ser
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from .rendering import (
     RenderingService,
     build_production_status,
     export_confirmed_cbz,
+    export_folder,
     find_inconsistent_selected_panel,
     migrate_legacy_render_state,
     render_snapshot_pages,
@@ -73,6 +75,14 @@ class ProjectRenderResult:
 @dataclass(frozen=True)
 class CbzExportResult:
     cbz_path: Path
+    project: ProjectSnapshot
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class FolderExportResult:
+    folder_path: Path
+    page_count: int
     project: ProjectSnapshot
     warnings: list[str]
 
@@ -231,4 +241,63 @@ class ProjectRenderService:
             raise
         return CbzExportResult(
             cbz_path=cbz_path, project=committed, warnings=blockers + render_warnings
+        )
+
+    def export_folder(self, project_id: str, *, expected_revision: int) -> FolderExportResult:
+        """画像フォルダ出力。CBZと同じ品質ゲート・確定手順で、出力先だけフォルダにする。"""
+        loaded = self._load(project_id)
+        if loaded.revision != expected_revision:
+            raise ProjectRevisionConflictError(project_id, expected_revision)
+        manga = loaded.manga
+        preflight_errors = [
+            issue
+            for issue in preflight_project(manga, self.settings.export_dir)
+            if issue.level == "error"
+        ]
+        if preflight_errors:
+            raise CbzPreflightError(
+                "プリフライトで重大エラーが見つかりました: "
+                + "; ".join(
+                    f"{issue.page}ページ {issue.message}" for issue in preflight_errors[:10]
+                )
+            )
+        inconsistent = find_inconsistent_selected_panel(manga, self.settings.export_dir)
+        if inconsistent is not None:
+            raise CbzSelectionInconsistentError(inconsistent.panel_id)
+        status = build_production_status(project_id, manga, self.settings.export_dir)
+        blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
+        published_by_request: dict[Path, bool] = {}
+        folder: Path | None = None
+        try:
+            page_assets, render_warnings = render_snapshot_pages(
+                project_id,
+                manga,
+                self.settings.export_dir,
+                loaded.revision,
+                ownership=published_by_request,
+            )
+            committed = self.rendering.commit_rendered_pages(
+                project_id,
+                manga,
+                page_assets,
+                expected_revision=loaded.revision,
+                expected_epoch=loaded.generation_epoch,
+            )
+            folder = export_folder(
+                project_id,
+                committed.manga,
+                page_assets,
+                self.settings.export_dir,
+                committed.revision,
+            )
+        except Exception:
+            if folder is not None:
+                shutil.rmtree(folder, ignore_errors=True)
+            self.rendering.cleanup_published_assets(project_id, published_by_request)
+            raise
+        return FolderExportResult(
+            folder_path=folder,
+            page_count=len(page_assets),
+            project=committed,
+            warnings=blockers + render_warnings,
         )

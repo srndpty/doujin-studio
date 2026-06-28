@@ -9,19 +9,46 @@ import { PageEditor } from "./PageEditor";
 type KonvaProps = {
   children?: ReactNode;
   text?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  draggable?: boolean;
   onClick?: () => void;
   onTap?: () => void;
+  onDragEnd?: (event: { target: { x: () => number; y: () => number } }) => void;
 };
 
 // クリックを通すモック。Group等はdiv、Rectはbutton、Textはspanにして
 // DOMのバブリングで onClick（選択）を発火できるようにする。
 vi.mock("react-konva", () => {
   const Pass = ({ children, onClick }: KonvaProps) => <div onClick={onClick}>{children}</div>;
-  const Rect = forwardRef<HTMLButtonElement, KonvaProps>(({ children, onClick }, ref) => (
-    <button type="button" data-testid="konva-rect" ref={ref} onClick={onClick}>
-      {children}
-    </button>
-  ));
+  const Rect = forwardRef<HTMLButtonElement, KonvaProps>(
+    ({ children, onClick, onDragEnd, x = 0, y = 0, width = 0, height = 0, draggable }, ref) => (
+      <button
+        type="button"
+        data-testid="konva-rect"
+        data-x={x}
+        data-y={y}
+        data-width={width}
+        data-height={height}
+        data-draggable={draggable ? "true" : "false"}
+        data-has-drag-end={onDragEnd ? "true" : "false"}
+        ref={ref}
+        onClick={onClick}
+        onDoubleClick={() =>
+          onDragEnd?.({
+            target: {
+              x: () => x + 120,
+              y: () => y + 170
+            }
+          })
+        }
+      >
+        {children}
+      </button>
+    )
+  );
   Rect.displayName = "Rect";
   const Transformer = forwardRef<object, KonvaProps>((_props, ref) => {
     useImperativeHandle(ref, () => ({ nodes: () => undefined, getLayer: () => null }));
@@ -196,6 +223,77 @@ describe("PageEditor interactions", () => {
     fireEvent.change(within(crop).getByLabelText(/左右/), { target: { value: "0.5" } });
     fireEvent.change(within(crop).getByLabelText(/上下/), { target: { value: "-0.5" } });
     expect(props.onChange).toHaveBeenCalled();
+  });
+
+  it("親側の選択コマをキャンバス選択へ同期する", async () => {
+    setup({ selectedPanelId: "p01_02" });
+    await waitFor(() => expect(screen.getByText(/コマ: p01_02/)).toBeVisible());
+  });
+
+  it("カットイン枠をドラッグするとframe_pointsとbboxを同期する", () => {
+    const manga = sampleManga();
+    const panel = manga.pages[0].panels[1];
+    panel.bbox = [0.5, 0.05, 0.42, 0.4];
+    panel.frame_role = "cut_in";
+    panel.frame_points = [
+      [0.5, 0.05],
+      [0.92, 0.05],
+      [0.84, 0.45],
+      [0.5, 0.45]
+    ];
+    const props = setup({ manga, selectedPanelId: "p01_02" });
+
+    const rect = screen
+      .getAllByTestId("konva-rect")
+      .find(
+        (item) =>
+          item.dataset.draggable === "true" &&
+          item.dataset.hasDragEnd === "true" &&
+          item.dataset.x === "600" &&
+          item.dataset.width === "504"
+      );
+    expect(rect).toBeTruthy();
+    fireEvent.doubleClick(rect as HTMLElement);
+
+    const updated = (props.onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as MangaProject;
+    const moved = updated.pages[0].panels[1];
+    expect(moved.frame_source).toBe("manual");
+    expect(moved.frame_points?.[0]).toEqual([0.58, 0.15]);
+    expect(moved.bbox).toEqual([0.58, 0.15, 0.42, 0.4]);
+  });
+
+  it("裁ち落とし枠をドラッグしてもページ外frame_pointsを保持する", () => {
+    const manga = sampleManga();
+    const panel = manga.pages[0].panels[0];
+    manga.pages[0].panels[1].bbox = [0.72, 0.7, 0.2, 0.2];
+    panel.bbox = [0, 0, 0.5, 0.45];
+    panel.frame_role = "bleed";
+    panel.frame_points = [
+      [-0.04, -0.04],
+      [0.5, -0.04],
+      [0.5, 0.45],
+      [-0.04, 0.45]
+    ];
+    const props = setup({ manga, selectedPanelId: "p01_01" });
+
+    const rect = screen
+      .getAllByTestId("konva-rect")
+      .find(
+        (item) =>
+          item.dataset.draggable === "true" &&
+          item.dataset.hasDragEnd === "true" &&
+          item.dataset.x === "0" &&
+          item.dataset.y === "0" &&
+          item.dataset.width === "600"
+      );
+    expect(rect).toBeTruthy();
+    fireEvent.doubleClick(rect as HTMLElement);
+
+    const updated = (props.onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as MangaProject;
+    const moved = updated.pages[0].panels[0];
+    expect(moved.frame_source).toBe("manual");
+    expect(moved.frame_points?.[0]).toEqual([0.06, 0.06]);
+    expect(moved.bbox).toEqual([0.06, 0.06, 0.54, 0.49]);
   });
 
   it("吹き出しを選択して種別・縦書き・しっぽを編集する", () => {

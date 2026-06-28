@@ -303,6 +303,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/pages/{page_number}/preflight/fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Autofix Page Endpoint */
+        post: operations["autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/preflight/fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Autofix Project Endpoint */
+        post: operations["autofix_project_endpoint_api_projects__project_id__preflight_fix_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/pages/{page_number}/render": {
         parameters: {
             query?: never;
@@ -348,6 +382,23 @@ export interface paths {
         put?: never;
         /** Export Project Cbz */
         post: operations["export_project_cbz_api_projects__project_id__export_cbz_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/export/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Project Folder */
+        post: operations["export_project_folder_api_projects__project_id__export_folder_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -468,6 +519,28 @@ export interface paths {
         put?: never;
         /** Create Batch Generation Jobs */
         post: operations["create_batch_generation_jobs_api_projects__project_id__generation_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/generation-jobs/blank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Blank Panels
+         * @description preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+         *
+         *     seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+         */
+        post: operations["regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1057,6 +1130,18 @@ export interface components {
             cbz_asset: string;
             /** Absolute Path */
             absolute_path: string;
+            /** Warnings */
+            warnings?: string[];
+        };
+        /**
+         * FolderExportResult
+         * @description フォルダ出力の結果。出力先の絶対パスとページ数を返す。
+         */
+        FolderExportResult: {
+            /** Folder Path */
+            folder_path: string;
+            /** Page Count */
+            page_count: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -1770,6 +1855,28 @@ export interface components {
                 number,
                 number
             ][] | null;
+            /** Frame Points */
+            frame_points?: [
+                number,
+                number
+            ][] | null;
+            /**
+             * Z Index
+             * @default 0
+             */
+            z_index: number;
+            /**
+             * Frame Role
+             * @default normal
+             * @enum {string}
+             */
+            frame_role: "normal" | "background" | "bleed" | "overlap" | "vertical_splash" | "cut_in";
+            /**
+             * Frame Source
+             * @default auto
+             * @enum {string}
+             */
+            frame_source: "auto" | "manual";
             /** Shot */
             shot: string;
             /**
@@ -1925,6 +2032,17 @@ export interface components {
             page_asset: string;
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * PreflightFixResult
+         * @description preflight自動修正の結果。適用件数と説明、修正後の再検査結果を返す。
+         */
+        PreflightFixResult: {
+            /** Fixed Count */
+            fixed_count: number;
+            /** Fixed */
+            fixed?: string[];
+            preflight: components["schemas"]["PreflightResponse"];
         };
         /** PreflightIssue */
         PreflightIssue: {
@@ -2087,6 +2205,13 @@ export interface components {
             latest_revision: number;
             result: components["schemas"]["ExportResult"];
         };
+        /** ProjectMutationResponse[FolderExportResult] */
+        ProjectMutationResponse_FolderExportResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
+            result: components["schemas"]["FolderExportResult"];
+        };
         /** ProjectMutationResponse[GenerationJobResponse] */
         ProjectMutationResponse_GenerationJobResponse_: {
             project: components["schemas"]["ProjectDetail"];
@@ -2121,6 +2246,13 @@ export interface components {
             /** Latest Revision */
             latest_revision: number;
             result: components["schemas"]["PanelPageRenderResult"];
+        };
+        /** ProjectMutationResponse[PreflightFixResult] */
+        ProjectMutationResponse_PreflightFixResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
+            result: components["schemas"]["PreflightFixResult"];
         };
         /** ProjectMutationResponse[ProjectRenderResult] */
         ProjectMutationResponse_ProjectRenderResult_: {
@@ -3198,6 +3330,91 @@ export interface operations {
             };
         };
     };
+    autofix_page_endpoint_api_projects__project_id__pages__page_number__preflight_fix_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                page_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_PreflightFixResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autofix_project_endpoint_api_projects__project_id__preflight_fix_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_PreflightFixResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     render_page_endpoint_api_projects__project_id__pages__page_number__render_post: {
         parameters: {
             query: {
@@ -3304,6 +3521,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectMutationResponse_ExportResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_project_folder_api_projects__project_id__export_folder_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_FolderExportResult_"];
                 };
             };
             /** @description revision競合、または通常の更新競合 */
@@ -3625,6 +3884,48 @@ export interface operations {
                 "application/json": components["schemas"]["BatchGenerationJobCreate"] | null;
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_BatchGenerationJobResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
