@@ -374,6 +374,14 @@ class PanelCharacter(BaseModel):
         box_format = info.data.get("region_box_format", "xywh")
         return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
 
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "PanelCharacter":
+        # region_boxは検証時にxywhへ正規化済み。formatは入力解釈の一時情報なので、
+        # 永続値はxywh固定にして再読込時の二重変換を防ぐ。
+        if self.region_box_format != "xywh":
+            object.__setattr__(self, "region_box_format", "xywh")
+        return self
+
 
 class Panel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -444,6 +452,9 @@ class Panel(BaseModel):
             raise ValueError(
                 f"{self.panel_id}のcharacter_layoutが描画人物に無いIDを参照: {', '.join(unknown)}"
             )
+        # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.text_safe_area_format != "xywh":
+            object.__setattr__(self, "text_safe_area_format", "xywh")
         return self
 
     @field_validator("shape_points")
@@ -1170,6 +1181,13 @@ class ScriptCharacter(BaseModel):
         box_format = info.data.get("region_box_format", "xywh")
         return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
 
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "ScriptCharacter":
+        # region_boxは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.region_box_format != "xywh":
+            object.__setattr__(self, "region_box_format", "xywh")
+        return self
+
 
 class ScriptPanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1272,6 +1290,13 @@ class ScriptPanel(BaseModel):
                 if text:
                     items.append({"text": text})
         return items
+
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "ScriptPanel":
+        # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.text_safe_area_format != "xywh":
+            object.__setattr__(self, "text_safe_area_format", "xywh")
+        return self
 
 
 class ScriptPage(BaseModel):

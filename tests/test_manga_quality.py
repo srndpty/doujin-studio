@@ -947,3 +947,29 @@ def test_image_metrics_good_image_passes(tmp_path) -> None:
     issues = _quality_issues(_image_panel(path))
     codes = {i.code for i in issues}
     assert not (codes & {"empty_panel_image", "subject_too_small", "monochrome_panel"})
+
+
+# --- box format: xyxy入力→xywh正規化→永続化の往復が壊れない ---
+
+
+def test_script_panel_xyxy_box_format_round_trips() -> None:
+    panel = ScriptPanel.model_validate(
+        {
+            "shot": "t",
+            "text_safe_area_format": "xyxy",
+            "text_safe_area": [0.65, 0.72, 0.92, 0.88],
+            "character_directives": [
+                {"name": "美嘉", "region_box_format": "xyxy", "region_box": [0.1, 0.2, 0.5, 0.7]}
+            ],
+        }
+    )
+    assert panel.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert panel.text_safe_area_format == "xywh"
+    directive = panel.character_directives[0]
+    assert directive.region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+    assert directive.region_box_format == "xywh"
+
+    # model_dump → 再validateで二重変換されない。
+    reloaded = ScriptPanel.model_validate(panel.model_dump())
+    assert reloaded.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert reloaded.character_directives[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))

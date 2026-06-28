@@ -497,7 +497,14 @@ def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
     for index, region in enumerate(regions):
         prompt_node_id = binding.character_prompt_node_ids[index]
         region_node_id = binding.region_node_ids[index]
-        patch_workflow_input(workflow, prompt_node_id, "text", region["prompt"], "regional prompt")
+        prompt_text = str(region["prompt"]).strip()
+        # 空promptの人物regionを許すと無条件のCLIPTextEncodeになり領域分離が崩れる。
+        # prepared panel未経由・既存データ・手動構築でも安全側へ倒すためfail-fastする。
+        if not prompt_text:
+            raise ValueError(
+                f"regional promptを解決できません: character_id={region['character_id']}"
+            )
+        patch_workflow_input(workflow, prompt_node_id, "text", prompt_text, "regional prompt")
         box = region["region_box"]
         assert isinstance(box, tuple)
         node = workflow.get(region_node_id)
@@ -508,7 +515,9 @@ def apply_regional_binding(workflow: dict, binding, panel: Panel) -> None:
         node["inputs"]["y"] = y
         node["inputs"]["width"] = width
         node["inputs"]["height"] = height
-        node["inputs"]["region"] = f"{x},{y},{width},{height}"
+        # region複合文字列は補助形式。そのキーを持つノードにだけ書き、未対応ノードを汚さない。
+        if "region" in node["inputs"]:
+            node["inputs"]["region"] = f"{x},{y},{width},{height}"
 
 
 def validate_attention_couple_binding(workflow: dict, binding, region_count: int) -> None:

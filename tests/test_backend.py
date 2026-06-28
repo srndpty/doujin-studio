@@ -978,6 +978,61 @@ def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
     assert patched["51"]["inputs"]["height"] == 0.4
 
 
+def test_regional_binding_rejects_empty_prompt(tmp_path: Path) -> None:
+    # regional_prompt・expression・actionがすべて空の人物regionは、空CLIPTextEncodeを
+    # 避けるためfail-fastする（prepared panel未経由・既存データでも安全側へ倒す）。
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="t",
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika", region_box=(0.1, 0.2, 0.3, 0.4))],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="regional prompt"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+
+
+def test_panel_xyxy_box_format_round_trips_without_double_conversion() -> None:
+    # *_format="xyxy"で入力した値は検証時にxywhへ正規化し、formatもxywhへ固定する。
+    # これにより model_dump → 再validate で二重変換されない（保存/再読込の破壊を防ぐ）。
+    panel = Panel.model_validate(
+        {
+            "panel_id": "p01_01",
+            "bbox": [0, 0, 1, 1],
+            "shot": "t",
+            "text_safe_area_format": "xyxy",
+            "text_safe_area": [0.65, 0.72, 0.92, 0.88],
+            "characters": ["mika"],
+            "character_layout": [
+                {"id": "mika", "region_box_format": "xyxy", "region_box": [0.1, 0.2, 0.5, 0.7]}
+            ],
+        }
+    )
+    assert panel.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert panel.text_safe_area_format == "xywh"
+    assert panel.character_layout[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+    assert panel.character_layout[0].region_box_format == "xywh"
+
+    reloaded = Panel.model_validate(panel.model_dump())
+    assert reloaded.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert reloaded.character_layout[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+
+
 def test_regional_binding_uses_separated_character_prompts(tmp_path: Path) -> None:
     workflow = sample_workflow()
     workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
