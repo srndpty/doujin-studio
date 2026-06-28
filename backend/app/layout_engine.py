@@ -349,7 +349,8 @@ def _select_hero(panels: list[Panel]) -> Panel | None:
     candidates = [
         panel
         for panel in panels
-        if panel.shape_points is None
+        if panel.frame_source != "manual"
+        and panel.shape_points is None
         and _normalize_role(panel.role) in HERO_ROLES
         and panel.emphasis >= 4
     ]
@@ -396,8 +397,11 @@ def auto_assign_frames(
     panels = page.panels
 
     # 既存の自動枠をリセットしてから再付与する（再提案で多重適用しない）。
+    # 利用者が調整したmanual枠は保持する。
     # shape_points由来の斜めコマには触れない。
     for panel in panels:
+        if panel.frame_source == "manual":
+            continue
         if panel.shape_points is None:
             panel.frame_points = None
         panel.frame_role = "normal"
@@ -422,6 +426,7 @@ def auto_assign_frames(
             # 背面大ゴマ。接した辺は裁ち落とし、それ以外もガター分だけ広げ、奥に敷く。
             hero.frame_points = _bleed_polygon(hero.bbox, edges, expand_untouched=gutter)
             hero.frame_role = "background"
+        hero.frame_source = "auto"
         hero.z_index = 0
         assigned.add(hero.panel_id)
 
@@ -430,12 +435,17 @@ def auto_assign_frames(
         if cut_in is not None:
             cut_in.frame_points = _cut_in_polygon(cut_in.bbox, hero.bbox)
             cut_in.frame_role = "cut_in"
+            cut_in.frame_source = "auto"
             cut_in.z_index = 2
             assigned.add(cut_in.panel_id)
 
     # 残りの見せ場コマのうち、ページ端に接するものを裁ち落としにする。
     for panel in panels:
-        if panel.panel_id in assigned or panel.shape_points is not None:
+        if (
+            panel.panel_id in assigned
+            or panel.frame_source == "manual"
+            or panel.shape_points is not None
+        ):
             continue
         if _normalize_role(panel.role) not in BLEED_ROLES or panel.emphasis < 4:
             continue
@@ -444,6 +454,7 @@ def auto_assign_frames(
             continue
         panel.frame_points = _bleed_polygon(panel.bbox, edges)
         panel.frame_role = "bleed"
+        panel.frame_source = "auto"
         assigned.add(panel.panel_id)
 
 
@@ -453,6 +464,7 @@ def _select_cut_in(panels: list[Panel], hero: Panel, assigned: set[str]) -> Pane
         panel
         for panel in panels
         if panel.panel_id not in assigned
+        and panel.frame_source != "manual"
         and panel.shape_points is None
         and panel.emphasis <= 2
         and (

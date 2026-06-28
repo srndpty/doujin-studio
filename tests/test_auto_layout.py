@@ -106,6 +106,32 @@ def test_auto_assign_is_idempotent() -> None:
     assert first == second
 
 
+def test_auto_assign_preserves_manual_frame_and_recomputes_auto_frame() -> None:
+    hero = _panel(
+        "p1",
+        (0.05, 0.05, 0.9, 0.5),
+        "reveal",
+        4,
+        characters=["a", "b"],
+        frame_points=[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)],
+        frame_role="bleed",
+        frame_source="manual",
+        z_index=5,
+    )
+    insert = _panel("p2", (0.05, 0.6, 0.3, 0.3), "reaction", 2)
+    page = _page([hero, insert])
+    manual = (hero.frame_points, hero.frame_role, hero.frame_source, hero.z_index)
+
+    auto_assign_frames(page, PageLayoutSettings())
+    first_auto = (insert.frame_points, insert.frame_role, insert.frame_source, insert.z_index)
+    auto_assign_frames(page, PageLayoutSettings())
+    second_auto = (insert.frame_points, insert.frame_role, insert.frame_source, insert.z_index)
+
+    assert (hero.frame_points, hero.frame_role, hero.frame_source, hero.z_index) == manual
+    assert first_auto == second_auto
+    assert insert.frame_source == "auto"
+
+
 def test_relayout_page_assigns_frames_for_hero() -> None:
     hero = _panel("p1", (0.0, 0.0, 1.0, 1.0), "reveal", 5, characters=["a", "b"])
     other = _panel("p2", (0.0, 0.0, 1.0, 1.0), "reaction", 2)

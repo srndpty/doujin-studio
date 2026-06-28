@@ -1871,6 +1871,12 @@ export interface components {
              * @enum {string}
              */
             frame_role: "normal" | "background" | "bleed" | "overlap" | "vertical_splash" | "cut_in";
+            /**
+             * Frame Source
+             * @default auto
+             * @enum {string}
+             */
+            frame_source: "auto" | "manual";
             /** Shot */
             shot: string;
             /**

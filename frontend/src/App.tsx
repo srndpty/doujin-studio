@@ -79,6 +79,7 @@ export type Panel = {
   // コマの重なり順（大きいほど手前）。
   z_index?: number;
   frame_role?: "normal" | "background" | "bleed" | "overlap" | "vertical_splash" | "cut_in";
+  frame_source?: "auto" | "manual";
   shot: string;
   subject_mode?: "character_scene" | "reaction" | "prop_insert" | "hand_insert" | "background";
   role?: string;

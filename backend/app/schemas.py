@@ -384,6 +384,7 @@ class PanelCharacter(BaseModel):
 
 
 FrameRole = Literal["normal", "background", "bleed", "overlap", "vertical_splash", "cut_in"]
+FrameSource = Literal["auto", "manual"]
 
 
 class Panel(BaseModel):
@@ -401,6 +402,8 @@ class Panel(BaseModel):
     z_index: int = 0
     # コマの用途。背面大ゴマ/裁ち落とし/重ね/縦ぶち抜き/カットインを区別し、自動配置と検査に使う。
     frame_role: FrameRole = "normal"
+    # 特殊枠の由来。autoは再レイアウトで再計算可、manualは利用者調整として保持する。
+    frame_source: FrameSource = "auto"
     shot: str
     # コマの主題。prop_insert/hand_insert/backgroundではキャラ同一性を抑制する。
     subject_mode: Literal[

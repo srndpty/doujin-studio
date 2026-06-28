@@ -5181,6 +5181,15 @@
             "title": "Frame Role",
             "default": "normal"
           },
+          "frame_source": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Frame Source",
+            "default": "auto"
+          },
           "shot": {
             "type": "string",
             "title": "Shot"

@@ -212,6 +212,28 @@ function useMaskedImage(
 
 const snap = (value: number) => Math.round(value / SNAP) * SNAP;
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const clampFrame = (value: number) => Math.max(-0.05, Math.min(1.05, value));
+
+function bboxFromFramePoints(points: [number, number][]): Box {
+  const xs = points.map(([x]) => clamp01(x));
+  const ys = points.map(([, y]) => clamp01(y));
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const x1 = Math.max(...xs);
+  const y1 = Math.max(...ys);
+  return normalizeBox([x0, y0, Math.max(0.01, x1 - x0), Math.max(0.01, y1 - y0)]);
+}
+
+function transformFramePoints(points: [number, number][], from: Box, to: Box): [number, number][] {
+  const [fromX, fromY, fromW, fromH] = from;
+  const [toX, toY, toW, toH] = to;
+  const sx = toW / Math.max(fromW, 0.0001);
+  const sy = toH / Math.max(fromH, 0.0001);
+  return points.map(([x, y]) => [
+    snap(clampFrame(toX + (x - fromX) * sx)),
+    snap(clampFrame(toY + (y - fromY) * sy))
+  ]);
+}
 
 export function PageEditor({
   projectId,
@@ -313,7 +335,15 @@ export function PageEditor({
     }
     mutatePage((target) => {
       const panel = target.panels.find((item) => item.panel_id === panelId);
-      if (panel) panel.bbox = normalized;
+      if (!panel) return;
+      if (panel.frame_points && panel.frame_points.length > 0) {
+        const moved = transformFramePoints(panel.frame_points, panel.bbox, normalized);
+        panel.frame_points = moved;
+        panel.bbox = bboxFromFramePoints(moved);
+        panel.frame_source = "manual";
+      } else {
+        panel.bbox = normalized;
+      }
     });
   };
 

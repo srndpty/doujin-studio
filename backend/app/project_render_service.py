@@ -7,6 +7,7 @@ cleanup」のworkflowをここへ集約する。RouterはHTTP境界(decode→ser
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -266,6 +267,7 @@ class ProjectRenderService:
         status = build_production_status(project_id, manga, self.settings.export_dir)
         blockers = [blocker for blocker in status.blockers if "採用画像" in blocker]
         published_by_request: dict[Path, bool] = {}
+        folder: Path | None = None
         try:
             page_assets, render_warnings = render_snapshot_pages(
                 project_id,
@@ -274,7 +276,6 @@ class ProjectRenderService:
                 loaded.revision,
                 ownership=published_by_request,
             )
-            folder = export_folder(project_id, manga, page_assets, self.settings.export_dir)
             committed = self.rendering.commit_rendered_pages(
                 project_id,
                 manga,
@@ -282,7 +283,16 @@ class ProjectRenderService:
                 expected_revision=loaded.revision,
                 expected_epoch=loaded.generation_epoch,
             )
+            folder = export_folder(
+                project_id,
+                committed.manga,
+                page_assets,
+                self.settings.export_dir,
+                committed.revision,
+            )
         except Exception:
+            if folder is not None:
+                shutil.rmtree(folder, ignore_errors=True)
             self.rendering.cleanup_published_assets(project_id, published_by_request)
             raise
         return FolderExportResult(

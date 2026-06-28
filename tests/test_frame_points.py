@@ -12,8 +12,9 @@ from backend.app.renderer import (
     draw_panel_art,
     panel_frame_points,
     panel_frame_points_px,
+    render_project_page,
 )
-from backend.app.schemas import Panel
+from backend.app.schemas import Dialogue, MangaProject, Page, Panel
 
 
 def _panel(**kwargs) -> Panel:
@@ -99,3 +100,68 @@ def test_z_index_ordering_and_polygon_masking(tmp_path) -> None:
     # ポリゴン外（どちらも覆わない右上隅近く）は白地のまま。
     outside = page.getpixel((int(0.95 * page_w), int(0.02 * page_h)))
     assert outside[0] > 200 and outside[1] > 200 and outside[2] > 200
+
+
+def test_shape_points_uses_polygon_mask_without_frame_points(tmp_path) -> None:
+    page = Image.new("RGBA", PAGE_SIZE, (255, 255, 255, 255))
+    draw = ImageDraw.Draw(page)
+    red = tmp_path / "red.png"
+    Image.new("RGB", (64, 64), (255, 0, 0)).save(red)
+    panel = _panel(
+        bbox=(0.1, 0.1, 0.4, 0.4),
+        shape_points=[(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)],
+        image_asset=str(red),
+    )
+
+    draw_panel_art(page, draw, panel, _panel_box_px(panel), export_dir=None)
+
+    page_w, page_h = PAGE_SIZE
+    inside = page.getpixel((int(0.3 * page_w), int(0.2 * page_h)))
+    assert inside[0] > 200 and inside[1] < 80
+    # bbox内だが三角形ポリゴン外の左下は白地のまま。
+    outside_shape = page.getpixel((int(0.12 * page_w), int(0.48 * page_h)))
+    assert outside_shape[0] > 200 and outside_shape[1] > 200 and outside_shape[2] > 200
+
+
+def test_panel_text_is_layered_with_panel_z_index(tmp_path) -> None:
+    export_dir = tmp_path / "exports"
+    project_id = "proj"
+    asset_dir = export_dir / project_id
+    asset_dir.mkdir(parents=True)
+    bottom_image = asset_dir / "bottom.png"
+    top_image = asset_dir / "top.png"
+    Image.new("RGB", (100, 100), (255, 230, 230)).save(bottom_image)
+    Image.new("RGB", (100, 100), (0, 0, 255)).save(top_image)
+    bottom = Panel(
+        panel_id="bottom",
+        bbox=(0.1, 0.1, 0.8, 0.8),
+        shot="bottom",
+        image_asset=f"{project_id}/bottom.png",
+        z_index=0,
+        dialogue=[
+            Dialogue(
+                speaker="a",
+                text="下",
+                box=(0.25, 0.25, 0.5, 0.5),
+                font_size=60,
+                tail=None,
+            )
+        ],
+    )
+    top = Panel(
+        panel_id="top",
+        bbox=(0.25, 0.25, 0.5, 0.5),
+        shot="top",
+        image_asset=f"{project_id}/top.png",
+        z_index=2,
+    )
+    manga = MangaProject(
+        title="t",
+        pages=[Page(page=1, theme="t", layout_template="x", panels=[bottom, top])],
+    )
+
+    target, _warnings = render_project_page(project_id, manga, 1, export_dir)
+
+    with Image.open(target).convert("RGB") as rendered:
+        center = rendered.getpixel((PAGE_SIZE[0] // 2, PAGE_SIZE[1] // 2))
+    assert center[2] > 180 and center[0] < 80

@@ -625,18 +625,41 @@ def _run_autofix(
     request: Request, project_id: str, revision: int, page_number: int | None
 ) -> ProjectMutationResponse[PreflightFixResult]:
     export_dir = request.app.state.settings.export_dir
+    checked = request.app.state.mutation.require_revision(project_id, revision)
+
+    if page_number is not None and not any(p.page == page_number for p in checked.manga.pages):
+        raise HTTPException(status_code=404, detail="ページが見つかりません")
+
+    dry_run = checked.manga.model_copy(deep=True)
+    planned = autofix_manga(dry_run, page_number)
+    if not planned:
+        issues = (
+            preflight_module.preflight_page(
+                checked.manga,
+                next(item for item in checked.manga.pages if item.page == page_number),
+                export_dir=export_dir,
+            )
+            if page_number is not None
+            else preflight_module.preflight_project(checked.manga, export_dir)
+        )
+        return to_project_mutation_response(
+            request,
+            project_id,
+            PreflightFixResult(
+                fixed_count=0,
+                fixed=[],
+                preflight=_to_preflight_response(project_id, page_number, issues),
+            ),
+            snapshot=checked,
+        )
 
     def mutate(manga: MangaProject) -> list[str]:
-        if page_number is not None and not any(p.page == page_number for p in manga.pages):
-            raise HTTPException(status_code=404, detail="ページが見つかりません")
-        messages = autofix_manga(manga, page_number)
-        if messages:
-            # 修正で描画入力が変わったページは未レンダリングへ戻す。
-            affected = {int(text.split("ページ")[0]) for text in messages if "ページ" in text}
-            for page in manga.pages:
-                if page.page in affected:
-                    mark_page_dirty(page)
-        return messages
+        changes = autofix_manga(manga, page_number)
+        affected = {change.page for change in changes}
+        for page in manga.pages:
+            if page.page in affected:
+                mark_page_dirty(page)
+        return [change.message for change in changes]
 
     mutation_result = request.app.state.mutation.mutate_user(
         project_id, expected_revision=revision, mutate=mutate
@@ -792,12 +815,25 @@ def open_project_export_folder(project_id: str, request: Request) -> OpenExportF
         raise HTTPException(status_code=400, detail="出力フォルダが不正です")
     project_dir.mkdir(parents=True, exist_ok=True)
     # 新標準のフォルダ出力(export/)があればそれを開く。無ければ旧CBZ、最後にプロジェクト直下。
-    export_folder_dir = project_dir / "export"
-    if export_folder_dir.is_dir():
-        target = export_folder_dir
-    else:
-        cbz_files = list(project_dir.glob("*.cbz"))
-        target = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+    latest_export = project_dir / "latest-export.txt"
+    target = project_dir
+    if latest_export.is_file():
+        try:
+            name = latest_export.read_text(encoding="utf-8").strip()
+        except OSError:
+            name = ""
+        candidate = project_dir / name
+        if name == Path(name).name and candidate.is_dir():
+            target = candidate
+    if target == project_dir:
+        export_dirs = [path for path in project_dir.glob("export-r*") if path.is_dir()]
+        if export_dirs:
+            target = max(export_dirs, key=lambda path: path.stat().st_mtime)
+        else:
+            cbz_files = list(project_dir.glob("*.cbz"))
+            target = (
+                max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+            )
     open_in_file_manager(target)
     return OpenExportFolderResponse(
         project_id=project_id,

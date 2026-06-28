@@ -81,8 +81,9 @@ def render_project_page(
 def _render_single_page(
     manga: MangaProject, page: Page, pages_dir: Path, export_dir: Path
 ) -> tuple[Path, list[str]]:
-    # レンダリング順: 背景 → 背面overlay → 通常コマ → 前面overlay → 吹き出し・SFX。
-    # （PageEditorのプレビュー順と一致させる。backはコマより背面、frontはコマより前面。）
+    # レンダリング順: 背景 → 背面overlay → パネル単位(z順: art→below SFX→dialogue→above SFX)
+    # → 前面overlay。PageEditorのプレビューと同じ契約にし、背面大ゴマの文字が手前コマを
+    # 貫通しないようにする。
     image = Image.new("RGBA", PAGE_SIZE, (248, 248, 244, 255))
     draw = ImageDraw.Draw(image)
     warnings: list[str] = []
@@ -91,16 +92,14 @@ def _render_single_page(
     for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "back":
             draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
-    # z_indexの小さい順（背面→手前）に描き、背面大ゴマの上へ重ねコマを乗せられるようにする。
     for panel in sorted(page.panels, key=lambda item: item.z_index):
         draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id], export_dir)
-    for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
-        if overlay.layer == "front":
-            draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
-    for panel in page.panels:
         warnings.extend(
             draw_panel_text(image, draw, panel, panel_boxes[panel.panel_id], manga.typography)
         )
+    for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
+        if overlay.layer == "front":
+            draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
 
     draw_page_number(draw, page.page, manga.reading_direction)
     target = pages_dir / f"page_{page.page:03d}.png"
@@ -208,7 +207,7 @@ def draw_panel_art(
     frame_points（ページ座標ポリゴン）があれば正本として用い、無ければbbox（+bbox相対
     shape_points）から導出した形で描く。重なり順はz_indexで制御する（呼び出し側でsort）。
     """
-    if panel.frame_points:
+    if panel.frame_points or panel.shape_points:
         polygon = panel_frame_points_px(panel)
         xs = [px for px, _ in polygon]
         ys = [py for _, py in polygon]
