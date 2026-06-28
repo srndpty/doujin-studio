@@ -5072,6 +5072,48 @@
             ],
             "title": "Shape Points"
           },
+          "frame_points": {
+            "anyOf": [
+              {
+                "items": {
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array",
+                  "maxItems": 2,
+                  "minItems": 2
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Points"
+          },
+          "z_index": {
+            "type": "integer",
+            "title": "Z Index",
+            "default": 0
+          },
+          "frame_role": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "background",
+              "bleed",
+              "overlap",
+              "vertical_splash",
+              "cut_in"
+            ],
+            "title": "Frame Role",
+            "default": "normal"
+          },
           "shot": {
             "type": "string",
             "title": "Shot"

@@ -91,7 +91,8 @@ def _render_single_page(
     for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "back":
             draw_overlay(image, draw, overlay, page, panel_boxes, export_dir)
-    for panel in page.panels:
+    # z_indexの小さい順（背面→手前）に描き、背面大ゴマの上へ重ねコマを乗せられるようにする。
+    for panel in sorted(page.panels, key=lambda item: item.z_index):
         draw_panel_art(image, draw, panel, panel_boxes[panel.panel_id], export_dir)
     for overlay in sorted(page.overlay_elements, key=lambda item: item.z_index):
         if overlay.layer == "front":
@@ -141,6 +142,26 @@ def _panel_box_px(panel: Panel) -> tuple[int, int, int, int]:
     return (left, top, left + width, top + height)
 
 
+def panel_frame_points(panel: Panel) -> list[tuple[float, float]]:
+    """コマ枠のページ座標ポリゴン（正本）。
+
+    frame_pointsがあればそれを使い、無ければbbox（+bbox相対shape_points）から導出する。
+    新しい描画・編集表示はこの値を正とし、bboxは外接矩形・互換用に残す（領域: レイアウト）。
+    """
+    if panel.frame_points:
+        return [(x, y) for x, y in panel.frame_points]
+    x, y, w, h = panel.bbox
+    if panel.shape_points:
+        return [(x + sx * w, y + sy * h) for sx, sy in panel.shape_points]
+    return [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+
+def panel_frame_points_px(panel: Panel) -> list[tuple[int, int]]:
+    """コマ枠ポリゴンをページピクセル座標へ写す。"""
+    page_w, page_h = PAGE_SIZE
+    return [(round(x * page_w), round(y * page_h)) for x, y in panel_frame_points(panel)]
+
+
 def _fit_panel_image(
     panel: Panel, box: tuple[int, int, int, int], export_dir: Path | None = None
 ) -> Image.Image | None:
@@ -182,7 +203,18 @@ def draw_panel_art(
     box: tuple[int, int, int, int],
     export_dir: Path | None = None,
 ) -> None:
-    """コマの画像と枠線・番号ラベルだけを描く（overlayより下のレイヤー）。"""
+    """コマの画像と枠線・番号ラベルだけを描く（overlayより下のレイヤー）。
+
+    frame_points（ページ座標ポリゴン）があれば正本として用い、無ければbbox（+bbox相対
+    shape_points）から導出した形で描く。重なり順はz_indexで制御する（呼び出し側でsort）。
+    """
+    if panel.frame_points:
+        polygon = panel_frame_points_px(panel)
+        xs = [px for px, _ in polygon]
+        ys = [py for _, py in polygon]
+        fit_box = (min(xs), min(ys), max(xs), max(ys))
+        _paste_polygon_panel(page_image, draw, panel, fit_box, polygon, export_dir)
+        return
     fitted = _fit_panel_image(panel, box, export_dir)
     width, height = box[2] - box[0], box[3] - box[1]
     tile = (
@@ -205,6 +237,36 @@ def draw_panel_art(
     else:
         page_image.paste(tile, (box[0], box[1]))
         draw.rectangle(box, outline=(20, 20, 20, 255), width=PANEL_OUTLINE_WIDTH)
+
+
+def _paste_polygon_panel(
+    page_image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    panel: Panel,
+    fit_box: tuple[int, int, int, int],
+    polygon: list[tuple[int, int]],
+    export_dir: Path | None,
+) -> None:
+    """ページ座標ポリゴンのコマ枠に、外接矩形へfitした画像をマスクして貼る。"""
+    width, height = fit_box[2] - fit_box[0], fit_box[3] - fit_box[1]
+    if width <= 0 or height <= 0:
+        return
+    fitted = _fit_panel_image(panel, fit_box, export_dir)
+    tile = (
+        fitted.convert("RGBA")
+        if fitted is not None
+        else Image.new("RGBA", (width, height), (230, 232, 235, 255))
+    )
+    relative_points = [(px - fit_box[0], py - fit_box[1]) for px, py in polygon]
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).polygon(relative_points, fill=255)
+    page_image.paste(tile, (fit_box[0], fit_box[1]), mask)
+    draw.line(
+        polygon + [polygon[0]],
+        fill=(20, 20, 20, 255),
+        width=PANEL_OUTLINE_WIDTH,
+        joint="curve",
+    )
 
 
 def draw_panel_text(

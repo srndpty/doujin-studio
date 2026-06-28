@@ -383,6 +383,9 @@ class PanelCharacter(BaseModel):
         return self
 
 
+FrameRole = Literal["normal", "background", "bleed", "overlap", "vertical_splash", "cut_in"]
+
+
 class Panel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -390,6 +393,14 @@ class Panel(BaseModel):
     bbox: tuple[float, float, float, float]
     # bbox内の相対座標で表す変形コマ。未指定時は長方形。
     shape_points: list[tuple[float, float]] | None = None
+    # ページ座標(0..1、裁ち落とし用に-0.05..1.05を許容)で表すコマ枠の頂点列。
+    # レイアウトの正本。未指定時はbbox（+shape_points）から長方形/多角形を導出する。
+    # 重ねコマ・裁ち落とし・ぶち抜き・斜めコマなど長方形タイルに収まらない形を表せる。
+    frame_points: list[tuple[float, float]] | None = None
+    # コマの重なり順（大きいほど手前）。背面の大ゴマ→手前の小ゴマの重ね合わせに使う。
+    z_index: int = 0
+    # コマの用途。背面大ゴマ/裁ち落とし/重ね/縦ぶち抜き/カットインを区別し、自動配置と検査に使う。
+    frame_role: FrameRole = "normal"
     shot: str
     # コマの主題。prop_insert/hand_insert/backgroundではキャラ同一性を抑制する。
     subject_mode: Literal[
@@ -478,6 +489,29 @@ class Panel(BaseModel):
             raise ValueError("shape_pointsの面積が小さすぎます")
         if _has_self_intersection(value):
             raise ValueError("shape_pointsが自己交差しています")
+        return value
+
+    @field_validator("frame_points")
+    @classmethod
+    def validate_frame_points(
+        cls, value: list[tuple[float, float]] | None
+    ) -> list[tuple[float, float]] | None:
+        if value is None:
+            return None
+        if not 3 <= len(value) <= 12:
+            raise ValueError("frame_pointsは3〜12点で指定してください")
+        if any(not (math.isfinite(x) and math.isfinite(y)) for x, y in value):
+            raise ValueError("frame_pointsは有限の数値で指定してください")
+        # 裁ち落とし（ページ端を超える描画）を許すため、僅かにページ外まで許容する。
+        if any(x < -0.05 or x > 1.05 or y < -0.05 or y > 1.05 for x, y in value):
+            raise ValueError("frame_pointsはページ座標の-0.05〜1.05で指定してください")
+        n = len(value)
+        if any(value[i] == value[(i + 1) % n] for i in range(n)):
+            raise ValueError("frame_pointsに連続する重複点があります")
+        if _polygon_area(value) < 1e-6:
+            raise ValueError("frame_pointsの面積が小さすぎます")
+        if _has_self_intersection(value):
+            raise ValueError("frame_pointsが自己交差しています")
         return value
 
 

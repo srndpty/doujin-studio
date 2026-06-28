@@ -1833,6 +1833,22 @@ export interface components {
                 number,
                 number
             ][] | null;
+            /** Frame Points */
+            frame_points?: [
+                number,
+                number
+            ][] | null;
+            /**
+             * Z Index
+             * @default 0
+             */
+            z_index: number;
+            /**
+             * Frame Role
+             * @default normal
+             * @enum {string}
+             */
+            frame_role: "normal" | "background" | "bleed" | "overlap" | "vertical_splash" | "cut_in";
             /** Shot */
             shot: string;
             /**
