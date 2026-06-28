@@ -1,0 +1,164 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "cfg": 8,
+      "denoise": 1,
+      "latent_image": [
+        "5",
+        0
+      ],
+      "model": [
+        "4",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "positive": [
+        "40",
+        0
+      ],
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "seed": 8566257,
+      "steps": 24
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "batch_size": 1,
+      "height": 1024,
+      "width": 768
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "4",
+        1
+      ],
+      "text": "masterpiece, best quality"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "4",
+        1
+      ],
+      "text": "bad hands, low quality, text, watermark"
+    }
+  },
+  "20": {
+    "_meta": {
+      "title": "character prompt 1"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "4",
+        1
+      ],
+      "text": "character 1 prompt will be patched by regional_binding"
+    }
+  },
+  "21": {
+    "_meta": {
+      "title": "character prompt 2"
+    },
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "4",
+        1
+      ],
+      "text": "character 2 prompt will be patched by regional_binding"
+    }
+  },
+  "30": {
+    "_meta": {
+      "title": "region box 1: inputs x/y/width/height are patched"
+    },
+    "class_type": "AttentionCoupleRegion",
+    "inputs": {
+      "conditioning": [
+        "20",
+        0
+      ],
+      "height": 0.84,
+      "width": 0.64,
+      "x": 0.18,
+      "y": 0.08
+    }
+  },
+  "31": {
+    "_meta": {
+      "title": "region box 2: inputs x/y/width/height are patched"
+    },
+    "class_type": "AttentionCoupleRegion",
+    "inputs": {
+      "conditioning": [
+        "21",
+        0
+      ],
+      "height": 0.84,
+      "width": 0.64,
+      "x": 0.18,
+      "y": 0.08
+    }
+  },
+  "40": {
+    "_meta": {
+      "title": "combine base prompt and regional conditions"
+    },
+    "class_type": "AttentionCoupleConditioning",
+    "inputs": {
+      "base": [
+        "6",
+        0
+      ],
+      "region_1": [
+        "30",
+        0
+      ],
+      "region_2": [
+        "31",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "local-doujin-studio-regional",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  }
+}

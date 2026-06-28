@@ -22,6 +22,15 @@ POSITION_PHRASE = {
     "lower_right": "on the lower right",
     "center": "in the center",
 }
+TEXT_SAFE_PROMPT = "leave clean empty space for later typesetting, no text in image"
+# 画像生成に文字・英字SFXを描かせない常時negative（写植は後段のレンダリングで行う）。
+TEXT_SUPPRESSION_NEGATIVE = "text, letters, alphabet, english sound effects, sound effect text"
+# 独白の丸泡乱用・無意味な白丸装飾を抑える常時negative。
+THOUGHT_BUBBLE_NEGATIVE = "thought bubble chain, decorative circles, random white circles"
+# フルカラー統一のpositive。
+FULL_COLOR_POSITIVE = "full color manga panel, consistent color illustration"
+# full_color方針のときに加える白黒禁止negative。
+MONOCHROME_NEGATIVE = "monochrome, black and white, grayscale, screentone only, manga ink only"
 
 
 def is_non_character_mode(panel: Panel) -> bool:
@@ -63,9 +72,60 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
             positive_parts.extend(char_tokens)
             negative_parts.append(character.negative_prompt)
 
-    positive_parts.append(panel.generation.prompt or panel.prompt)
+    positive_parts.extend(
+        [
+            panel.role,
+            panel.emotion,
+            panel.camera,
+            panel.composition_notes,
+            TEXT_SAFE_PROMPT if panel.text_safe_area else "",
+            panel.generation.prompt or panel.prompt,
+        ]
+    )
     negative_parts.append(panel.generation.negative_prompt)
+
+    # 漫画品質ゲート: 文字/英字SFX抑制・丸泡装飾抑制は常時加える。
+    # フルカラー統一は color_policy=full_color のときだけ強制する。
+    negative_parts.append(TEXT_SUPPRESSION_NEGATIVE)
+    negative_parts.append(THOUGHT_BUBBLE_NEGATIVE)
+    if manga.color_policy == "full_color":
+        positive_parts.append(FULL_COLOR_POSITIVE)
+        negative_parts.append(MONOCHROME_NEGATIVE)
     return merge_prompt_parts(positive_parts), merge_prompt_parts(negative_parts)
+
+
+def compose_character_regional_prompts(
+    manga: MangaProject, panel: Panel
+) -> list[dict[str, object]]:
+    """regional workflowへ渡すキャラ別promptと領域を作る。"""
+    if is_non_character_mode(panel):
+        return []
+    characters_by_id = {character.id: character for character in manga.characters}
+    regions: list[dict[str, object]] = []
+    for entry in panel.character_layout:
+        if entry.id not in panel.characters or entry.region_box is None:
+            continue
+        character = characters_by_id.get(entry.id)
+        if character is None:
+            continue
+        prompt = merge_prompt_parts(
+            [
+                character.trigger_prompt or character.display_name,
+                character.appearance_prompt,
+                character.outfit_prompt,
+                POSITION_PHRASE.get(entry.position, ""),
+                entry.expression,
+                entry.action,
+            ]
+        )
+        regions.append(
+            {
+                "character_id": entry.id,
+                "prompt": prompt,
+                "region_box": entry.region_box,
+            }
+        )
+    return regions
 
 
 def merge_prompt_parts(parts: list[str]) -> str:
@@ -99,6 +159,12 @@ def prepare_panel_for_generation(manga: MangaProject, panel: Panel) -> Panel:
         ),
         None,
     )
+    regional_prompts = {
+        str(region["character_id"]): str(region["prompt"])
+        for region in compose_character_regional_prompts(manga, panel)
+    }
+    for entry in prepared.character_layout:
+        entry.regional_prompt = regional_prompts.get(entry.id, "")
     if is_non_character_mode(panel):
         # 小物・手・背景コマではキャラLoRA/参照画像を適用しない。
         location = next((item for item in manga.locations if item.id == panel.location_id), None)

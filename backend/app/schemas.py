@@ -4,9 +4,10 @@ import math
 from datetime import datetime
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 Point = tuple[float, float]
+UnitBoxFormat = Literal["xywh", "xyxy"]
 
 
 def _orient(a: Point, b: Point, c: Point) -> float:
@@ -67,9 +68,10 @@ PositionAnchor = Literal["upper_left", "upper_right", "lower_left", "lower_right
 # 台詞の種別。発話の役割を持たせ、吹き出し形状や写植の既定を切り替える。
 DialogueKind = Literal["speech", "monologue", "narration", "shout"]
 # 種別ごとの既定吹き出し形状。balloonが既定(oval)のままのときだけ適用する。
+# 独白は丸泡(cloud)の乱用を避け、矩形キャプション寄りにする（領域: 漫画品質ゲート）。
 KIND_DEFAULT_BALLOON: dict[str, str] = {
     "speech": "oval",
-    "monologue": "cloud",
+    "monologue": "caption",
     "narration": "caption",
     "shout": "burst",
 }
@@ -198,6 +200,51 @@ class Sfx(BaseModel):
         return value
 
 
+def _validate_unit_box(
+    value: tuple[float, float, float, float] | None,
+    label: str,
+) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return value
+    left, top, width, height = value
+    if min(value) < 0 or left + width > 1 or top + height > 1:
+        raise ValueError(f"{label}は0から1の範囲に収めてください")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{label}の幅と高さは正の値にしてください")
+    return value
+
+
+def _normalize_unit_box(
+    value: object,
+    box_format: UnitBoxFormat = "xywh",
+) -> tuple[float, float, float, float] | None:
+    """box形式は明示契約に従って[x,y,w,h]へ正規化する。"""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise ValueError("boxは4要素の配列で指定してください")
+    try:
+        left, top, third, fourth = (float(item) for item in value)
+    except (TypeError, ValueError):
+        raise ValueError("boxは数値4要素で指定してください") from None
+    if box_format == "xyxy":
+        return (left, top, third - left, fourth - top)
+    if min(left, top, third, fourth) < 0:
+        return (left, top, third, fourth)
+    return (left, top, third, fourth)
+
+
+class RegionalWorkflowBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["attention_couple"] = "attention_couple"
+    # character_layoutの順番に対応するキャラ別promptノード。
+    character_prompt_node_ids: list[str] = Field(default_factory=list)
+    # character_layoutの順番に対応する領域ノード。入力名x/y/width/heightへ0..1値を入れる。
+    region_node_ids: list[str] = Field(default_factory=list)
+
+
 class WorkflowPreset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -213,6 +260,7 @@ class WorkflowPreset(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=200)
     cfg: float | None = Field(default=None, ge=0, le=30)
     denoise: float | None = Field(default=None, ge=0, le=1)
+    regional_binding: RegionalWorkflowBinding | None = None
 
 
 class PanelControlReference(BaseModel):
@@ -312,6 +360,27 @@ class PanelCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    # 生成直前に解決したキャラ単位prompt。regional workflowでは全体promptを混ぜない。
+    regional_prompt: str = ""
+    region_box_format: UnitBoxFormat = "xywh"
+    # コマ内の人物領域（x, y, w, h）。regional workflowの領域分離に使う。
+    region_box: tuple[float, float, float, float] | None = None
+
+    @field_validator("region_box", mode="before")
+    @classmethod
+    def validate_region_box(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("region_box_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
+
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "PanelCharacter":
+        # region_boxは検証時にxywhへ正規化済み。formatは入力解釈の一時情報なので、
+        # 永続値はxywh固定にして再読込時の二重変換を防ぐ。
+        if self.region_box_format != "xywh":
+            object.__setattr__(self, "region_box_format", "xywh")
+        return self
 
 
 class Panel(BaseModel):
@@ -328,6 +397,14 @@ class Panel(BaseModel):
     ] = "character_scene"
     # 構図段階の役割（establish/dialogue/reveal/action/punchline/silent/montage等）。
     role: str = ""
+    # 読者に伝える感情ビート。表情指定とは別に、ページ全体の感情曲線を検査する。
+    emotion: str = ""
+    # 背景密度。white/none/light/full等を入れ、白背景の連続を検査する。
+    background_density: str = ""
+    composition_notes: str = ""
+    # 写植予定領域。画像生成時に重要な顔や手を置かない余白として扱う。
+    text_safe_area_format: UnitBoxFormat = "xywh"
+    text_safe_area: tuple[float, float, float, float] | None = None
     # 強調度（1=控えめ、5=見せ場）。レイアウトエンジンが面積配分に使う。
     emphasis: int = Field(default=2, ge=1, le=5)
     camera: str = ""
@@ -349,12 +426,17 @@ class Panel(BaseModel):
     def validate_bbox(
         cls, value: tuple[float, float, float, float]
     ) -> tuple[float, float, float, float]:
-        left, top, width, height = value
-        if min(value) < 0 or left + width > 1 or top + height > 1:
-            raise ValueError("bboxは0から1の範囲に収めてください")
-        if width <= 0 or height <= 0:
-            raise ValueError("bboxの幅と高さは正の値にしてください")
-        return value
+        validated = _validate_unit_box(value, "bbox")
+        assert validated is not None
+        return validated
+
+    @field_validator("text_safe_area", mode="before")
+    @classmethod
+    def validate_text_safe_area(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("text_safe_area_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "text_safe_area")
 
     @model_validator(mode="after")
     def validate_character_layout(self) -> "Panel":
@@ -370,6 +452,9 @@ class Panel(BaseModel):
             raise ValueError(
                 f"{self.panel_id}のcharacter_layoutが描画人物に無いIDを参照: {', '.join(unknown)}"
             )
+        # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.text_safe_area_format != "xywh":
+            object.__setattr__(self, "text_safe_area_format", "xywh")
         return self
 
     @field_validator("shape_points")
@@ -444,6 +529,9 @@ class Page(BaseModel):
     layout_family: str = ""
     # ページの演出意図（構図段階）。
     intent: str = ""
+    page_goal: str = ""
+    emotional_curve: list[str] = Field(default_factory=list)
+    quality_notes: list[str] = Field(default_factory=list)
     # 手動編集後はtrue。自動レイアウト再提案で上書きしない。
     layout_locked: bool = False
     # コマの読み順（panel_id列）。右上から左下を既定とする。
@@ -521,6 +609,8 @@ class MangaProject(BaseModel):
     target_pages: int = 4
     # 読み方向。日本漫画は右綴じ・右から左を既定にする。
     reading_direction: Literal["rtl", "ltr"] = "rtl"
+    # 配色方針。full_color=全コマをフルカラー統一、mixed=白黒等の混在を許容する。
+    color_policy: Literal["full_color", "mixed"] = "full_color"
     typography: TypographySettings = Field(default_factory=TypographySettings)
     page_layout: PageLayoutSettings = Field(default_factory=PageLayoutSettings)
     common_positive_prompt: str = ""
@@ -699,6 +789,9 @@ class PreflightIssue(BaseModel):
     message: str
     page: int
     panel_id: str | None = None
+    category: str = "general"
+    suggestion: str = ""
+    fixable: bool = False
 
 
 class PreflightResponse(BaseModel):
@@ -1050,6 +1143,8 @@ class ScriptCharacter(BaseModel):
     position: PositionAnchor = "center"
     expression: str = ""
     action: str = ""
+    region_box_format: UnitBoxFormat = "xywh"
+    region_box: tuple[float, float, float, float] | None = None
 
     @field_validator("name", "expression", "action", mode="before")
     @classmethod
@@ -1078,12 +1173,33 @@ class ScriptCharacter(BaseModel):
         valid = {"upper_left", "upper_right", "lower_left", "lower_right", "center"}
         return normalized if normalized in valid else "center"
 
+    @field_validator("region_box", mode="before")
+    @classmethod
+    def validate_region_box(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("region_box_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "region_box")
+
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "ScriptCharacter":
+        # region_boxは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.region_box_format != "xywh":
+            object.__setattr__(self, "region_box_format", "xywh")
+        return self
+
 
 class ScriptPanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     shot: str = ""
     camera: str = ""
+    role: str = ""
+    emotion: str = ""
+    background_density: str = ""
+    composition_notes: str = ""
+    text_safe_area_format: UnitBoxFormat = "xywh"
+    text_safe_area: tuple[float, float, float, float] | None = None
     location: str = ""
     visual_prompt: str = ""
     characters: list[str] = Field(default_factory=list)
@@ -1092,7 +1208,17 @@ class ScriptPanel(BaseModel):
     dialogue: list[ScriptDialogue] = Field(default_factory=list)
     sfx: list[ScriptSfx] = Field(default_factory=list)
 
-    @field_validator("shot", "camera", "location", "visual_prompt", mode="before")
+    @field_validator(
+        "shot",
+        "camera",
+        "role",
+        "emotion",
+        "background_density",
+        "composition_notes",
+        "location",
+        "visual_prompt",
+        mode="before",
+    )
     @classmethod
     def normalize_text(cls, value):
         if value is None:
@@ -1100,6 +1226,14 @@ class ScriptPanel(BaseModel):
         if isinstance(value, (int, float, bool)):
             return str(value)
         return value
+
+    @field_validator("text_safe_area", mode="before")
+    @classmethod
+    def validate_text_safe_area(
+        cls, value, info: ValidationInfo
+    ) -> tuple[float, float, float, float] | None:
+        box_format = info.data.get("text_safe_area_format", "xywh")
+        return _validate_unit_box(_normalize_unit_box(value, box_format), "text_safe_area")
 
     @field_validator("characters", mode="before")
     @classmethod
@@ -1157,21 +1291,42 @@ class ScriptPanel(BaseModel):
                     items.append({"text": text})
         return items
 
+    @model_validator(mode="after")
+    def normalize_box_format(self) -> "ScriptPanel":
+        # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
+        if self.text_safe_area_format != "xywh":
+            object.__setattr__(self, "text_safe_area_format", "xywh")
+        return self
+
 
 class ScriptPage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     page: int = Field(ge=1)
     layout: str = ""
+    page_goal: str = ""
+    emotional_curve: list[str] = Field(default_factory=list)
     panels: list[ScriptPanel] = Field(min_length=1, max_length=9)
 
-    @field_validator("layout", mode="before")
+    @field_validator("layout", "page_goal", mode="before")
     @classmethod
     def normalize_layout(cls, value):
         if value is None:
             return ""
         if isinstance(value, (int, float, bool)):
             return str(value)
+        return value
+
+    @field_validator("emotional_curve", mode="before")
+    @classmethod
+    def normalize_emotional_curve(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, (str, int, float, bool)):
+            text = str(value).strip()
+            return [text] if text else []
         return value
 
 

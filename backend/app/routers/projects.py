@@ -44,6 +44,7 @@ from ..schemas import (
     ProjectSummary,
     ReferenceAssetResult,
 )
+from ..story import normalize_manga_sfx
 from .common import (
     PROJECT_MUTATION_ERROR_RESPONSES,
     _to_preflight_response,
@@ -316,6 +317,8 @@ async def update_manga_json(
     revision: int,
 ) -> ProjectMutationResponse[EmptyMutationResult]:
     previous = request.app.state.mutation.require_revision(project_id, revision).manga
+    # 保存時に辞書にある英字擬音を日本語写植へ正規化する（変換後の差分で再描画判定する）。
+    normalize_manga_sfx(payload)
     structure_changed = structure_signature(payload) != structure_signature(previous)
     invalidate_changed_pages(payload, previous)
     mutation_result = request.app.state.mutation.replace(

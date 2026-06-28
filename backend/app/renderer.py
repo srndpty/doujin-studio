@@ -216,14 +216,15 @@ def draw_panel_text(
 ) -> list[str]:
     """吹き出し・SFXを描く（overlayより上のレイヤー）。"""
     warnings: list[str] = []
-    # 話者の立ち位置（character_layout.position）を引き、しっぽの向きの基準にする。
-    speaker_anchors = {entry.id: entry.position for entry in panel.character_layout}
+    # 話者の人物領域（character_layout）を引き、しっぽの向きの基準にする。
+    speaker_layout = {entry.id: entry for entry in panel.character_layout}
     for sfx in panel.sfx:
         if sfx.layer == "below":
             draw_sfx(page_image, sfx, box)
     for dialogue in panel.dialogue:
-        speaker_anchor = speaker_anchors.get(dialogue.speaker) if dialogue.on_screen else None
-        warnings.extend(draw_dialogue(page_image, draw, dialogue, box, typography, speaker_anchor))
+        entry = speaker_layout.get(dialogue.speaker) if dialogue.on_screen else None
+        speaker_target = _speaker_target_point(entry, box) if entry is not None else None
+        warnings.extend(draw_dialogue(page_image, draw, dialogue, box, typography, speaker_target))
     for sfx in panel.sfx:
         if sfx.layer == "above":
             draw_sfx(page_image, sfx, box)
@@ -294,6 +295,16 @@ def draw_overlay(
 
 
 # --- 吹き出しと写植 ---
+
+
+def _speaker_target_point(entry, panel_box: tuple[int, int, int, int]) -> tuple[int, int]:
+    """話者のしっぽ照準点。region_boxがあればその中心、無ければ立ち位置アンカーを使う。"""
+    if entry.region_box is not None:
+        left, top, right, bottom = panel_box
+        pw, ph = right - left, bottom - top
+        rx, ry, rw, rh = entry.region_box
+        return (int(left + (rx + rw / 2) * pw), int(top + (ry + rh / 2) * ph))
+    return _anchor_point(entry.position, panel_box)
 
 
 def _anchor_point(position: str, box: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -476,7 +487,7 @@ def draw_dialogue(
     dialogue: Dialogue,
     panel_box: tuple[int, int, int, int],
     typography: TypographySettings,
-    speaker_anchor: str | None = None,
+    speaker_target: tuple[int, int] | None = None,
 ) -> list[str]:
     resolved = compute_bubble_layout(dialogue, panel_box, typography)
     bubble, area, layout = resolved.bubble, resolved.text_area, resolved.layout
@@ -491,7 +502,7 @@ def draw_dialogue(
     if dialogue.balloon == "none":
         stroke_width = max(3, int(layout.font_size * 0.12))
     else:
-        _draw_balloon_shape(page_image, draw, dialogue, bubble, panel_box, speaker_anchor)
+        _draw_balloon_shape(page_image, draw, dialogue, bubble, panel_box, speaker_target)
 
     typeset.draw_layout(page_image, layout, font_path_str, area, fill, stroke_width, stroke_fill)
     return [f"{dialogue.speaker}: {message}" for message in warnings]
@@ -533,14 +544,14 @@ def _draw_balloon_shape(
     dialogue: Dialogue,
     bubble: tuple[int, int, int, int],
     panel_box: tuple[int, int, int, int],
-    speaker_anchor: str | None = None,
+    speaker_target: tuple[int, int] | None = None,
 ) -> None:
     page_w, page_h = PAGE_SIZE
     show_tail = dialogue.balloon != "caption" and dialogue_draws_tail(dialogue)
     xs = [bubble[0], bubble[2]]
     ys = [bubble[1], bubble[3]]
     if show_tail:
-        tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
+        tip = _tail_tip(dialogue, bubble, panel_box, speaker_target)
         xs.append(tip[0])
         ys.append(tip[1])
     # しっぽ先端まで含む描画範囲をとり、その分だけ拡大タイルを確保する。
@@ -556,7 +567,13 @@ def _draw_balloon_shape(
     tile_draw = ImageDraw.Draw(tile)
     bubble_s = _shift_scale(bubble, rx0, ry0, s)
     panel_s = _shift_scale(panel_box, rx0, ry0, s)
-    _paint_balloon(tile_draw, dialogue, bubble_s, panel_s, show_tail, speaker_anchor, s)
+    # speaker_targetはページpx。タイル（原点ずらし・scale倍）座標へ写してから渡す。
+    target_s = (
+        (round((speaker_target[0] - rx0) * s), round((speaker_target[1] - ry0) * s))
+        if speaker_target is not None
+        else None
+    )
+    _paint_balloon(tile_draw, dialogue, bubble_s, panel_s, show_tail, target_s, s)
     smoothed = tile.resize((rx1 - rx0, ry1 - ry0), Image.LANCZOS)
     page_image.alpha_composite(smoothed, (rx0, ry0))
 
@@ -567,7 +584,7 @@ def _paint_balloon(
     bubble: tuple[int, int, int, int],
     panel_box: tuple[int, int, int, int],
     show_tail: bool,
-    speaker_anchor: str | None,
+    speaker_target: tuple[int, int] | None,
     scale: float,
 ) -> None:
     """拡大タイルへ吹き出し外形を描く。線幅・個数はscaleに合わせる。"""
@@ -587,7 +604,7 @@ def _paint_balloon(
                 panel_box,
                 outline,
                 white,
-                speaker_anchor=speaker_anchor,
+                speaker_target=speaker_target,
                 scale=scale,
             )
         return
@@ -595,7 +612,7 @@ def _paint_balloon(
         _draw_cloud(draw, bubble, outline, white, scale)
         if show_tail:
             _draw_cloud_tail(
-                draw, dialogue, bubble, panel_box, outline, white, speaker_anchor, scale
+                draw, dialogue, bubble, panel_box, outline, white, speaker_target, scale
             )
         return
     # oval（標準の楕円）
@@ -608,21 +625,21 @@ def _paint_balloon(
             panel_box,
             outline,
             white,
-            speaker_anchor=speaker_anchor,
+            speaker_target=speaker_target,
             scale=scale,
         )
 
 
-def _tail_tip(dialogue: Dialogue, bubble, panel_box, speaker_anchor: str | None = None):
+def _tail_tip(dialogue: Dialogue, bubble, panel_box, speaker_target: tuple[int, int] | None = None):
     left, top, right, bottom = panel_box
     pw, ph = right - left, bottom - top
     if dialogue.tail is not None:
         return (left + int(dialogue.tail.tip[0] * pw), top + int(dialogue.tail.tip[1] * ph))
     bx = (bubble[0] + bubble[2]) / 2
     by = (bubble[1] + bubble[3]) / 2
-    if speaker_anchor is not None:
-        # 話者の立ち位置（character_layout.position）へしっぽを向ける。
-        cx, cy = _anchor_point(speaker_anchor, panel_box)
+    if speaker_target is not None:
+        # 話者の人物領域中心（無ければ立ち位置）へしっぽを向ける。
+        cx, cy = speaker_target
     else:
         # 既定は吹き出し下方向へ短く出す（話者方向の代理）。
         cx, cy = (left + pw / 2, bottom - ph * 0.1)
@@ -643,14 +660,14 @@ def _draw_tail(
     outline,
     fill,
     square: bool = False,
-    speaker_anchor=None,
+    speaker_target=None,
     scale: float = 1.0,
 ) -> None:
     if dialogue.tail is not None and not dialogue.tail.enabled:
         return
     x0, y0, x1, y1 = bubble
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
+    tip = _tail_tip(dialogue, bubble, panel_box, speaker_target)
     width_ratio = dialogue.tail.width if dialogue.tail is not None else 0.12
     base_w = max(12 * scale, min((x1 - x0) * width_ratio, 26 * scale))
     # 付け根は吹き出しの縁に取る。
@@ -672,13 +689,13 @@ def _draw_tail(
 
 
 def _draw_cloud_tail(
-    draw, dialogue, bubble, panel_box, outline, fill, speaker_anchor=None, scale: float = 1.0
+    draw, dialogue, bubble, panel_box, outline, fill, speaker_target=None, scale: float = 1.0
 ) -> None:
     if dialogue.tail is not None and not dialogue.tail.enabled:
         return
     x0, y0, x1, y1 = bubble
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    tip = _tail_tip(dialogue, bubble, panel_box, speaker_anchor)
+    tip = _tail_tip(dialogue, bubble, panel_box, speaker_target)
     width2 = max(1, round(2 * scale))
     for i, t in enumerate((0.45, 0.72, 0.95)):
         bx = cx + (tip[0] - cx) * t

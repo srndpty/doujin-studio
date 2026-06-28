@@ -474,13 +474,23 @@ def stage_instruction_text(stage: str) -> str:
             "・1ページを1コマにするのは、山場・見せ場・余韻など明確な演出意図があるページだけに限る。漫然と全ページを1コマにしない。"
             "・各コマで画角(shot)と役割を変え、状況提示→反応→引き のように流れを作る。"
             "・ページのpurposeとhookに沿ってコマを配置する。"
-            "出力形式: pages配列。各ページは page(整数) と panels(1〜9個)を持ちます。"
-            "各コマは shot, camera, location, visual_prompt, characters([string]), dialogue, sfx を持ちます。"
+            "出力形式: pages配列。各ページは page(整数), page_goal, emotional_curve([string]), "
+            "panels(1〜9個)を持ちます。"
+            "各コマは shot, camera, role, emotion, background_density, location, visual_prompt, "
+            "composition_notes, text_safe_area, characters([string]), dialogue, sfx を持ちます。"
+            "text_safe_areaは [x,y,width,height] 形式で、right/bottom座標ではありません。"
+            'xyxy形式を使う場合だけ text_safe_area_format:"xyxy" を併記してください。'
+            "roleは establish/dialogue/reaction/action/reveal/emotional_peak/silent/transition/"
+            "punchline/aftermath から選びます。"
+            "emotionはそのコマで読者に伝える感情ビートを短く書きます。"
+            "background_densityは none/white/light/full から選び、白背景にする場合は演出意図を持たせてください。"
             "charactersにはそのコマに実際に描かれる登場人物名だけを列挙してください（画面外の話者は含めない）。"
             "台詞が無いコマでも、描かれる人物がいれば必ず列挙してください。"
             "可能なら character_directives: [{name, position, expression, action}] も出力し、"
             "人物ごとの画面内位置(position: upper_left/upper_right/lower_left/lower_right/center)、"
-            "表情(expression)、動作(action)を英語で指定してください（画像生成promptへ反映されます）。"
+            "表情(expression)、動作(action)、region_box([x,y,width,height])を英語/数値で指定してください"
+            '（xyxy形式を使う場合だけ region_box_format:"xyxy" を併記してください）'
+            "（画像生成promptと領域分離へ反映されます）。"
             "dialogueは [{speaker, text, kind, on_screen}] の配列です。"
             "kindは speech(会話)/monologue(独白・心の声)/narration(ナレーション・地の文)/shout(叫び) から選びます。"
             "on_screenは話者がそのコマに描かれていればtrue、画面外の声ならfalseにします。独白・ナレーションは原則false。"
@@ -1111,6 +1121,44 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
 # 複数擬音が中央へ集中しないよう分散させる既定アンカー。
 _SFX_SPREAD_ANCHORS = ["upper_right", "lower_left", "upper_left", "lower_right", "center"]
 
+# 英語擬音 → 日本語写植の初期辞書。画像生成へ英字を描かせず、後段で日本語写植する方針。
+# UI編集や外部辞書化は今回の範囲外（backend定数として開始する）。
+ENGLISH_SFX_DICTIONARY: dict[str, str] = {
+    "tap": "トン",
+    "zip": "ジッ",
+    "bang": "バン",
+    "whoosh": "ヒュッ",
+    "click": "カチッ",
+    "step step": "トッ トッ",
+    "step": "トッ",
+}
+
+
+def normalize_sfx_text(text: str) -> str:
+    """英字擬音を日本語写植へ正規化する。未知の英字はそのまま返す（preflightで検出）。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return stripped
+    key = stripped.casefold().strip("!！.。・…").strip()
+    return ENGLISH_SFX_DICTIONARY.get(key, stripped)
+
+
+def normalize_manga_sfx(manga: MangaProject) -> bool:
+    """既存Manga内の擬音を日本語写植へ正規化する（辞書にある英字語は黙って変換）。
+
+    保存時に呼び、辞書語の英字SFXを取りこぼさず日本語化する。未知の英字はそのまま残し、
+    preflightの英字SFXエラーで利用者に手動修正を促す。変換が起きたらTrueを返す。
+    """
+    changed = False
+    for page in manga.pages:
+        for panel in page.panels:
+            for sfx in panel.sfx:
+                normalized = normalize_sfx_text(sfx.text)
+                if normalized != sfx.text:
+                    sfx.text = normalized
+                    changed = True
+    return changed
+
 
 def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
     """台本の擬音をSfxへ変換する。位置未指定の複数擬音は重ならないよう分散する。"""
@@ -1127,7 +1175,7 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
             font_size = 54
         sfx_list.append(
             Sfx(
-                text=item.text[:40],
+                text=normalize_sfx_text(item.text)[:40],
                 position=position,
                 style=item.style or "small_handwritten",
                 font_size=font_size,
@@ -1138,6 +1186,108 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
 
 # 人物解決の警告に付ける安定prefix。再適用時にこの種別だけ再計算・置換する。
 UNRESOLVED_CHARACTER_PREFIX = "[未解決の人物] "
+
+POSITION_REGION_BOXES: dict[str, tuple[float, float, float, float]] = {
+    "upper_left": (0.02, 0.02, 0.46, 0.46),
+    "upper_right": (0.52, 0.02, 0.46, 0.46),
+    "lower_left": (0.02, 0.52, 0.46, 0.46),
+    "lower_right": (0.52, 0.52, 0.46, 0.46),
+    "center": (0.18, 0.08, 0.64, 0.84),
+}
+
+
+SCRIPT_ROLE_ALIASES = {
+    "establishing": "establish",
+    "setup": "establish",
+    "conversation": "dialogue",
+    "closeup": "reaction",
+    "close_up": "reaction",
+    "insert": "transition",
+    "climax": "emotional_peak",
+    "quiet": "silent",
+    "silence": "silent",
+}
+
+
+# 変形コマ（shape_points）を許可するrole。会話・準備・心情・余韻は矩形固定にする。
+SHAPE_ALLOWED_ROLES = {"action", "reveal", "emotional_peak", "punchline"}
+# 変形を動機づける構図メモの語（動き・衝撃・見せ場系）。casefoldで部分一致を取る。
+SHAPE_MOTION_KEYWORDS = [
+    "動き",
+    "衝撃",
+    "見せ場",
+    "勢い",
+    "疾走",
+    "爆発",
+    "迫力",
+    "インパクト",
+    "飛び",
+    "駆け",
+    "アクション",
+    "motion",
+    "impact",
+    "burst",
+    "dynamic",
+    "dramatic",
+    "speed",
+    "dash",
+    "explosion",
+    "rush",
+    "action",
+]
+
+
+def panel_shape_allowed(role: str, composition_notes: str) -> bool:
+    """変形コマを許可してよいか。見せ場系roleかつ動き・衝撃・見せ場の意図があるときだけ許す。"""
+    if role not in SHAPE_ALLOWED_ROLES:
+        return False
+    haystack = (composition_notes or "").casefold()
+    return any(keyword.casefold() in haystack for keyword in SHAPE_MOTION_KEYWORDS)
+
+
+def normalize_script_role(value: str) -> str:
+    """台本のrole表記を検査しやすい語彙へ寄せる。"""
+    normalized = (value or "").strip().casefold().replace(" ", "_").replace("-", "_")
+    normalized = SCRIPT_ROLE_ALIASES.get(normalized, normalized)
+    valid = {
+        "establish",
+        "dialogue",
+        "reaction",
+        "action",
+        "reveal",
+        "emotional_peak",
+        "silent",
+        "transition",
+        "punchline",
+        "aftermath",
+        "montage",
+    }
+    return normalized if normalized in valid else ""
+
+
+def default_region_box(position: str, index: int, total: int) -> tuple[float, float, float, float]:
+    """人物領域が未指定のとき、位置指定と人数から決定的な初期領域を作る。"""
+    if total <= 1 and position in POSITION_REGION_BOXES:
+        return POSITION_REGION_BOXES[position]
+    if total <= 1:
+        return POSITION_REGION_BOXES["center"]
+    margin = 0.04
+    gap = 0.04
+    row_count = 2 if total > 4 else 1
+    column_count = math.ceil(total / row_count)
+    column = index % column_count
+    row = index // column_count
+    width = (1.0 - margin * 2 - gap * (column_count - 1)) / column_count
+    left = margin + column * (width + gap)
+    if position.startswith("upper"):
+        band_top, band_height = 0.04, 0.46
+    elif position.startswith("lower"):
+        band_top, band_height = 0.5, 0.46
+    else:
+        band_top, band_height = 0.08, 0.84
+    height = (band_height - gap * (row_count - 1)) / row_count
+    top = band_top + row * (height + gap)
+    return (round(left, 4), round(top, 4), round(width, 4), round(height, 4))
 
 
 def merge_unresolved_warnings(existing: list[str], unresolved: list[str]) -> list[str]:
@@ -1174,7 +1324,7 @@ def script_to_manga(
         panels: list[Panel] = []
         for index, script_panel in enumerate(script_page.panels):
             panel_id = f"p{script_page.page:02d}_{index + 1:02d}"
-            role = layout_engine.derive_role(
+            role = normalize_script_role(script_panel.role) or layout_engine.derive_role(
                 index, panel_count, page_index, total_pages, bool(script_panel.dialogue)
             )
             subject_mode = classify_subject_mode(script_panel)
@@ -1227,19 +1377,37 @@ def script_to_manga(
                 directive_id = match_character_id(directive.name, base.characters)
                 if directive_id and directive_id not in directive_by_id:
                     directive_by_id[directive_id] = directive
-            character_layout = []
+            default_positions: dict[str, str] = {}
             for i, character_id in enumerate(character_ids):
                 directive = directive_by_id.get(character_id)
-                if directive is not None:
-                    position = directive.position
-                else:
-                    position = _SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center"
+                default_positions[character_id] = (
+                    directive.position
+                    if directive is not None
+                    else (_SFX_SPREAD_ANCHORS[i % 2] if len(character_ids) > 1 else "center")
+                )
+            position_counts: dict[str, int] = {}
+            position_indices: dict[str, int] = {}
+            for position in default_positions.values():
+                position_counts[position] = position_counts.get(position, 0) + 1
+            character_layout = []
+            for character_id in character_ids:
+                directive = directive_by_id.get(character_id)
+                position = default_positions[character_id]
+                position_index = position_indices.get(position, 0)
+                position_indices[position] = position_index + 1
                 character_layout.append(
                     PanelCharacter(
                         id=character_id,
                         position=position,
                         expression=directive.expression if directive else "",
                         action=directive.action if directive else "",
+                        region_box=(
+                            directive.region_box
+                            if directive and directive.region_box is not None
+                            else default_region_box(
+                                position, position_index, position_counts[position]
+                            )
+                        ),
                     )
                 )
             dialogues = []
@@ -1264,7 +1432,8 @@ def script_to_manga(
             panel_bbox = layout[index]
             gen_w, gen_h = compute_generation_size(panel_bbox)
             shape_points = None
-            if family in {"action", "reveal"} and index == 0:
+            if panel_shape_allowed(role, script_panel.composition_notes):
+                # 明確な演出意図（見せ場role＋動き・衝撃・見せ場の構図メモ）があるコマだけ変形する。
                 # フロントのslant-rightプリセット定数(0.12/0.88)に揃える。ずれると
                 # 編集画面のshapePreset()が右傾斜を認識できず「台形」と表示されてしまう。
                 shape_points = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
@@ -1276,6 +1445,10 @@ def script_to_manga(
                     shot=script_panel.shot or "コマ",
                     subject_mode=subject_mode,
                     role=role,
+                    emotion=script_panel.emotion,
+                    background_density=script_panel.background_density,
+                    composition_notes=script_panel.composition_notes,
+                    text_safe_area=script_panel.text_safe_area,
                     emphasis=layout_engine.derive_emphasis(role),
                     camera=script_panel.camera,
                     location_id=resolve_location_id(script_panel.location, base),
@@ -1301,6 +1474,8 @@ def script_to_manga(
                 theme=f"{script_page.page}ページ",
                 layout_template=f"count_{panel_count}",
                 layout_family=family,
+                page_goal=script_page.page_goal,
+                emotional_curve=script_page.emotional_curve,
                 reading_order=[panel.panel_id for panel in panels],
                 panels=panels,
             )
@@ -1312,6 +1487,7 @@ def script_to_manga(
         premise=base.premise,
         target_pages=len(pages),
         reading_direction=base.reading_direction,
+        color_policy=base.color_policy,
         typography=base.typography.model_copy(deep=True),
         page_layout=base.page_layout.model_copy(deep=True),
         common_positive_prompt=common_positive,

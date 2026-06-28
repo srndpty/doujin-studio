@@ -48,12 +48,14 @@ from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for
 from backend.app.renderer import fit_image_to_box, sanitize_export_filename
 from backend.app.rendering import RenderInputChangedError
 from backend.app.schemas import (
+    Character,
     Dialogue,
     GenerationInfo,
     ImageCandidate,
     MangaProject,
     Page,
     Panel,
+    PanelCharacter,
 )
 
 
@@ -932,6 +934,280 @@ def test_workflow_preset_patches_model_and_sampler(tmp_path: Path) -> None:
     assert patched["41"]["inputs"]["vae_name"] == "anime.vae"
     assert patched["3"]["inputs"]["steps"] == 24
     assert patched["3"]["inputs"]["cfg"] == 5.5
+
+
+def test_workflow_preset_patches_regional_binding(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["52"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    workflow["53"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                position="upper_left",
+                expression="smiling",
+                action="waving",
+                regional_prompt="jougasaki mika, orange hoodie, smiling, waving",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            ),
+            PanelCharacter(
+                id="rika",
+                regional_prompt="jougasaki rika, blue jacket",
+                region_box=(0.5, 0.2, 0.3, 0.4),
+            ),
+        ],
+        generation=GenerationInfo(
+            prompt="jougasaki mika, orange hoodie",
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50", "52"],
+                    "region_node_ids": ["51", "53"],
+                },
+            },
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert "smiling" in patched["50"]["inputs"]["text"]
+    assert "jougasaki mika" in patched["50"]["inputs"]["text"]
+    assert patched["51"]["inputs"]["x"] == 0.1
+    assert patched["51"]["inputs"]["y"] == 0.2
+    assert patched["51"]["inputs"]["width"] == 0.3
+    assert patched["51"]["inputs"]["height"] == 0.4
+
+
+def test_regional_binding_rejects_empty_prompt(tmp_path: Path) -> None:
+    # regional_prompt・expression・actionがすべて空の人物regionは、空CLIPTextEncodeを
+    # 避けるためfail-fastする（prepared panel未経由・既存データでも安全側へ倒す）。
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["52"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    workflow["53"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="t",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", region_box=(0.1, 0.2, 0.3, 0.4)),
+            PanelCharacter(id="rika", regional_prompt="rika", region_box=(0.5, 0.2, 0.3, 0.4)),
+        ],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50", "52"],
+                    "region_node_ids": ["51", "53"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="regional prompt"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+
+
+def test_regional_binding_rejects_partial_character_regions(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                regional_prompt="mika_trigger",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            ),
+            PanelCharacter(id="rika", regional_prompt="rika_trigger"),
+        ],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="全キャラにregion_box"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+
+
+def test_regional_binding_skips_single_character_without_region(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika")],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50"],
+                    "region_node_ids": ["51"],
+                },
+            },
+        ),
+    )
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
+    assert patched["50"]["inputs"]["text"] == ""
+    assert patched["51"]["inputs"] == {}
+
+
+def test_panel_xyxy_box_format_round_trips_without_double_conversion() -> None:
+    # *_format="xyxy"で入力した値は検証時にxywhへ正規化し、formatもxywhへ固定する。
+    # これにより model_dump → 再validate で二重変換されない（保存/再読込の破壊を防ぐ）。
+    panel = Panel.model_validate(
+        {
+            "panel_id": "p01_01",
+            "bbox": [0, 0, 1, 1],
+            "shot": "t",
+            "text_safe_area_format": "xyxy",
+            "text_safe_area": [0.65, 0.72, 0.92, 0.88],
+            "characters": ["mika"],
+            "character_layout": [
+                {"id": "mika", "region_box_format": "xyxy", "region_box": [0.1, 0.2, 0.5, 0.7]}
+            ],
+        }
+    )
+    assert panel.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert panel.text_safe_area_format == "xywh"
+    assert panel.character_layout[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+    assert panel.character_layout[0].region_box_format == "xywh"
+
+    reloaded = Panel.model_validate(panel.model_dump())
+    assert reloaded.text_safe_area == pytest.approx((0.65, 0.72, 0.27, 0.16))
+    assert reloaded.character_layout[0].region_box == pytest.approx((0.1, 0.2, 0.4, 0.5))
+
+
+def test_regional_binding_uses_separated_character_prompts(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["51"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["60"] = {"class_type": "Region", "inputs": {}}
+    workflow["61"] = {"class_type": "Region", "inputs": {}}
+    manga = MangaProject(
+        title="regional",
+        characters=[
+            Character(
+                id="mika",
+                display_name="美嘉",
+                trigger_prompt="mika_trigger",
+                appearance_prompt="pink hair",
+                outfit_prompt="orange hoodie",
+            ),
+            Character(
+                id="rika",
+                display_name="莉嘉",
+                trigger_prompt="rika_trigger",
+                appearance_prompt="blonde twin tails",
+                outfit_prompt="blue jacket",
+            ),
+        ],
+        workflow_presets=[
+            {
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50", "51"],
+                    "region_node_ids": ["60", "61"],
+                },
+            }
+        ],
+        active_workflow_preset_id="regional",
+    )
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", position="upper_left", region_box=(0.0, 0.0, 0.5, 1.0)),
+            PanelCharacter(id="rika", position="upper_right", region_box=(0.5, 0.0, 0.5, 1.0)),
+        ],
+        generation=GenerationInfo(prompt="shared scene prompt"),
+    )
+    prepared = prepare_panel_for_generation(manga, panel)
+    patched = apply_panel_to_workflow(workflow, workflow_config(tmp_path), prepared, "prefix")
+    first = patched["50"]["inputs"]["text"]
+    second = patched["51"]["inputs"]["text"]
+    assert "mika_trigger" in first
+    assert "orange hoodie" in first
+    assert "rika_trigger" not in first
+    assert "blue jacket" not in first
+    assert "rika_trigger" in second
+    assert "blue jacket" in second
+    assert "mika_trigger" not in second
+    assert "orange hoodie" not in second
+
+
+def test_regional_binding_rejects_non_clip_prompt_node(tmp_path: Path) -> None:
+    workflow = sample_workflow()
+    workflow["50"] = {"class_type": "KSampler", "inputs": {"text": ""}}
+    workflow["51"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}}
+    workflow["60"] = {"class_type": "Region", "inputs": {}}
+    workflow["61"] = {"class_type": "Region", "inputs": {}}
+    panel = Panel(
+        panel_id="p01_01",
+        bbox=(0, 0, 1, 1),
+        shot="test",
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(
+                id="mika",
+                regional_prompt="mika_trigger",
+                region_box=(0.1, 0.2, 0.3, 0.4),
+            ),
+            PanelCharacter(
+                id="rika",
+                regional_prompt="rika_trigger",
+                region_box=(0.5, 0.2, 0.3, 0.4),
+            ),
+        ],
+        generation=GenerationInfo(
+            workflow_preset={
+                "id": "regional",
+                "name": "regional",
+                "regional_binding": {
+                    "enabled": True,
+                    "mode": "attention_couple",
+                    "character_prompt_node_ids": ["50", "51"],
+                    "region_node_ids": ["60", "61"],
+                },
+            },
+        ),
+    )
+    with pytest.raises(ValueError, match="CLIPTextEncode"):
+        apply_panel_to_workflow(workflow, workflow_config(tmp_path), panel, "prefix")
 
 
 def test_existing_manga_json_gets_new_defaults() -> None:
@@ -2137,6 +2413,39 @@ def test_schema_migration_updates_legacy_missing_columns_and_keeps_data(tmp_path
         assert chunk_meta == ""
 
 
+def test_schema_migration_repairs_applied_baseline_schema_drift(tmp_path: Path) -> None:
+    from sqlalchemy import text
+
+    db_path = tmp_path / "legacy-applied.db"
+    create_legacy_schema_without_migration_version(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "baseline_schema", db_now_utc().isoformat()),
+        )
+
+    session_factory = create_session_factory(f"sqlite:///{db_path}")
+
+    with session_factory() as session:
+        job_columns = {
+            row[1] for row in session.execute(text("PRAGMA table_info(generation_jobs)")).all()
+        }
+        assert {"prompt_id", "epoch", "generation_input_hash", "randomize_seed"} <= job_columns
+        rows = session.execute(
+            text("SELECT version, name FROM schema_migrations ORDER BY version")
+        ).all()
+        assert rows == [(1, "baseline_schema")]
+
+
 def test_schema_migration_terminates_duplicate_active_jobs_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -3141,11 +3450,18 @@ def test_character_profiles_are_composed_without_duplicates() -> None:
         }
     )
     positive, negative = compose_panel_prompts(manga, manga.pages[0].panels[0])
-    assert (
-        positive
-        == "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling"
+    # full_color既定では末尾にフルカラー統一positiveが加わる。
+    assert positive == (
+        "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling, "
+        "full color manga panel, consistent color illustration"
     )
-    assert negative == "low quality, text, different hairstyle, bad hands"
+    # full_color既定では文字禁止・丸泡装飾抑制・白黒禁止negativeが加わり、重複(text)は除去される。
+    assert negative == (
+        "low quality, text, different hairstyle, bad hands, letters, alphabet, "
+        "english sound effects, sound effect text, thought bubble chain, decorative circles, "
+        "random white circles, monochrome, black and white, grayscale, screentone only, "
+        "manga ink only"
+    )
 
 
 def test_prompt_preview_endpoint_uses_character_profiles(tmp_path: Path) -> None:
@@ -4173,7 +4489,12 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
                     "page": 1,
                     "layout": "action",
                     "panels": [
-                        {"shot": "wide", "dialogue": []},
+                        {
+                            "shot": "wide",
+                            "role": "action",
+                            "composition_notes": "勢いのある動き",
+                            "dialogue": [],
+                        },
                         {"shot": "medium", "dialogue": []},
                     ],
                 }
@@ -4728,3 +5049,59 @@ def test_worker_does_not_apply_precommit_fence_to_live_project(tmp_path: Path) -
 
         assert outcome == "not_fenced"
         assert asset.read_bytes() == b"keep"
+
+
+def test_color_policy_default_and_roundtrip(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 既定はフルカラー統一。
+        assert manga["color_policy"] == "full_color"
+        manga["color_policy"] = "mixed"
+        assert put_manga(client, project_id, manga).status_code == 200
+        reloaded = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert reloaded["color_policy"] == "mixed"
+
+
+def test_save_manga_normalizes_english_sfx(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 既存コマへ辞書にある英字擬音を入れて保存すると、保存時に日本語化される。
+        manga["pages"][0]["panels"][0]["sfx"] = [{"text": "zip"}, {"text": "kaboom"}]
+        assert put_manga(client, project_id, manga).status_code == 200
+        reloaded = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        sfx = reloaded["pages"][0]["panels"][0]["sfx"]
+        assert sfx[0]["text"] == "ジッ"
+        # 辞書に無い英字はそのまま残し、preflightの英字SFXエラーで手動修正へ促す。
+        assert sfx[1]["text"] == "kaboom"
+
+
+def _prompt_manga(color_policy: str = "full_color") -> tuple[MangaProject, Panel]:
+    panel = Panel(panel_id="p01_01", bbox=(0.0, 0.0, 1.0, 1.0), shot="t", prompt="a girl")
+    manga = MangaProject(
+        title="t",
+        color_policy=color_policy,  # type: ignore[arg-type]
+        pages=[Page(page=1, theme="t", layout_template="o", panels=[panel])],
+    )
+    return manga, manga.pages[0].panels[0]
+
+
+def test_prompt_composition_includes_quality_constraints() -> None:
+    manga, panel = _prompt_manga("full_color")
+    positive, negative = compose_panel_prompts(manga, panel)
+    # フルカラーpositive・文字禁止negative・白黒禁止negativeが入る。
+    assert "full color manga panel" in positive
+    assert "english sound effects" in negative
+    assert "grayscale" in negative
+
+
+def test_mixed_color_policy_relaxes_monochrome_negative() -> None:
+    full_positive, full_negative = compose_panel_prompts(*_prompt_manga("full_color"))
+    mixed_positive, mixed_negative = compose_panel_prompts(*_prompt_manga("mixed"))
+    # 文字禁止は両方に入るが、フルカラー指定と白黒禁止はmixedでは強制しない。
+    assert "full color manga panel" in full_positive
+    assert "full color manga panel" not in mixed_positive
+    assert "english sound effects" in mixed_negative
+    assert "grayscale" in full_negative
+    assert "grayscale" not in mixed_negative

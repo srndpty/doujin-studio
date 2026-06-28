@@ -272,9 +272,13 @@ def derive_emphasis(role: str) -> int:
     return {
         "establish": 4,
         "reveal": 4,
+        "emotional_peak": 5,
         "punchline": 5,
         "action": 3,
+        "reaction": 3,
         "dialogue": 2,
         "silent": 2,
+        "transition": 2,
+        "aftermath": 2,
         "montage": 1,
     }.get(role, 2)

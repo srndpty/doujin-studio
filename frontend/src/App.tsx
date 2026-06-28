@@ -77,10 +77,21 @@ export type Panel = {
   shot: string;
   subject_mode?: "character_scene" | "reaction" | "prop_insert" | "hand_insert" | "background";
   role?: string;
+  emotion?: string;
+  background_density?: string;
+  composition_notes?: string;
+  text_safe_area?: [number, number, number, number] | null;
   emphasis?: number;
   camera: string;
   location_id: string;
   characters: string[];
+  character_layout?: {
+    id: string;
+    position: "upper_left" | "upper_right" | "lower_left" | "lower_right" | "center";
+    expression: string;
+    action: string;
+    region_box?: [number, number, number, number] | null;
+  }[];
   prompt: string;
   image_asset: string | null;
   image_candidates: ImageCandidate[];
@@ -118,6 +129,7 @@ export type Panel = {
 type LoRABinding = Schemas["LoRABinding"];
 type ReferenceImageBinding = Schemas["ReferenceImageBinding"];
 type PanelControlReference = Schemas["PanelControlReference"];
+type RegionalWorkflowBinding = Schemas["RegionalWorkflowBinding"];
 type WorkflowPreset = Schemas["WorkflowPreset"];
 type LocationProfile = Schemas["LocationProfile"];
 
@@ -126,6 +138,13 @@ type ImageCandidate = Schemas["ImageCandidate"];
 type Character = Schemas["Character"];
 
 type GenerationJob = Schemas["GenerationJobResponse"];
+
+function parseNodeIdList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 export type OverlayElement = {
   id: string;
@@ -146,6 +165,9 @@ export type MangaPage = {
   layout_template: string;
   layout_family?: string;
   intent?: string;
+  page_goal?: string;
+  emotional_curve?: string[];
+  quality_notes?: string[];
   layout_locked?: boolean;
   reading_order?: string[];
   overlay_elements?: OverlayElement[];
@@ -1276,7 +1298,8 @@ export function App() {
         scheduler: "",
         steps: null,
         cfg: null,
-        denoise: null
+        denoise: null,
+        regional_binding: null
       });
       manga.active_workflow_preset_id ??= `preset_${index}`;
     });
@@ -1976,6 +1999,75 @@ export function App() {
                             }
                           />
                         </label>
+                        <label className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={preset.regional_binding?.enabled ?? false}
+                            onChange={(event) =>
+                              updateWorkflowPreset(preset.id, (item) => {
+                                item.regional_binding = event.target.checked
+                                  ? {
+                                      enabled: true,
+                                      mode: item.regional_binding?.mode ?? "attention_couple",
+                                      character_prompt_node_ids:
+                                        item.regional_binding?.character_prompt_node_ids ?? [],
+                                      region_node_ids: item.regional_binding?.region_node_ids ?? []
+                                    }
+                                  : null;
+                              })
+                            }
+                          />
+                          人物領域をworkflowに渡す
+                        </label>
+                        {preset.regional_binding?.enabled && (
+                          <div className="regional-binding-settings">
+                            <label>
+                              mode
+                              <select
+                                value={preset.regional_binding.mode}
+                                onChange={(event) =>
+                                  updateWorkflowPreset(preset.id, (item) => {
+                                    if (!item.regional_binding) return;
+                                    item.regional_binding.mode = event.target
+                                      .value as RegionalWorkflowBinding["mode"];
+                                  })
+                                }
+                              >
+                                <option value="attention_couple">attention_couple</option>
+                              </select>
+                            </label>
+                            <label>
+                              character promptノード
+                              <input
+                                value={(preset.regional_binding.character_prompt_node_ids ?? []).join(", ")}
+                                placeholder="20, 21"
+                                onChange={(event) =>
+                                  updateWorkflowPreset(preset.id, (item) => {
+                                    if (!item.regional_binding) return;
+                                    item.regional_binding.character_prompt_node_ids = parseNodeIdList(
+                                      event.target.value
+                                    );
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              regionノード
+                              <input
+                                value={(preset.regional_binding.region_node_ids ?? []).join(", ")}
+                                placeholder="30, 31"
+                                onChange={(event) =>
+                                  updateWorkflowPreset(preset.id, (item) => {
+                                    if (!item.regional_binding) return;
+                                    item.regional_binding.region_node_ids = parseNodeIdList(
+                                      event.target.value
+                                    );
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>

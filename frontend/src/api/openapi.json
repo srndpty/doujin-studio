@@ -4356,6 +4356,15 @@
             "title": "Reading Direction",
             "default": "rtl"
           },
+          "color_policy": {
+            "type": "string",
+            "enum": [
+              "full_color",
+              "mixed"
+            ],
+            "title": "Color Policy",
+            "default": "full_color"
+          },
           "typography": {
             "$ref": "#/components/schemas/TypographySettings"
           },
@@ -4569,6 +4578,25 @@
             "type": "string",
             "title": "Intent",
             "default": ""
+          },
+          "page_goal": {
+            "type": "string",
+            "title": "Page Goal",
+            "default": ""
+          },
+          "emotional_curve": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Emotional Curve"
+          },
+          "quality_notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Quality Notes"
           },
           "layout_locked": {
             "type": "boolean",
@@ -4818,6 +4846,57 @@
             "title": "Role",
             "default": ""
           },
+          "emotion": {
+            "type": "string",
+            "title": "Emotion",
+            "default": ""
+          },
+          "background_density": {
+            "type": "string",
+            "title": "Background Density",
+            "default": ""
+          },
+          "composition_notes": {
+            "type": "string",
+            "title": "Composition Notes",
+            "default": ""
+          },
+          "text_safe_area_format": {
+            "type": "string",
+            "enum": [
+              "xywh",
+              "xyxy"
+            ],
+            "title": "Text Safe Area Format",
+            "default": "xywh"
+          },
+          "text_safe_area": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Safe Area"
+          },
           "emphasis": {
             "type": "integer",
             "maximum": 5.0,
@@ -4944,6 +5023,47 @@
             "type": "string",
             "title": "Action",
             "default": ""
+          },
+          "regional_prompt": {
+            "type": "string",
+            "title": "Regional Prompt",
+            "default": ""
+          },
+          "region_box_format": {
+            "type": "string",
+            "enum": [
+              "xywh",
+              "xyxy"
+            ],
+            "title": "Region Box Format",
+            "default": "xywh"
+          },
+          "region_box": {
+            "anyOf": [
+              {
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Box"
           }
         },
         "additionalProperties": false,
@@ -5059,6 +5179,21 @@
               }
             ],
             "title": "Panel Id"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "default": "general"
+          },
+          "suggestion": {
+            "type": "string",
+            "title": "Suggestion",
+            "default": ""
+          },
+          "fixable": {
+            "type": "boolean",
+            "title": "Fixable",
+            "default": false
           }
         },
         "type": "object",
@@ -5789,6 +5924,38 @@
         ],
         "title": "ReferenceImageBinding"
       },
+      "RegionalWorkflowBinding": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "mode": {
+            "type": "string",
+            "const": "attention_couple",
+            "title": "Mode",
+            "default": "attention_couple"
+          },
+          "character_prompt_node_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Character Prompt Node Ids"
+          },
+          "region_node_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Region Node Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RegionalWorkflowBinding"
+      },
       "RenderRequest": {
         "properties": {
           "force": {
@@ -6277,6 +6444,16 @@
               }
             ],
             "title": "Denoise"
+          },
+          "regional_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegionalWorkflowBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,

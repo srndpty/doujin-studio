@@ -433,6 +433,10 @@ def run_schema_migrations(engine) -> None:
             applied = set(applied_versions)
             migration = next((item for item in MIGRATIONS if item.version not in applied), None)
             if migration is None:
+                # migration導入初期のDBでは、version 1適用済みとして記録された後に
+                # baselineの補修対象列が増えた場合がある。履歴は正しくても実テーブルが
+                # 古いままなら、ここで不足列だけをidempotentに補う。
+                _migration_001_baseline_schema(connection)
                 connection.commit()
                 return
             if migration.requires_foreign_keys_off != foreign_keys_disabled:

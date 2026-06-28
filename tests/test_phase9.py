@@ -111,6 +111,42 @@ def test_script_to_manga_sets_composition_metadata() -> None:
     ) != len(manga.pages[0].panels)
 
 
+def test_script_to_manga_preserves_directing_metadata() -> None:
+    base = MangaProject(title="本")
+    script = ScriptStage.model_validate(
+        {
+            "pages": [
+                {
+                    "page": 1,
+                    "panels": [
+                        {
+                            "shot": "close-up",
+                            "role": "emotional peak",
+                            "emotion": "動揺",
+                            "background_density": "white",
+                            "composition_notes": "eyes dominate the panel",
+                            "text_safe_area": [0.55, 0.05, 0.35, 0.3],
+                            "dialogue": [{"speaker": "a", "text": "……"}],
+                        }
+                    ],
+                    "page_goal": "主人公の動揺を見せる",
+                    "emotional_curve": ["平静", "動揺"],
+                }
+            ]
+        }
+    )
+    manga = story.script_to_manga(script, base)
+    panel = manga.pages[0].panels[0]
+    assert panel.role == "emotional_peak"
+    assert panel.emotion == "動揺"
+    assert panel.background_density == "white"
+    assert panel.composition_notes == "eyes dominate the panel"
+    assert panel.text_safe_area == (0.55, 0.05, 0.35, 0.3)
+    assert panel.emphasis == 5
+    assert manga.pages[0].page_goal == "主人公の動揺を見せる"
+    assert manga.pages[0].emotional_curve == ["平静", "動揺"]
+
+
 def test_layout_suggest_api_repropose_keeps_content(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
