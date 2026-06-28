@@ -253,9 +253,11 @@ def page_render_signature(manga: MangaProject, page) -> str:
                 "image_asset": panel.image_asset,
                 "dialogue": [line.model_dump() for line in panel.dialogue],
                 "sfx": [item.model_dump() for item in panel.sfx],
-                # しっぽ方向はcharacter_layout.positionから決まるため描画入力に含める（P2）。
+                # しっぽ方向はcharacter_layoutのregion_box中心（無ければposition）から決まるため
+                # 描画入力に含める（P2）。
                 "character_layout": [
-                    {"id": entry.id, "position": entry.position} for entry in panel.character_layout
+                    {"id": entry.id, "position": entry.position, "region_box": entry.region_box}
+                    for entry in panel.character_layout
                 ],
                 "crop": {
                     "fit_mode": panel.generation.fit_mode,

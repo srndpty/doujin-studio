@@ -1118,6 +1118,44 @@ def classify_subject_mode(script_panel: ScriptPanel) -> str:
 # 複数擬音が中央へ集中しないよう分散させる既定アンカー。
 _SFX_SPREAD_ANCHORS = ["upper_right", "lower_left", "upper_left", "lower_right", "center"]
 
+# 英語擬音 → 日本語写植の初期辞書。画像生成へ英字を描かせず、後段で日本語写植する方針。
+# UI編集や外部辞書化は今回の範囲外（backend定数として開始する）。
+ENGLISH_SFX_DICTIONARY: dict[str, str] = {
+    "tap": "トン",
+    "zip": "ジッ",
+    "bang": "バン",
+    "whoosh": "ヒュッ",
+    "click": "カチッ",
+    "step step": "トッ トッ",
+    "step": "トッ",
+}
+
+
+def normalize_sfx_text(text: str) -> str:
+    """英字擬音を日本語写植へ正規化する。未知の英字はそのまま返す（preflightで検出）。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return stripped
+    key = stripped.casefold().strip("!！.。・…").strip()
+    return ENGLISH_SFX_DICTIONARY.get(key, stripped)
+
+
+def normalize_manga_sfx(manga: MangaProject) -> bool:
+    """既存Manga内の擬音を日本語写植へ正規化する（辞書にある英字語は黙って変換）。
+
+    保存時に呼び、辞書語の英字SFXを取りこぼさず日本語化する。未知の英字はそのまま残し、
+    preflightの英字SFXエラーで利用者に手動修正を促す。変換が起きたらTrueを返す。
+    """
+    changed = False
+    for page in manga.pages:
+        for panel in page.panels:
+            for sfx in panel.sfx:
+                normalized = normalize_sfx_text(sfx.text)
+                if normalized != sfx.text:
+                    sfx.text = normalized
+                    changed = True
+    return changed
+
 
 def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
     """台本の擬音をSfxへ変換する。位置未指定の複数擬音は重ならないよう分散する。"""
@@ -1134,7 +1172,7 @@ def build_panel_sfx(script_panel: ScriptPanel) -> list[Sfx]:
             font_size = 54
         sfx_list.append(
             Sfx(
-                text=item.text[:40],
+                text=normalize_sfx_text(item.text)[:40],
                 position=position,
                 style=item.style or "small_handwritten",
                 font_size=font_size,
@@ -1166,6 +1204,42 @@ SCRIPT_ROLE_ALIASES = {
     "quiet": "silent",
     "silence": "silent",
 }
+
+
+# 変形コマ（shape_points）を許可するrole。会話・準備・心情・余韻は矩形固定にする。
+SHAPE_ALLOWED_ROLES = {"action", "reveal", "emotional_peak", "punchline"}
+# 変形を動機づける構図メモの語（動き・衝撃・見せ場系）。casefoldで部分一致を取る。
+SHAPE_MOTION_KEYWORDS = [
+    "動き",
+    "衝撃",
+    "見せ場",
+    "勢い",
+    "疾走",
+    "爆発",
+    "迫力",
+    "インパクト",
+    "飛び",
+    "駆け",
+    "アクション",
+    "motion",
+    "impact",
+    "burst",
+    "dynamic",
+    "dramatic",
+    "speed",
+    "dash",
+    "explosion",
+    "rush",
+    "action",
+]
+
+
+def panel_shape_allowed(role: str, composition_notes: str) -> bool:
+    """変形コマを許可してよいか。見せ場系roleかつ動き・衝撃・見せ場の意図があるときだけ許す。"""
+    if role not in SHAPE_ALLOWED_ROLES:
+        return False
+    haystack = (composition_notes or "").casefold()
+    return any(keyword.casefold() in haystack for keyword in SHAPE_MOTION_KEYWORDS)
 
 
 def normalize_script_role(value: str) -> str:
@@ -1327,7 +1401,8 @@ def script_to_manga(
             panel_bbox = layout[index]
             gen_w, gen_h = compute_generation_size(panel_bbox)
             shape_points = None
-            if family in {"action", "reveal"} and index == 0:
+            if panel_shape_allowed(role, script_panel.composition_notes):
+                # 明確な演出意図（見せ場role＋動き・衝撃・見せ場の構図メモ）があるコマだけ変形する。
                 # フロントのslant-rightプリセット定数(0.12/0.88)に揃える。ずれると
                 # 編集画面のshapePreset()が右傾斜を認識できず「台形」と表示されてしまう。
                 shape_points = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
@@ -1381,6 +1456,7 @@ def script_to_manga(
         premise=base.premise,
         target_pages=len(pages),
         reading_direction=base.reading_direction,
+        color_policy=base.color_policy,
         typography=base.typography.model_copy(deep=True),
         page_layout=base.page_layout.model_copy(deep=True),
         common_positive_prompt=common_positive,

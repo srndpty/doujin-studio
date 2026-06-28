@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image
@@ -19,7 +20,17 @@ from .renderer import (
     resolve_dialogue_layout,
     sfx_bbox_px,
 )
-from .schemas import Character, MangaProject, Page, Panel, PreflightIssue
+from .schemas import Character, Dialogue, MangaProject, Page, Panel, PreflightIssue
+from .story import panel_shape_allowed
+
+# 画像メトリクス検査のしきい値。
+WHITE_PIXEL_MIN = 240  # 各チャンネルがこの値以上なら「ほぼ白」とみなす
+EMPTY_NONWHITE_RATIO = 0.02  # 非白ピクセル比率がこれ未満なら空コマ（白紙）
+SUBJECT_BBOX_MIN_RATIO = 0.18  # 非白領域bboxがコマ面積のこれ未満なら被写体が小さすぎる
+MONOCHROME_SATURATION_MAX = 0.08  # 平均彩度がこれ未満なら白黒・低彩度
+TAIL_SPEAKER_MAX_DISTANCE = 0.45  # しっぽ先端と話者領域中心の許容距離（コマ正規化）
+# 画像メトリクスのしきい値を緩めるrole（演出意図のある白背景・余韻コマ）。
+RELAXED_IMAGE_ROLES = {"silent", "transition", "aftermath"}
 
 # 重なり・縦横比などの許容しきい値。
 BUBBLE_OVERLAP_RATIO = 0.25
@@ -58,9 +69,14 @@ def preflight_page(
     issues.extend(_check_image_aspect(page, export_dir))
     issues.extend(_check_subject_mode_characters(page))
     issues.extend(_check_sfx_collisions(manga, page))
+    issues.extend(_check_sfx_text_language(page))
+    issues.extend(_check_monologue_balloon(page))
+    issues.extend(_check_panel_shapes(page))
+    issues.extend(_check_tail_speaker(page))
     issues.extend(_check_character_setup(manga, page))
     issues.extend(_check_character_regions(page))
     issues.extend(_check_overlay_occlusion(page))
+    issues.extend(_check_image_metrics(manga, page, export_dir))
     issues.extend(_check_assets(page, export_dir))
     return issues
 

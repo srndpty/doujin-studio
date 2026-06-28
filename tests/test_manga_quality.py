@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from PIL import Image as PILImage
 
 from backend.app import preflight, renderer, story
 from backend.app.generator import suggest_candidate_count
@@ -30,7 +31,7 @@ from backend.app.schemas import (
 
 def test_dialogue_kind_selects_balloon() -> None:
     assert Dialogue(speaker="a", text="やあ").balloon == "oval"
-    assert Dialogue(speaker="a", text="…", kind="monologue").balloon == "cloud"
+    assert Dialogue(speaker="a", text="…", kind="monologue").balloon == "caption"
     assert Dialogue(speaker="a", text="その時", kind="narration").balloon == "caption"
     assert Dialogue(speaker="a", text="うわっ", kind="shout").balloon == "burst"
     # 明示的に指定した非oval形状は尊重する（kindに上書きされない）。
@@ -717,3 +718,158 @@ def test_character_layout_feeds_prompt() -> None:
     # character_layoutの表情・動作がプロンプトへ反映される（死んだ状態ではない）。
     assert "smiling" in positive
     assert "waving hand" in positive
+
+
+# --- 漫画品質ゲート: 英字SFX・変形コマ・独白泡・しっぽ追従・画像メトリクス ---
+
+
+def _quality_panel(**kwargs) -> Panel:
+    base = {"panel_id": "p01_01", "bbox": (0.05, 0.05, 0.9, 0.9), "shot": "t"}
+    base.update(kwargs)
+    return Panel(**base)
+
+
+def _quality_manga(panel: Panel, **manga_kwargs) -> MangaProject:
+    return MangaProject(
+        title="t",
+        pages=[Page(page=1, theme="t", layout_template="o", panels=[panel])],
+        **manga_kwargs,
+    )
+
+
+def _quality_issues(panel: Panel, **manga_kwargs):
+    # export_dir=None: image_assetは絶対パスとしてそのまま解決される。
+    manga = _quality_manga(panel, **manga_kwargs)
+    return preflight.preflight_page(manga, manga.pages[0])
+
+
+def test_english_sfx_normalized_to_japanese() -> None:
+    assert story.normalize_sfx_text("bang") == "バン"
+    assert story.normalize_sfx_text("Whoosh!") == "ヒュッ"
+    assert story.normalize_sfx_text("step step") == "トッ トッ"
+    # 未知の英字はそのまま返す（preflightで検出する）。
+    assert story.normalize_sfx_text("kaboom") == "kaboom"
+    # 台本→Sfx変換でも英字辞書が適用される。
+    sfx = story.build_panel_sfx(ScriptPanel(sfx=["tap"]))
+    assert sfx[0].text == "トン"
+
+
+def test_preflight_flags_english_sfx() -> None:
+    panel = _quality_panel(sfx=[Sfx(text="BOOM")])
+    issues = _quality_issues(panel)
+    assert any(i.code == "sfx_english_text" and i.level == "error" for i in issues)
+    # 日本語擬音はエラーにならない。
+    ok = _quality_panel(sfx=[Sfx(text="ドカーン")])
+    assert not any(i.code == "sfx_english_text" for i in _quality_issues(ok))
+
+
+def test_preflight_warns_cloud_monologue() -> None:
+    dialogue = Dialogue(
+        speaker="mika", text="…", kind="monologue", balloon="cloud", balloon_auto=False
+    )
+    panel = _quality_panel(dialogue=[dialogue])
+    issues = _quality_issues(panel)
+    assert any(i.code == "monologue_cloud_balloon" and i.category == "balloon" for i in issues)
+
+
+def test_panel_shape_allowed_rule() -> None:
+    assert story.panel_shape_allowed("action", "勢いのある動き") is True
+    assert story.panel_shape_allowed("reveal", "dynamic impact") is True
+    # role違い・意図語なしは不許可。
+    assert story.panel_shape_allowed("dialogue", "勢いのある動き") is False
+    assert story.panel_shape_allowed("action", "静かな会話") is False
+
+
+def test_script_to_manga_shapes_only_motivated_panels() -> None:
+    base = MangaProject(
+        title="t",
+        characters=[Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl")],
+    )
+    action_panel = ScriptPanel(
+        shot="t", role="action", composition_notes="爆発する勢い", characters=["美嘉"]
+    )
+    talk_panel = ScriptPanel(
+        shot="t", role="dialogue", composition_notes="静かな会話", characters=["美嘉"]
+    )
+    script = ScriptStage(
+        pages=[ScriptPage(page=p, panels=[action_panel, talk_panel]) for p in range(1, 5)]
+    )
+    manga = story.script_to_manga(script, base)
+    panels = manga.pages[0].panels
+    # 見せ場roleかつ動き・衝撃の意図があるコマだけが変形する。
+    assert panels[0].shape_points is not None
+    assert panels[1].shape_points is None
+
+
+def test_preflight_flags_unmotivated_shape() -> None:
+    slant = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
+    panel = _quality_panel(role="dialogue", shape_points=slant)
+    issues = _quality_issues(panel)
+    assert any(i.code == "unmotivated_panel_shape" and i.category == "layout" for i in issues)
+    # 動機のある変形は警告しない。
+    motivated = _quality_panel(role="action", composition_notes="爆発の勢い", shape_points=slant)
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(motivated))
+
+
+def test_preflight_flags_tail_not_pointing_to_speaker() -> None:
+    far = Dialogue(speaker="mika", text="やあ", on_screen=True, tail=BalloonTail(tip=(0.95, 0.05)))
+    panel = _quality_panel(
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika", region_box=(0.0, 0.6, 0.2, 0.4))],
+        dialogue=[far],
+    )
+    issues = _quality_issues(panel)
+    assert any(i.code == "tail_not_pointing_to_speaker" and i.category == "balloon" for i in issues)
+
+
+def test_preflight_tail_pointing_to_speaker_is_ok() -> None:
+    near = Dialogue(speaker="mika", text="やあ", on_screen=True, tail=BalloonTail(tip=(0.1, 0.8)))
+    panel = _quality_panel(
+        characters=["mika"],
+        character_layout=[PanelCharacter(id="mika", region_box=(0.0, 0.6, 0.2, 0.4))],
+        dialogue=[near],
+    )
+    issues = _quality_issues(panel)
+    assert not any(i.code == "tail_not_pointing_to_speaker" for i in issues)
+
+
+def _image_panel(path, **kwargs) -> Panel:
+    return _quality_panel(image_asset=str(path), **kwargs)
+
+
+def test_image_metrics_empty_panel(tmp_path) -> None:
+    path = tmp_path / "white.png"
+    PILImage.new("RGB", (128, 128), (255, 255, 255)).save(path)
+    issues = _quality_issues(_image_panel(path))
+    assert any(i.code == "empty_panel_image" and i.level == "error" for i in issues)
+    # 演出意図のある白背景・余韻コマは閾値を緩める。
+    relaxed = _image_panel(path, role="aftermath", background_density="white")
+    assert not any(i.code == "empty_panel_image" for i in _quality_issues(relaxed))
+
+
+def test_image_metrics_subject_too_small(tmp_path) -> None:
+    image = PILImage.new("RGB", (128, 128), (255, 255, 255))
+    image.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+    path = tmp_path / "small.png"
+    image.save(path)
+    issues = _quality_issues(_image_panel(path))
+    assert any(i.code == "subject_too_small" for i in issues)
+    assert not any(i.code == "empty_panel_image" for i in issues)
+
+
+def test_image_metrics_monochrome_panel(tmp_path) -> None:
+    path = tmp_path / "gray.png"
+    PILImage.new("RGB", (128, 128), (128, 128, 128)).save(path)
+    issues = _quality_issues(_image_panel(path))
+    assert any(i.code == "monochrome_panel" and i.category == "style" for i in issues)
+    # color_policy=mixedでは白黒禁止を強制しない。
+    mixed = _quality_issues(_image_panel(path), color_policy="mixed")
+    assert not any(i.code == "monochrome_panel" for i in mixed)
+
+
+def test_image_metrics_good_image_passes(tmp_path) -> None:
+    path = tmp_path / "good.png"
+    PILImage.new("RGB", (128, 128), (220, 60, 40)).save(path)
+    issues = _quality_issues(_image_panel(path))
+    codes = {i.code for i in issues}
+    assert not (codes & {"empty_panel_image", "subject_too_small", "monochrome_panel"})

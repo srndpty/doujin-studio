@@ -231,4 +231,72 @@ describe("PageEditor", () => {
 
     expect(onChange).toHaveBeenCalled();
   });
+
+  it("漫画レビューのSFXエラーから擬音テキストを修正する", async () => {
+    const onChange = vi.fn();
+    const manga = sampleManga();
+    manga.pages[0].panels[0].sfx = [
+      {
+        text: "zip",
+        position: "center",
+        style: "small_handwritten",
+        box: null,
+        font_size: 54,
+        rotation: 0,
+        color: "#191919",
+        outline_color: "#FFFFFF",
+        outline_width: 4,
+        vertical: false,
+        layer: "above"
+      }
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: false,
+          errors: [
+            {
+              level: "error",
+              code: "sfx_english_text",
+              message: "英字の擬音「zip」が日本語へ変換されていません",
+              page: 1,
+              panel_id: "p01_01",
+              category: "sfx",
+              suggestion: "擬音は日本語表記にしてください（例: bang→バン）",
+              fixable: false
+            }
+          ],
+          warnings: []
+        })
+      )
+    );
+    render(
+      <PageEditor
+        projectId="project"
+        revision={0}
+        manga={manga}
+        pageNumber={1}
+        assetVersion={1}
+        busy={false}
+        onChange={onChange}
+        onSave={vi.fn()}
+        onSuggest={vi.fn()}
+        onOverlayUpload={vi.fn()}
+        setMessage={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "このページを検査" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /英字の擬音/ })).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: /英字の擬音/ }));
+
+    // SFXのissueをクリックすると擬音編集欄が開き、文字を打ち直せる。
+    const textInput = screen.getByLabelText("文字");
+    expect(textInput).toHaveValue("zip");
+    fireEvent.change(textInput, { target: { value: "ジッ" } });
+    fireEvent.change(screen.getByLabelText("style"), { target: { value: "impact" } });
+    fireEvent.click(screen.getByLabelText("縦書き"));
+
+    expect(onChange).toHaveBeenCalled();
+  });
 });

@@ -1564,6 +1564,12 @@ export interface components {
              * @enum {string}
              */
             reading_direction: "rtl" | "ltr";
+            /**
+             * Color Policy
+             * @default full_color
+             * @enum {string}
+             */
+            color_policy: "full_color" | "mixed";
             typography?: components["schemas"]["TypographySettings"];
             page_layout?: components["schemas"]["PageLayoutSettings"];
             /**

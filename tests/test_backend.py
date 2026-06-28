@@ -3216,11 +3216,18 @@ def test_character_profiles_are_composed_without_duplicates() -> None:
         }
     )
     positive, negative = compose_panel_prompts(manga, manga.pages[0].panels[0])
-    assert (
-        positive
-        == "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling"
+    # full_color既定では末尾にフルカラー統一positiveが加わる。
+    assert positive == (
+        "masterpiece, anime style, hero trigger, black hair, blue eyes, school uniform, smiling, "
+        "full color manga panel, consistent color illustration"
     )
-    assert negative == "low quality, text, different hairstyle, bad hands"
+    # full_color既定では文字禁止・丸泡装飾抑制・白黒禁止negativeが加わり、重複(text)は除去される。
+    assert negative == (
+        "low quality, text, different hairstyle, bad hands, letters, alphabet, "
+        "english sound effects, sound effect text, thought bubble chain, decorative circles, "
+        "random white circles, monochrome, black and white, grayscale, screentone only, "
+        "manga ink only"
+    )
 
 
 def test_prompt_preview_endpoint_uses_character_profiles(tmp_path: Path) -> None:
@@ -4248,7 +4255,12 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
                     "page": 1,
                     "layout": "action",
                     "panels": [
-                        {"shot": "wide", "dialogue": []},
+                        {
+                            "shot": "wide",
+                            "role": "action",
+                            "composition_notes": "勢いのある動き",
+                            "dialogue": [],
+                        },
                         {"shot": "medium", "dialogue": []},
                     ],
                 }
@@ -4803,3 +4815,59 @@ def test_worker_does_not_apply_precommit_fence_to_live_project(tmp_path: Path) -
 
         assert outcome == "not_fenced"
         assert asset.read_bytes() == b"keep"
+
+
+def test_color_policy_default_and_roundtrip(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 既定はフルカラー統一。
+        assert manga["color_policy"] == "full_color"
+        manga["color_policy"] = "mixed"
+        assert put_manga(client, project_id, manga).status_code == 200
+        reloaded = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        assert reloaded["color_policy"] == "mixed"
+
+
+def test_save_manga_normalizes_english_sfx(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        # 既存コマへ辞書にある英字擬音を入れて保存すると、保存時に日本語化される。
+        manga["pages"][0]["panels"][0]["sfx"] = [{"text": "zip"}, {"text": "kaboom"}]
+        assert put_manga(client, project_id, manga).status_code == 200
+        reloaded = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        sfx = reloaded["pages"][0]["panels"][0]["sfx"]
+        assert sfx[0]["text"] == "ジッ"
+        # 辞書に無い英字はそのまま残し、preflightの英字SFXエラーで手動修正へ促す。
+        assert sfx[1]["text"] == "kaboom"
+
+
+def _prompt_manga(color_policy: str = "full_color") -> tuple[MangaProject, Panel]:
+    panel = Panel(panel_id="p01_01", bbox=(0.0, 0.0, 1.0, 1.0), shot="t", prompt="a girl")
+    manga = MangaProject(
+        title="t",
+        color_policy=color_policy,  # type: ignore[arg-type]
+        pages=[Page(page=1, theme="t", layout_template="o", panels=[panel])],
+    )
+    return manga, manga.pages[0].panels[0]
+
+
+def test_prompt_composition_includes_quality_constraints() -> None:
+    manga, panel = _prompt_manga("full_color")
+    positive, negative = compose_panel_prompts(manga, panel)
+    # フルカラーpositive・文字禁止negative・白黒禁止negativeが入る。
+    assert "full color manga panel" in positive
+    assert "english sound effects" in negative
+    assert "grayscale" in negative
+
+
+def test_mixed_color_policy_relaxes_monochrome_negative() -> None:
+    full_positive, full_negative = compose_panel_prompts(*_prompt_manga("full_color"))
+    mixed_positive, mixed_negative = compose_panel_prompts(*_prompt_manga("mixed"))
+    # 文字禁止は両方に入るが、フルカラー指定と白黒禁止はmixedでは強制しない。
+    assert "full color manga panel" in full_positive
+    assert "full color manga panel" not in mixed_positive
+    assert "english sound effects" in mixed_negative
+    assert "grayscale" in full_negative
+    assert "grayscale" not in mixed_negative

@@ -67,9 +67,10 @@ PositionAnchor = Literal["upper_left", "upper_right", "lower_left", "lower_right
 # 台詞の種別。発話の役割を持たせ、吹き出し形状や写植の既定を切り替える。
 DialogueKind = Literal["speech", "monologue", "narration", "shout"]
 # 種別ごとの既定吹き出し形状。balloonが既定(oval)のままのときだけ適用する。
+# 独白は丸泡(cloud)の乱用を避け、矩形キャプション寄りにする（領域: 漫画品質ゲート）。
 KIND_DEFAULT_BALLOON: dict[str, str] = {
     "speech": "oval",
-    "monologue": "cloud",
+    "monologue": "caption",
     "narration": "caption",
     "shout": "burst",
 }
@@ -570,6 +571,8 @@ class MangaProject(BaseModel):
     target_pages: int = 4
     # 読み方向。日本漫画は右綴じ・右から左を既定にする。
     reading_direction: Literal["rtl", "ltr"] = "rtl"
+    # 配色方針。full_color=全コマをフルカラー統一、mixed=白黒等の混在を許容する。
+    color_policy: Literal["full_color", "mixed"] = "full_color"
     typography: TypographySettings = Field(default_factory=TypographySettings)
     page_layout: PageLayoutSettings = Field(default_factory=PageLayoutSettings)
     common_positive_prompt: str = ""

@@ -4356,6 +4356,15 @@
             "title": "Reading Direction",
             "default": "rtl"
           },
+          "color_policy": {
+            "type": "string",
+            "enum": [
+              "full_color",
+              "mixed"
+            ],
+            "title": "Color Policy",
+            "default": "full_color"
+          },
           "typography": {
             "$ref": "#/components/schemas/TypographySettings"
           },

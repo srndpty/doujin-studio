@@ -23,6 +23,14 @@ POSITION_PHRASE = {
     "center": "in the center",
 }
 TEXT_SAFE_PROMPT = "leave clean empty space for later typesetting, no text in image"
+# 画像生成に文字・英字SFXを描かせない常時negative（写植は後段のレンダリングで行う）。
+TEXT_SUPPRESSION_NEGATIVE = "text, letters, alphabet, english sound effects, sound effect text"
+# 独白の丸泡乱用・無意味な白丸装飾を抑える常時negative。
+THOUGHT_BUBBLE_NEGATIVE = "thought bubble chain, decorative circles, random white circles"
+# フルカラー統一のpositive。
+FULL_COLOR_POSITIVE = "full color manga panel, consistent color illustration"
+# full_color方針のときに加える白黒禁止negative。
+MONOCHROME_NEGATIVE = "monochrome, black and white, grayscale, screentone only, manga ink only"
 
 
 def is_non_character_mode(panel: Panel) -> bool:
@@ -75,6 +83,14 @@ def compose_panel_prompts(manga: MangaProject, panel: Panel) -> tuple[str, str]:
         ]
     )
     negative_parts.append(panel.generation.negative_prompt)
+
+    # 漫画品質ゲート: 文字/英字SFX抑制・丸泡装飾抑制は常時加える。
+    # フルカラー統一は color_policy=full_color のときだけ強制する。
+    negative_parts.append(TEXT_SUPPRESSION_NEGATIVE)
+    negative_parts.append(THOUGHT_BUBBLE_NEGATIVE)
+    if manga.color_policy == "full_color":
+        positive_parts.append(FULL_COLOR_POSITIVE)
+        negative_parts.append(MONOCHROME_NEGATIVE)
     return merge_prompt_parts(positive_parts), merge_prompt_parts(negative_parts)
 
 

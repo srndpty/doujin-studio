@@ -39,10 +39,12 @@ const PANEL_ROLES = [
 ];
 const BACKGROUND_DENSITIES = ["", "none", "white", "light", "full"];
 const BALLOON_KINDS = ["oval", "cloud", "burst", "caption", "none"];
+// 擬音のstyleプリセット（rendererのSFX_STYLE_PRESETSと一致させる）。
+const SFX_STYLES = ["small_handwritten", "handwritten", "impact", "quiet"];
 // kind→既定の吹き出し形状（バックエンドのKIND_DEFAULT_BALLOONと一致させる）。
 const KIND_DEFAULT_BALLOON: Record<string, string> = {
   speech: "oval",
-  monologue: "cloud",
+  monologue: "caption",
   narration: "caption",
   shout: "burst"
 };
@@ -574,6 +576,19 @@ export function PageEditor({
           />
         )}
 
+        {selection?.kind === "sfx" && selectedPanel?.sfx[selection.index] && (
+          <SfxControls
+            sfx={selectedPanel.sfx[selection.index]}
+            onChange={(patch) =>
+              mutatePage((target) => {
+                const p = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                if (p && p.sfx[selection.index])
+                  p.sfx[selection.index] = { ...p.sfx[selection.index], ...patch };
+              })
+            }
+          />
+        )}
+
         <fieldset>
           <legend>オーバーフレーム</legend>
           <button disabled={busy} onClick={addOverlay}>
@@ -628,7 +643,10 @@ export function PageEditor({
                     type="button"
                     disabled={!issue.panel_id}
                     onClick={() => {
-                      if (issue.panel_id) setSelection({ panelId: issue.panel_id, kind: "panel", index: 0 });
+                      if (!issue.panel_id) return;
+                      // SFXのissueは擬音編集欄を直接開く（文字を打ち直して修正できるようにする）。
+                      const kind = (issue.category ?? "") === "sfx" ? "sfx" : "panel";
+                      setSelection({ panelId: issue.panel_id, kind, index: 0 });
                     }}
                   >
                     {issue.level === "error" ? "エラー" : "警告"} / {issue.category ?? "general"}:{" "}
@@ -1375,6 +1393,55 @@ function DirectingControls({
           })}
         </div>
       )}
+    </fieldset>
+  );
+}
+
+function SfxControls({ sfx, onChange }: { sfx: Sfx; onChange: (patch: Partial<Sfx>) => void }) {
+  return (
+    <fieldset>
+      <legend>擬音</legend>
+      <label>
+        文字
+        <input
+          type="text"
+          maxLength={40}
+          value={sfx.text}
+          onChange={(event) => onChange({ text: event.target.value })}
+        />
+      </label>
+      <small className="hint">英字の擬音は日本語表記にしてください（例: zip→ジッ）。</small>
+      <label>
+        style
+        <select
+          value={sfx.style ?? "small_handwritten"}
+          onChange={(event) => onChange({ style: event.target.value })}
+        >
+          {SFX_STYLES.map((style) => (
+            <option key={style} value={style}>
+              {style}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={sfx.vertical ?? false}
+          onChange={(event) => onChange({ vertical: event.target.checked })}
+        />{" "}
+        縦書き
+      </label>
+      <label>
+        文字サイズ
+        <input
+          type="number"
+          min={12}
+          max={240}
+          value={sfx.font_size ?? 54}
+          onChange={(event) => onChange({ font_size: Number(event.target.value) })}
+        />
+      </label>
     </fieldset>
   );
 }
