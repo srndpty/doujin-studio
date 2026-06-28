@@ -878,7 +878,7 @@ export interface components {
             candidate_count: number;
             /**
              * Auto Candidates
-             * @default false
+             * @default true
              */
             auto_candidates: boolean;
             /**
@@ -1739,6 +1739,10 @@ export interface components {
             rendered: boolean;
             /** Blockers */
             blockers?: string[];
+            /** Quality Errors */
+            quality_errors?: components["schemas"]["PreflightIssue"][];
+            /** Quality Warnings */
+            quality_warnings?: components["schemas"]["PreflightIssue"][];
         };
         /** PageRenderResult */
         PageRenderResult: {
@@ -2160,6 +2164,10 @@ export interface components {
             pages: components["schemas"]["PageProductionStatus"][];
             /** Blockers */
             blockers?: string[];
+            /** Quality Errors */
+            quality_errors?: components["schemas"]["PreflightIssue"][];
+            /** Quality Warnings */
+            quality_warnings?: components["schemas"]["PreflightIssue"][];
         };
         /** ProjectRenderResult */
         ProjectRenderResult: {

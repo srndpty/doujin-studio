@@ -39,6 +39,7 @@ from .repository import ProjectRepository
 from .schemas import (
     MangaProject,
     PageProductionStatus,
+    PreflightIssue,
     ProjectProductionStatus,
 )
 
@@ -151,12 +152,18 @@ def migrate_legacy_render_state(manga: MangaProject, export_dir: Path) -> bool:
 def build_production_status(
     project_id: str, manga: MangaProject, export_dir: Path
 ) -> ProjectProductionStatus:
+    # 制作画面の品質ゲート。全ページのpreflightを1回流し、ページ単位へ振り分ける。
+    # 局所import: preflightはrenderer等を参照するため、循環importを避けて関数内で読み込む。
+    from .preflight import preflight_page
+
     page_statuses: list[PageProductionStatus] = []
     project_blockers: list[str] = []
+    project_quality_errors: list[PreflightIssue] = []
+    project_quality_warnings: list[PreflightIssue] = []
     adopted_total = 0
     panel_total = 0
     rendered_pages = 0
-    for page in manga.pages:
+    for page_index, page in enumerate(manga.pages):
         total = len(page.panels)
         # 採用画像は「選択済み かつ assetが整合してファイルが存在する」ものだけ数える。
         adopted = sum(
@@ -171,8 +178,13 @@ def build_production_status(
                 blockers.append(f"{panel.panel_id}: 採用画像が欠損しています")
         if not rendered:
             blockers.append(f"{page.page}ページ: ページが未レンダリングです")
+        issues = preflight_page(manga, page, page_index, export_dir)
+        quality_errors = [issue for issue in issues if issue.level == "error"]
+        quality_warnings = [issue for issue in issues if issue.level == "warning"]
         status: ProductionStatusValue
-        if adopted == total and rendered:
+        # 品質エラーが残るページは、採用済み・レンダリング済みでも制作完了扱いにしない。
+        # blockersは未採用/未レンダリングのまま保ち、品質ゲートはquality_errorsで示す。
+        if adopted == total and rendered and not quality_errors:
             status = "complete"
         elif adopted == total:
             status = "ready"
@@ -186,12 +198,16 @@ def build_production_status(
                 total_panels=total,
                 rendered=rendered,
                 blockers=blockers,
+                quality_errors=quality_errors,
+                quality_warnings=quality_warnings,
             )
         )
         adopted_total += adopted
         panel_total += total
         rendered_pages += int(rendered)
         project_blockers.extend(blockers)
+        project_quality_errors.extend(quality_errors)
+        project_quality_warnings.extend(quality_warnings)
     project_status: ProductionStatusValue
     if page_statuses and all(page.status == "complete" for page in page_statuses):
         project_status = "complete"
@@ -208,6 +224,8 @@ def build_production_status(
         total_pages=len(manga.pages),
         pages=page_statuses,
         blockers=project_blockers,
+        quality_errors=project_quality_errors,
+        quality_warnings=project_quality_warnings,
     )
 
 

@@ -1444,3 +1444,112 @@ describe("AppのManga JSON保存", () => {
     }
   );
 });
+
+describe("品質ゲートの制作フロー", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const subjectWarning = (page: number, panelId: string) => ({
+    level: "warning",
+    code: "subject_too_small",
+    message: `被写体が小さすぎます（${panelId}）`,
+    page,
+    panel_id: panelId,
+    category: "image_quality",
+    suggestion: "被写体を大きく配置してください",
+    fixable: false
+  });
+
+  function mockQualityProject(): void {
+    const twoPages = mangaWithTwoPages("品質テスト");
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/projects") {
+        return jsonResponse([
+          { id: "p1", title: "品質テスト", work_name: "", revision: 0, updated_at: "2026-01-01" }
+        ]);
+      }
+      if (url === "/api/projects/p1") {
+        return jsonResponse({
+          id: "p1",
+          title: "品質テスト",
+          work_name: "",
+          revision: 0,
+          manga_json: twoPages
+        });
+      }
+      if (url.endsWith("/production-status")) {
+        return jsonResponse({
+          project_id: "p1",
+          status: "incomplete",
+          adopted_panels: 0,
+          total_panels: 2,
+          rendered_pages: 0,
+          total_pages: 2,
+          pages: [
+            {
+              page: 1,
+              status: "incomplete",
+              adopted_panels: 0,
+              total_panels: 1,
+              rendered: false,
+              blockers: [],
+              quality_errors: [],
+              quality_warnings: []
+            },
+            {
+              page: 2,
+              status: "incomplete",
+              adopted_panels: 0,
+              total_panels: 1,
+              rendered: false,
+              blockers: [],
+              quality_errors: [],
+              quality_warnings: [subjectWarning(2, "p02_01")]
+            }
+          ],
+          blockers: [],
+          quality_errors: [],
+          quality_warnings: [subjectWarning(2, "p02_01")]
+        });
+      }
+      if (url.endsWith("/generation-jobs")) return jsonResponse([]);
+      if (url === "/api/comfyui/status") {
+        return jsonResponse({
+          backend: "stub",
+          base_url: "",
+          workflow_path: "",
+          connected: false,
+          workflow_exists: false,
+          workflow_valid: false,
+          missing_nodes: [],
+          message: "stub"
+        });
+      }
+      return jsonResponse({});
+    });
+  }
+
+  it("品質警告を要修正一覧に表示し、クリックで対象ページ・コマへ移動する", async () => {
+    mockQualityProject();
+    render(<App />);
+    fireEvent.click(await screen.findByText("品質テスト"));
+    // 要修正コマ一覧に品質警告が出る。
+    const issue = await screen.findByText("被写体が小さすぎます（p02_01）");
+    // 初期はページ1。ページ2のコマp02_01はまだ表示されていない。
+    expect(screen.queryByText("p02_01")).toBeNull();
+    // 警告クリックでページ2・コマp02_01へ移動する（コマ一覧と選択中コマに現れる）。
+    fireEvent.click(issue);
+    expect((await screen.findAllByText("p02_01")).length).toBeGreaterThan(0);
+  });
+
+  it("auto_candidatesトグルは既定でONになっている", async () => {
+    mockQualityProject();
+    render(<App />);
+    fireEvent.click(await screen.findByText("品質テスト"));
+    const toggle = await screen.findByLabelText("見せ場・複数人物は候補を自動で増やす");
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+  });
+});

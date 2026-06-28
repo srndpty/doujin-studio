@@ -9,6 +9,7 @@ from backend.app import preflight, renderer, story
 from backend.app.generator import suggest_candidate_count
 from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import _panel_box_px, compute_bubble_layout
+from backend.app.rendering import build_production_status
 from backend.app.schemas import (
     BalloonTail,
     Character,
@@ -960,6 +961,107 @@ def test_image_metrics_good_image_passes(tmp_path) -> None:
     issues = _quality_issues(_image_panel(path))
     codes = {i.code for i in issues}
     assert not (codes & {"empty_panel_image", "subject_too_small", "monochrome_panel"})
+
+
+# --- 品質ゲートの制作状態統合: preflightの要修正コマを production-status へ反映 ---
+
+
+def test_production_status_surfaces_quality_errors(tmp_path) -> None:
+    # 白紙コマ（empty_panel_image=error）が制作状態の quality_errors に出る。
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    PILImage.new("RGB", (128, 128), (255, 255, 255)).save(export_dir / "white.png")
+    panel = _quality_panel(image_asset="white.png")
+    manga = _quality_manga(panel)
+    status = build_production_status("proj", manga, export_dir)
+    page_status = status.pages[0]
+    assert any(
+        issue.code == "empty_panel_image" and issue.level == "error"
+        for issue in page_status.quality_errors
+    )
+    # プロジェクト集約にも反映され、対象コマへ辿れるよう panel_id を保持する。
+    aggregated = [issue for issue in status.quality_errors if issue.code == "empty_panel_image"]
+    assert aggregated and aggregated[0].panel_id == "p01_01" and aggregated[0].page == 1
+    # 既存blockers（採用未選択・未レンダリング）の意味は変えない。
+    assert any("採用画像が未選択" in blocker for blocker in page_status.blockers)
+
+
+def test_production_status_quality_error_prevents_complete(tmp_path) -> None:
+    # 採用済み・レンダリング済みでも、品質エラーが残るページは制作完了にしない。
+    export_dir = tmp_path / "exports"
+    project_id = "proj"
+    panel_asset = export_dir / project_id / "panels" / "candidate.png"
+    panel_asset.parent.mkdir(parents=True)
+    PILImage.new("RGB", (128, 128), (255, 255, 255)).save(panel_asset)
+
+    panel = _quality_panel(
+        image_asset=f"{project_id}/panels/candidate.png",
+        selected_candidate_id="c1",
+        image_candidates=[
+            {
+                "id": "c1",
+                "asset": f"{project_id}/panels/candidate.png",
+                "backend": "stub",
+                "status": "done",
+                "seed": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+    )
+    manga = _quality_manga(panel)
+    page = manga.pages[0]
+    from backend.app.rendering import page_render_hash
+
+    page.render_status = "done"
+    page.render_hash = page_render_hash(manga, page)
+    page_asset = export_dir / project_id / "pages" / f"page_001.{page.render_hash}.png"
+    page_asset.parent.mkdir(parents=True)
+    PILImage.new("RGB", (1200, 1700), (255, 255, 255)).save(page_asset)
+    page.render_asset = f"{project_id}/pages/{page_asset.name}"
+
+    status = build_production_status(project_id, manga, export_dir)
+    assert status.adopted_panels == status.total_panels
+    assert status.rendered_pages == status.total_pages
+    assert any(issue.code == "empty_panel_image" for issue in status.quality_errors)
+    assert status.pages[0].status == "ready"
+    assert status.status == "ready"
+    assert status.blockers == []
+
+
+def test_production_status_surfaces_region_warning(tmp_path) -> None:
+    # 複数人物コマで region_box 不足（character_region_missing=warning）が出る。
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    panel = _quality_panel(
+        characters=["mika", "rika"],
+        character_layout=[
+            PanelCharacter(id="mika", region_box=(0.0, 0.0, 0.4, 1.0)),
+            PanelCharacter(id="rika"),
+        ],
+    )
+    manga = _quality_manga(
+        panel,
+        characters=[
+            Character(id="mika", display_name="美嘉", trigger_prompt="mika 1girl"),
+            Character(id="rika", display_name="莉嘉", trigger_prompt="rika 1girl"),
+        ],
+    )
+    status = build_production_status("proj", manga, export_dir)
+    warnings = status.pages[0].quality_warnings
+    assert any(issue.code == "character_region_missing" for issue in warnings)
+    assert any(issue.code == "character_region_missing" for issue in status.quality_warnings)
+
+
+def test_production_status_clean_project_has_no_quality_errors(tmp_path) -> None:
+    # 良好な画像コマは quality_errors を出さない（誤検出しない）。
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    PILImage.new("RGB", (128, 128), (220, 60, 40)).save(export_dir / "good.png")
+    panel = _quality_panel(image_asset="good.png")
+    manga = _quality_manga(panel)
+    status = build_production_status("proj", manga, export_dir)
+    codes = {issue.code for issue in status.quality_errors}
+    assert "empty_panel_image" not in codes
 
 
 # --- box format: xyxy入力→xywh正規化→永続化の往復が壊れない ---

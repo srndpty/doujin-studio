@@ -182,6 +182,70 @@ label {
   padding-left: 20px;
 }
 
+.production-band details.quality-issues ul {
+  list-style: none;
+  padding-left: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.quality-issue {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d8b3b3;
+  border-left-width: 4px;
+  border-radius: 5px;
+  background: #fff7f5;
+  padding: 6px 9px;
+  cursor: pointer;
+  color: #4d463c;
+}
+
+.quality-issue.warning {
+  border-color: #d8c79a;
+  border-left-color: #c79a3a;
+  background: #fdfaf0;
+}
+
+.quality-issue.error {
+  border-left-color: #b4452f;
+}
+
+.quality-issue:hover {
+  background: #fdeee9;
+}
+
+.quality-issue-where {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a5a4a;
+}
+
+.quality-issue-message {
+  font-size: 12px;
+}
+
+.quality-issue small {
+  font-size: 11px;
+  color: #6f675d;
+}
+
+.panel-list > button.needs-fix {
+  border-color: #c79a3a;
+}
+
+.quality-flag {
+  justify-self: start;
+  font-size: 11px;
+  font-style: normal;
+  color: #b4452f;
+  font-weight: 600;
+}
+
 .progress-band {
   display: grid;
   grid-template-columns: minmax(180px, 360px) 1fr auto;

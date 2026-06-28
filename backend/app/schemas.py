@@ -849,7 +849,8 @@ class BatchGenerationJobCreate(BaseModel):
     page: int | None = Field(default=None, ge=1)
     candidate_count: int = Field(default=1, ge=1, le=4)
     # trueなら見せ場・複数人物コマの候補数を自動で増やす（candidate_countは下限になる）。
-    auto_candidates: bool = False
+    # 悪い候補を採用しにくくするため既定ON。見せ場・複数人物コマは2〜4候補を自動生成する。
+    auto_candidates: bool = True
     # trueなら基準seedを毎回ランダム化し、同じコマでも違う絵を出す（既定ON）。
     randomize_seed: bool = True
 
@@ -888,6 +889,10 @@ class PageProductionStatus(BaseModel):
     total_panels: int
     rendered: bool
     blockers: list[str] = Field(default_factory=list)
+    # 品質ゲート由来の要修正項目（白紙・被写体小・参照切れ・人物設定不足など）。
+    # blockersとは別管理にして既存の制作ブロッカー（未採用・未レンダリング）の意味を変えない。
+    quality_errors: list[PreflightIssue] = Field(default_factory=list)
+    quality_warnings: list[PreflightIssue] = Field(default_factory=list)
 
 
 class ProjectProductionStatus(BaseModel):
@@ -899,6 +904,9 @@ class ProjectProductionStatus(BaseModel):
     total_pages: int
     pages: list[PageProductionStatus]
     blockers: list[str] = Field(default_factory=list)
+    # 全ページ分を集約した品質ゲートの要修正項目。制作画面の「要修正コマ」一覧に使う。
+    quality_errors: list[PreflightIssue] = Field(default_factory=list)
+    quality_warnings: list[PreflightIssue] = Field(default_factory=list)
 
 
 class CharacterReferenceResult(BaseModel):
