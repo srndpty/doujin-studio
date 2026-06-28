@@ -945,6 +945,17 @@ label {
   padding: 14px;
 }
 
+.story-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #fffdfa;
+  border: 1px solid #e0dacf;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
 .stage-list {
   display: grid;
   gap: 12px;

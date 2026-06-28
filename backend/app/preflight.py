@@ -662,6 +662,243 @@ def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:
     return issues
 
 
+def _is_ascii_letter_dominant(text: str) -> bool:
+    """英字主体の文字列か（日本語化されていない英字SFXの検出用）。"""
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    ascii_letters = [ch for ch in letters if ch.isascii()]
+    return len(ascii_letters) / len(letters) >= 0.6
+
+
+def _check_sfx_text_language(page: Page) -> list[PreflightIssue]:
+    """英字主体の擬音を検出する。"""
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        for sfx in panel.sfx:
+            if _is_ascii_letter_dominant(sfx.text):
+                issues.append(
+                    PreflightIssue(
+                        level="error",
+                        code="sfx_english_text",
+                        message=f"英字の擬音「{sfx.text}」が日本語へ変換されていません",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                        category="sfx",
+                        suggestion="擬音は日本語表記にしてください（例: bang→バン）",
+                        fixable=False,
+                    )
+                )
+    return issues
+
+
+def _check_monologue_balloon(page: Page) -> list[PreflightIssue]:
+    """独白の丸泡(cloud)乱用を警告し、矩形キャプションへの変更を促す。"""
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        for dialogue in panel.dialogue:
+            if dialogue.kind == "monologue" and dialogue.balloon == "cloud":
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="monologue_cloud_balloon",
+                        message=f"独白に丸い吹き出し(cloud)を使っています（{dialogue.speaker}）",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                        category="balloon",
+                        suggestion="独白は矩形のキャプション(caption)を基本にしてください",
+                        fixable=False,
+                    )
+                )
+    return issues
+
+
+def _check_panel_shapes(page: Page) -> list[PreflightIssue]:
+    """演出意図のない変形コマ(shape_points)を警告する。"""
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        if panel.shape_points and not panel_shape_allowed(panel.role, panel.composition_notes):
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="unmotivated_panel_shape",
+                    message=f"演出意図のない変形コマです（{panel.panel_id}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="layout",
+                    suggestion=(
+                        "変形はaction/reveal/emotional_peak/punchlineで動き・衝撃・見せ場の意図が"
+                        "あるコマだけにし、会話・準備・心情・余韻は矩形にしてください"
+                    ),
+                    fixable=False,
+                )
+            )
+    return issues
+
+
+_POSITION_FRACTION: dict[str, tuple[float, float]] = {
+    "upper_left": (0.27, 0.27),
+    "upper_right": (0.73, 0.27),
+    "lower_left": (0.27, 0.73),
+    "lower_right": (0.73, 0.73),
+    "center": (0.5, 0.5),
+}
+
+
+def _speaker_center(dialogue: Dialogue, panel: Panel) -> tuple[float, float] | None:
+    """話者の人物領域中心（コマ正規化0..1）。解決できなければNone。"""
+    entry = next((item for item in panel.character_layout if item.id == dialogue.speaker), None)
+    if entry is None:
+        return None
+    if entry.region_box is not None:
+        rx, ry, rw, rh = entry.region_box
+        return (rx + rw / 2, ry + rh / 2)
+    return _POSITION_FRACTION.get(entry.position, (0.5, 0.5))
+
+
+def _check_tail_speaker(page: Page) -> list[PreflightIssue]:
+    """明示したしっぽ先端が話者領域から遠いコマを警告する。"""
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        for dialogue in panel.dialogue:
+            if not dialogue.on_screen or dialogue.balloon in {"caption", "none"}:
+                continue
+            tail = dialogue.tail
+            if tail is None or not tail.enabled:
+                continue
+            center = _speaker_center(dialogue, panel)
+            if center is None:
+                continue
+            distance = math.hypot(tail.tip[0] - center[0], tail.tip[1] - center[1])
+            if distance > TAIL_SPEAKER_MAX_DISTANCE:
+                issues.append(
+                    PreflightIssue(
+                        level="warning",
+                        code="tail_not_pointing_to_speaker",
+                        message=f"吹き出しのしっぽが話者（{dialogue.speaker}）の方を向いていません",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                        category="balloon",
+                        suggestion="しっぽ先端を話者の人物領域へ向けてください",
+                        fixable=False,
+                    )
+                )
+    return issues
+
+
+def _panel_image_metrics(image_path: Path) -> dict[str, float] | None:
+    """コマ画像の白比率・被写体bbox比率・平均彩度を粗く測る。"""
+    try:
+        with Image.open(image_path) as image:
+            small = image.convert("RGB").resize((64, 64))
+    except Exception:
+        return None
+    pixels = list(small.getdata())
+    total = len(pixels) or 1
+    width = small.width
+    white_count = 0
+    nonwhite_count = 0
+    saturation_sum = 0.0
+    min_x = min_y = width
+    max_x = max_y = -1
+    for index, (r, g, b) in enumerate(pixels):
+        high = max(r, g, b)
+        low = min(r, g, b)
+        saturation_sum += 0.0 if high == 0 else (high - low) / high
+        if low >= WHITE_PIXEL_MIN:
+            white_count += 1
+            continue
+        nonwhite_count += 1
+        x, y = index % width, index // width
+        min_x, min_y = min(min_x, x), min(min_y, y)
+        max_x, max_y = max(max_x, x), max(max_y, y)
+    if max_x < 0:
+        bbox_ratio = 0.0
+    else:
+        bbox_ratio = ((max_x - min_x + 1) * (max_y - min_y + 1)) / total
+    return {
+        "white_ratio": white_count / total,
+        "nonwhite_ratio": nonwhite_count / total,
+        "subject_bbox_ratio": bbox_ratio,
+        "mean_saturation": saturation_sum / total,
+    }
+
+
+def _check_image_metrics(
+    manga: MangaProject, page: Page, export_dir: Path | None
+) -> list[PreflightIssue]:
+    """生成画像の白紙・小被写体・低彩度を画像統計で検出する。"""
+    issues: list[PreflightIssue] = []
+    for panel in page.panels:
+        if not panel.image_asset:
+            continue
+        try:
+            image_path = (
+                resolve_asset_path(panel.image_asset, export_dir)
+                if export_dir is not None
+                else Path(panel.image_asset)
+            )
+        except ValueError:
+            continue
+        if not image_path.exists():
+            continue
+        metrics = _panel_image_metrics(image_path)
+        if metrics is None:
+            continue
+        density = (panel.background_density or "").strip().casefold()
+        role = _normalize_rhythm_token(panel.role)
+        relaxed = density in {"white", "none"} and role in RELAXED_IMAGE_ROLES
+        if metrics["nonwhite_ratio"] < EMPTY_NONWHITE_RATIO:
+            if not relaxed:
+                issues.append(
+                    PreflightIssue(
+                        level="error",
+                        code="empty_panel_image",
+                        message=f"コマ画像がほぼ白紙です（{panel.panel_id}）",
+                        page=page.page,
+                        panel_id=panel.panel_id,
+                        category="image_quality",
+                        suggestion="被写体が描かれた画像を生成・採用してください",
+                        fixable=False,
+                    )
+                )
+            continue
+        if (
+            not relaxed
+            and not is_non_character_mode(panel)
+            and metrics["subject_bbox_ratio"] < SUBJECT_BBOX_MIN_RATIO
+        ):
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="subject_too_small",
+                    message=f"被写体が小さすぎ、余白が多すぎます（{panel.panel_id}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="image_quality",
+                    suggestion="被写体を大きく配置する構図・crop・promptへ調整してください",
+                    fixable=False,
+                )
+            )
+        if (
+            manga.color_policy == "full_color"
+            and metrics["mean_saturation"] < MONOCHROME_SATURATION_MAX
+        ):
+            issues.append(
+                PreflightIssue(
+                    level="warning",
+                    code="monochrome_panel",
+                    message=f"フルカラー方針に対して低彩度または白黒のコマです（{panel.panel_id}）",
+                    page=page.page,
+                    panel_id=panel.panel_id,
+                    category="style",
+                    suggestion="演出意図がない場合はフルカラーで再生成してください",
+                    fixable=False,
+                )
+            )
+    return issues
+
+
 def _check_assets(page: Page, export_dir: Path | None) -> list[PreflightIssue]:
     if export_dir is None:
         return []

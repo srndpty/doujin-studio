@@ -213,37 +213,58 @@ export function StoryPanel<ProjectType>({
 
   async function generateStage(stage: StageName) {
     if (!session) return;
-    const sessionId = session.id;
     await run(async () => {
       await refreshLlm();
-      setMessage(`${stage}を生成中…`);
-      const startedAt = Date.now();
-      setGenProgress({ chars: 0, tail: "", seconds: 0 });
-      // 生成POSTがブロックする間、別リクエストで進捗をポーリングして「止まっていない」
-      // ことと受信状況（文字数・出力末尾）を表示する。
-      const timer = window.setInterval(() => {
-        const seconds = Math.floor((Date.now() - startedAt) / 1000);
-        void api
-          .get<{ chars?: number; tail?: string }>(`/api/story-sessions/${sessionId}/generation-progress`)
-          .then((p) => setGenProgress({ chars: p?.chars ?? 0, tail: p?.tail ?? "", seconds }))
-          .catch(() =>
-            setGenProgress((current) => (current ? { ...current, seconds } : { chars: 0, tail: "", seconds }))
-          );
-      }, 800);
-      try {
-        const next = await api.post<StorySession>(
-          `/api/story-sessions/${sessionId}/stages/${stage}/generate`,
-          { instruction: "" }
-        );
-        syncDrafts(next);
-        setMessage(
-          next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`
-        );
-      } finally {
-        window.clearInterval(timer);
-        setGenProgress(null);
-      }
+      const next = await generateStageRequest(session.id, stage);
+      syncDrafts(next);
+      setMessage(
+        next.stages[stage].error ? `生成エラー: ${next.stages[stage].error}` : `${stage}を生成しました`
+      );
     });
+  }
+
+  async function generateAllStages() {
+    if (!session) return;
+    await run(async () => {
+      await refreshLlm();
+      let next = session;
+      for (const { name, label } of STAGES) {
+        setMessage(`${label}を生成中…`);
+        next = await generateStageRequest(next.id, name, label);
+        syncDrafts(next);
+        if (next.stages[name].error) {
+          setMessage(`一括生成を停止しました: ${label}の生成エラー: ${next.stages[name].error}`);
+          return;
+        }
+      }
+      setMessage("企画からコマ台本まで一括生成しました");
+    });
+  }
+
+  async function generateStageRequest(sessionId: string, stage: StageName, label?: string) {
+    const stageLabel = label ?? STAGES.find((item) => item.name === stage)?.label ?? stage;
+    setMessage(`${stageLabel}を生成中…`);
+    const startedAt = Date.now();
+    setGenProgress({ chars: 0, tail: "", seconds: 0 });
+    // 生成POSTがブロックする間、別リクエストで進捗をポーリングして「止まっていない」
+    // ことと受信状況（文字数・出力末尾）を表示する。
+    const timer = window.setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      void api
+        .get<{ chars?: number; tail?: string }>(`/api/story-sessions/${sessionId}/generation-progress`)
+        .then((p) => setGenProgress({ chars: p?.chars ?? 0, tail: p?.tail ?? "", seconds }))
+        .catch(() =>
+          setGenProgress((current) => (current ? { ...current, seconds } : { chars: 0, tail: "", seconds }))
+        );
+    }, 800);
+    try {
+      return await api.post<StorySession>(`/api/story-sessions/${sessionId}/stages/${stage}/generate`, {
+        instruction: ""
+      });
+    } finally {
+      window.clearInterval(timer);
+      setGenProgress(null);
+    }
   }
 
   async function saveStage(stage: StageName) {
@@ -381,6 +402,15 @@ export function StoryPanel<ProjectType>({
           </select>
         )}
       </div>
+
+      {session && (
+        <div className="story-bulk-actions">
+          <button className="primary" onClick={() => void generateAllStages()} disabled={busy}>
+            企画→コマ台本を一括生成
+          </button>
+          <small className="hint">現在の各段階を順番に再生成します。</small>
+        </div>
+      )}
 
       {session && (
         <div className="stage-list">
