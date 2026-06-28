@@ -420,6 +420,59 @@ def export_confirmed_cbz(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _build_export_metadata(manga: MangaProject) -> dict:
+    """フォルダ出力に同梱する生成条件メタデータ（再現用）。"""
+    panels_meta: list[dict] = []
+    for page in manga.pages:
+        for panel in page.panels:
+            gen = panel.generation
+            panels_meta.append(
+                {
+                    "page": page.page,
+                    "panel_id": panel.panel_id,
+                    "backend": gen.backend,
+                    "status": gen.status,
+                    "seed": gen.seed,
+                    "prompt": gen.prompt,
+                    "negative_prompt": gen.negative_prompt,
+                    "workflow_preset_id": gen.workflow_preset_id,
+                }
+            )
+    return {
+        "title": manga.title,
+        "work_name": manga.work_name,
+        "page_count": len(manga.pages),
+        "reading_direction": manga.reading_direction,
+        "panels": panels_meta,
+    }
+
+
+def export_folder(
+    project_id: str,
+    manga: MangaProject,
+    page_assets: list[Path],
+    export_dir: Path,
+) -> Path:
+    """確定済みページ画像とmanga.json・生成メタデータをフォルダへ並べる。
+
+    CBZの代替。中身が画像だけのアーカイブは扱いにくいため、画像と再現用メタを素のまま
+    フォルダへ出力し、アーカイブ化は利用者へ委ねる（領域: 出力）。
+    """
+    folder = export_dir / project_id / "export"
+    folder.mkdir(parents=True, exist_ok=True)
+    # コマ数が減ったときの取り残しを避けるため、旧page画像を消してから書き出す。
+    for stale in folder.glob("page_*.png"):
+        stale.unlink()
+    for index, asset in enumerate(sorted(page_assets), start=1):
+        shutil.copy2(asset, folder / f"page_{index:03d}.png")
+    (folder / "manga.json").write_text(manga.model_dump_json(indent=2), encoding="utf-8")
+    (folder / "metadata.json").write_text(
+        json.dumps(_build_export_metadata(manga), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return folder
+
+
 class RenderingService:
     """描画確定・参照走査・競合cleanupなどDBを伴うレンダリング操作。"""
 

@@ -388,6 +388,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/export/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Project Folder */
+        post: operations["export_project_folder_api_projects__project_id__export_folder_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/export/open-folder": {
         parameters: {
             query?: never;
@@ -1091,6 +1108,18 @@ export interface components {
             cbz_asset: string;
             /** Absolute Path */
             absolute_path: string;
+            /** Warnings */
+            warnings?: string[];
+        };
+        /**
+         * FolderExportResult
+         * @description フォルダ出力の結果。出力先の絶対パスとページ数を返す。
+         */
+        FolderExportResult: {
+            /** Folder Path */
+            folder_path: string;
+            /** Page Count */
+            page_count: number;
             /** Warnings */
             warnings?: string[];
         };
@@ -2131,6 +2160,13 @@ export interface components {
             /** Latest Revision */
             latest_revision: number;
             result: components["schemas"]["ExportResult"];
+        };
+        /** ProjectMutationResponse[FolderExportResult] */
+        ProjectMutationResponse_FolderExportResult_: {
+            project: components["schemas"]["ProjectDetail"];
+            /** Latest Revision */
+            latest_revision: number;
+            result: components["schemas"]["FolderExportResult"];
         };
         /** ProjectMutationResponse[GenerationJobResponse] */
         ProjectMutationResponse_GenerationJobResponse_: {
@@ -3441,6 +3477,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectMutationResponse_ExportResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_project_folder_api_projects__project_id__export_folder_post: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_FolderExportResult_"];
                 };
             };
             /** @description revision競合、または通常の更新競合 */

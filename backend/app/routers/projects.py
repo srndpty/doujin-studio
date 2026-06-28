@@ -28,6 +28,7 @@ from ..schemas import (
     CharacterReferenceResult,
     EmptyMutationResult,
     ExportResult,
+    FolderExportResult,
     GenerateNameRequest,
     LayoutSuggestRequest,
     LayoutSuggestResult,
@@ -754,6 +755,32 @@ def export_project_cbz(
 
 
 @router.post(
+    "/api/projects/{project_id}/export/folder",
+    response_model=ProjectMutationResponse[FolderExportResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+)
+def export_project_folder(
+    project_id: str, request: Request, revision: int
+) -> ProjectMutationResponse[FolderExportResult]:
+    try:
+        result = request.app.state.project_render.export_folder(
+            project_id, expected_revision=revision
+        )
+    except (RenderCommitConflictError, RenderInputChangedError) as exc:
+        raise ProjectRevisionConflictError(project_id, revision) from exc
+    return to_project_mutation_response(
+        request,
+        project_id,
+        FolderExportResult(
+            folder_path=str(result.folder_path.resolve()),
+            page_count=result.page_count,
+            warnings=result.warnings,
+        ),
+        snapshot=result.project,
+    )
+
+
+@router.post(
     "/api/projects/{project_id}/export/open-folder",
     response_model=OpenExportFolderResponse,
 )
@@ -764,14 +791,19 @@ def open_project_export_folder(project_id: str, request: Request) -> OpenExportF
     if project_dir.parent != export_dir:
         raise HTTPException(status_code=400, detail="出力フォルダが不正です")
     project_dir.mkdir(parents=True, exist_ok=True)
-    cbz_files = list(project_dir.glob("*.cbz"))
-    cbz_path = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
-    open_in_file_manager(cbz_path)
+    # 新標準のフォルダ出力(export/)があればそれを開く。無ければ旧CBZ、最後にプロジェクト直下。
+    export_folder_dir = project_dir / "export"
+    if export_folder_dir.is_dir():
+        target = export_folder_dir
+    else:
+        cbz_files = list(project_dir.glob("*.cbz"))
+        target = max(cbz_files, key=lambda path: path.stat().st_mtime) if cbz_files else project_dir
+    open_in_file_manager(target)
     return OpenExportFolderResponse(
         project_id=project_id,
         folder_path=str(project_dir),
-        cbz_path=str(cbz_path),
-        cbz_exists=cbz_path.is_file(),
+        cbz_path=str(target),
+        cbz_exists=target.is_file(),
     )
 
 

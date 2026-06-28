@@ -1320,6 +1320,72 @@
         }
       }
     },
+    "/api/projects/{project_id}/export/folder": {
+      "post": {
+        "summary": "Export Project Folder",
+        "operationId": "export_project_folder_api_projects__project_id__export_folder_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_FolderExportResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Export Project Folder Api Projects  Project Id  Export Folder Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/export/open-folder": {
       "post": {
         "summary": "Open Project Export Folder",
@@ -3371,6 +3437,32 @@
           "absolute_path"
         ],
         "title": "ExportResult"
+      },
+      "FolderExportResult": {
+        "properties": {
+          "folder_path": {
+            "type": "string",
+            "title": "Folder Path"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "folder_path",
+          "page_count"
+        ],
+        "title": "FolderExportResult",
+        "description": "フォルダ出力の結果。出力先の絶対パスとページ数を返す。"
       },
       "FontInfo": {
         "properties": {
@@ -5666,6 +5758,27 @@
           "result"
         ],
         "title": "ProjectMutationResponse[ExportResult]"
+      },
+      "ProjectMutationResponse_FolderExportResult_": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectDetail"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "title": "Latest Revision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/FolderExportResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project",
+          "latest_revision",
+          "result"
+        ],
+        "title": "ProjectMutationResponse[FolderExportResult]"
       },
       "ProjectMutationResponse_GenerationJobResponse_": {
         "properties": {

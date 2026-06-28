@@ -933,6 +933,14 @@ class ExportResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class FolderExportResult(BaseModel):
+    """フォルダ出力の結果。出力先の絶対パスとページ数を返す。"""
+
+    folder_path: str
+    page_count: int
+    warnings: list[str] = Field(default_factory=list)
+
+
 class OpenExportFolderResponse(BaseModel):
     project_id: str
     folder_path: str

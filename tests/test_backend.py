@@ -5143,3 +5143,35 @@ def test_preflight_autofix_page_scope(tmp_path: Path) -> None:
         # 対象ページのみ修正、他ページは据え置き。
         assert "white" in saved["pages"][0]["panels"][0]["prompt"]
         assert "blank" not in saved["pages"][1]["panels"][0]["prompt"]
+
+
+def test_export_folder_outputs_images_and_metadata(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        assert client.post(mutation_url(client, project_id, "render")).status_code == 200
+
+        response = client.post(mutation_url(client, project_id, "export/folder"))
+        assert response.status_code == 200
+        result = response.json()["result"]
+        assert result["page_count"] == 4
+        folder = Path(result["folder_path"])
+        assert folder.is_dir()
+        pages = sorted(p.name for p in folder.glob("page_*.png"))
+        assert pages == ["page_001.png", "page_002.png", "page_003.png", "page_004.png"]
+        assert (folder / "manga.json").is_file()
+        metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["page_count"] == 4
+        assert metadata["panels"]
+        assert "seed" in metadata["panels"][0]
+
+
+def test_export_folder_open_folder_targets_export_dir(tmp_path: Path, monkeypatch) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(projects_router, "open_in_file_manager", lambda path: opened.append(path))
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        client.post(mutation_url(client, project_id, "render"))
+        client.post(mutation_url(client, project_id, "export/folder"))
+        response = client.post(f"/api/projects/{project_id}/export/open-folder")
+        assert response.status_code == 200
+        assert opened and opened[0].name == "export"
