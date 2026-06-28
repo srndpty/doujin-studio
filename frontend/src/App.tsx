@@ -226,10 +226,10 @@ type Adopted<R> = {
 };
 type EmptyMutationResult = Schemas["EmptyMutationResult"];
 type PageRenderResult = Schemas["PageRenderResult"];
-type PanelImageGenerationResult = Schemas["PanelImageGenerationResult"];
 type PanelPageRenderResult = Schemas["PanelPageRenderResult"];
 type BatchGenerationJobResult = Schemas["BatchGenerationJobResult"];
-type ExportResult = Schemas["ExportResult"];
+type FolderExportResult = Schemas["FolderExportResult"];
+type PreflightFixResult = Schemas["PreflightFixResult"];
 type ReferenceAssetResult = Schemas["ReferenceAssetResult"];
 
 type TaskProgress = {
@@ -252,6 +252,9 @@ export function App() {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
   const [comfyStatus, setComfyStatus] = useState<ComfyUIStatus | null>(null);
   const [message, setMessage] = useState("準備完了");
+  // 保存・出力などの完了を一時的に知らせるトースト。
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<TaskProgress | null>(null);
   const [assetVersion, setAssetVersion] = useState(0);
@@ -286,6 +289,15 @@ export function App() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     const baseTitle = document.title.replace(/^\(\d+\/\d+\)\s*/, "");
@@ -850,6 +862,8 @@ export function App() {
       setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
       setMessage("全ページの画像生成とレンダリングが完了しました");
+      showToast("全ページ生成が完了しました");
+      playCompletionSound();
       notifyCompletion("全ページ生成が完了しました", latest.title);
     });
   }
@@ -911,6 +925,42 @@ export function App() {
   function notifyCompletion(title: string, body: string): void {
     if ("Notification" in window && Notification.permission === "granted") {
       new Notification(title, { body });
+    }
+  }
+
+  function showToast(text: string): void {
+    setToast(text);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 4000);
+  }
+
+  // 全ページ生成完了をシステム音の代わりにWeb Audioの短い完了音で知らせる。
+  // OS固有のシステム音はブラウザから鳴らせないため、二音の上昇チャイムで代替する。
+  function playCompletionSound(): void {
+    try {
+      type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
+      const AudioContextClass = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const now = context.currentTime;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+      gain.connect(context.destination);
+      [880, 1320].forEach((frequency, index) => {
+        const oscillator = context.createOscillator();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, now + index * 0.18);
+        oscillator.connect(gain);
+        oscillator.start(now + index * 0.18);
+        oscillator.stop(now + index * 0.18 + 0.4);
+      });
+      window.setTimeout(() => void context.close(), 1200);
+    } catch {
+      // 音声が出せない環境では黙って無視する（完了通知はトースト・Notificationで担保）。
     }
   }
 
@@ -1086,36 +1136,6 @@ export function App() {
     });
   }
 
-  async function useStubForCurrentPanel() {
-    if (!selected || !currentPanel) return;
-    await runTask(async () => {
-      const saved = await saveJsonDraft("stub生成前にManga JSONを保存しました");
-      if (!saved) return;
-      const projectId = saved.id;
-      // use-stubの応答を先に反映する。renderが失敗してもrevisionが古いまま残らない。
-      const stubResponse = await api.post<ProjectMutationResponse<PanelImageGenerationResult>>(
-        withRevision(`/api/projects/${projectId}/panels/${currentPanel.panel_id}/use-stub`, saved.revision)
-      );
-      const stubAdopted = await adoptMutationResponse(stubResponse);
-      if (!stubAdopted.applied || !stubAdopted.project) return;
-      const pageResponse = await api.post<ProjectMutationResponse<PanelPageRenderResult>>(
-        withRevision(
-          `/api/projects/${projectId}/panels/${currentPanel.panel_id}/render-page`,
-          stubAdopted.project.revision
-        )
-      );
-      const pageAdopted = await adoptMutationResponse(pageResponse);
-      if (!pageAdopted.applied || !pageAdopted.project) return;
-      applyRenderedPageAsset(pageAdopted, selectedPage);
-      if (pageAdopted.resynced) {
-        setMessage("構成が更新されたためstub結果を再同期しました");
-        return;
-      }
-      setMessage(`${currentPanel.panel_id}をstub画像へ戻しました`);
-      await refreshProductionStatus(projectId);
-    });
-  }
-
   async function renderCurrentPanelPage() {
     if (!selected || !currentPanel) return;
     await runTask(async () => {
@@ -1137,19 +1157,42 @@ export function App() {
     });
   }
 
-  async function exportCbz() {
+  async function exportFolder() {
     if (!selected) return;
     await runTask(async () => {
       const projectId = selected.id;
-      const response = await api.post<ProjectMutationResponse<ExportResult>>(
-        withRevision(`/api/projects/${projectId}/export/cbz`, selected.revision)
+      const response = await api.post<ProjectMutationResponse<FolderExportResult>>(
+        withRevision(`/api/projects/${projectId}/export/folder`, selected.revision)
       );
       const adopted = await adoptMutationResponse(response);
       if (!adopted.applied || !adopted.project) return;
       const { result } = adopted;
       const warnings = result.warnings ?? [];
       const warning = warnings.length ? ` / 警告 ${warnings.length}件` : "";
-      setMessage(`CBZを書き出しました: ${result.absolute_path}${warning}`);
+      setMessage(`フォルダへ書き出しました: ${result.folder_path}${warning}`);
+      showToast(`${result.folder_path} に保存しました`);
+      await refreshProductionStatus(projectId);
+    });
+  }
+
+  async function autofixCurrentProject() {
+    if (!selected) return;
+    await runTask(async () => {
+      const projectId = selected.id;
+      const response = await api.post<ProjectMutationResponse<PreflightFixResult>>(
+        withRevision(`/api/projects/${projectId}/preflight/fix`, selected.revision)
+      );
+      const adopted = await adoptMutationResponse(response);
+      if (!adopted.applied || !adopted.project) return;
+      const fixedCount = adopted.result.fixed_count;
+      setMessage(
+        fixedCount > 0
+          ? `品質問題を${fixedCount}件自動修正しました`
+          : "自動修正できる品質問題はありませんでした"
+      );
+      showToast(
+        fixedCount > 0 ? `品質問題を${fixedCount}件自動修正しました` : "自動修正対象はありませんでした"
+      );
       await refreshProductionStatus(projectId);
     });
   }
@@ -1577,9 +1620,13 @@ export function App() {
               <RefreshCw size={17} />
               レンダリング
             </button>
-            <button title="CBZを書き出す" onClick={exportCbz} disabled={!selected || busy}>
+            <button
+              title="ページ画像とmanga.json・メタデータをフォルダへ書き出す"
+              onClick={exportFolder}
+              disabled={!selected || busy}
+            >
               <Download size={17} />
-              CBZ
+              フォルダ書き出し
             </button>
             <button title="保存先を開く" onClick={openExportFolder} disabled={!selected || busy}>
               <FolderOpen size={17} />
@@ -1818,6 +1865,17 @@ export function App() {
                       {(productionStatus.quality_warnings ?? []).length > 0
                         ? ` / 注意 ${(productionStatus.quality_warnings ?? []).length}件`
                         : ""}
+                      <button
+                        type="button"
+                        className="quality-autofix"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void autofixCurrentProject();
+                        }}
+                        disabled={busy}
+                      >
+                        自動修正
+                      </button>
                     </summary>
                     <ul>
                       {[
@@ -2386,9 +2444,6 @@ export function App() {
                           onClick={() => setSelectedPage(page)}
                         >
                           {page}p
-                          {productionStatus?.pages.find((item) => item.page === page)?.status === "complete"
-                            ? " 完了"
-                            : ""}
                         </button>
                       ))}
                   </div>
@@ -2886,26 +2941,36 @@ export function App() {
                       <small className="empty-candidates">生成すると候補がここに保存されます</small>
                     )}
                     <div className="actions">
-                      <button onClick={generateCurrentPanelImage} disabled={busy}>
-                        画像生成
+                      <button
+                        title="選択中のコマを生成（既定でseedをランダム化し別の絵を出す）"
+                        onClick={generateCurrentPanelImage}
+                        disabled={busy}
+                      >
+                        選択コマを生成
                       </button>
-                      <button onClick={generateCurrentPanelImage} disabled={busy}>
-                        再生成
+                      <button
+                        title="このページのコマをまとめて生成"
+                        onClick={generateCurrentPageImages}
+                        disabled={busy}
+                      >
+                        ページを生成
                       </button>
-                      <button onClick={generateCurrentPageImages} disabled={busy}>
-                        ページ内全コマ生成
+                      <button title="全ページのコマを生成" onClick={generateAllPageImages} disabled={busy}>
+                        全ページを生成
                       </button>
-                      <button onClick={generateAllPageImages} disabled={busy}>
-                        全ページ生成
+                      <button
+                        title="写植を反映してこのページを書き出す"
+                        onClick={renderCurrentPanelPage}
+                        disabled={busy}
+                      >
+                        ページを書き出し
                       </button>
-                      <button onClick={renderCurrentPanelPage} disabled={busy}>
-                        写植更新
-                      </button>
-                      <button onClick={renderCurrentPanelPage} disabled={busy}>
-                        ページ更新
-                      </button>
-                      <button onClick={useStubForCurrentPanel} disabled={busy}>
-                        stubへ戻す
+                      <button
+                        title="自動修正できる品質問題をまとめて直す"
+                        onClick={autofixCurrentProject}
+                        disabled={busy}
+                      >
+                        自動修正
                       </button>
                     </div>
                   </div>
@@ -2973,6 +3038,11 @@ export function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {toast && (
+        <div className="toast" role="status" aria-live="polite">
+          {toast}
         </div>
       )}
     </div>
