@@ -4474,10 +4474,10 @@ def test_delete_project_aborts_when_fence_creation_fails(
         assert (project_dir / "keep.png").read_bytes() == b"keep"
 
 
-# --- 自動生成コマのslant-right形状定数 ---
+# --- 自動生成コマのframe_points形状 ---
 
 
-def test_script_to_manga_uses_slant_right_preset_constants() -> None:
+def test_script_to_manga_uses_frame_points_for_motivated_shape() -> None:
     from backend.app import story
     from backend.app.schemas import ScriptStage
 
@@ -4503,10 +4503,10 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
     )
     manga = story.script_to_manga(script, base)
     first = manga.pages[0].panels[0]
-    assert first.shape_points is not None
-    xs = [round(point[0], 2) for point in first.shape_points]
-    # フロントのshapePreset()がslant-rightと認識できる定数であること。
-    assert xs == [0.12, 1.0, 0.88, 0.0]
+    assert first.shape_points is None
+    assert first.frame_points is not None
+    xs = [round(point[0], 2) for point in first.frame_points]
+    assert xs[0] < xs[1] and xs[3] < xs[2]
 
 
 # --- ComfyUI設定検査と削除worker競合 ---
@@ -5329,9 +5329,123 @@ def test_regenerate_blank_panels_targets_only_blank(tmp_path: Path) -> None:
         blank_panel_id = manga["pages"][0]["panels"][0]["panel_id"]
         manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/blank.png"
         assert put_manga(client, project_id, manga).status_code == 200
+        revision_before = current_revision(client, project_id)
 
         response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
         assert response.status_code == 200
         jobs = response.json()["result"]["jobs"]
         # 白紙のコマだけが再生成対象になる。
         assert {job["panel_id"] for job in jobs} == {blank_panel_id}
+        # promptに正規化差分が無い場合は、prompt整理用の余分なrevisionを作らない。
+        assert response.json()["project"]["revision"] == revision_before + 1
+
+
+def test_regenerate_blank_panels_cleans_blank_risk_prompts(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(export_dir / "blank.png")
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel = manga["pages"][0]["panels"][0]
+        panel_id = panel["panel_id"]
+        panel["image_asset"] = f"{project_id}/blank.png"
+        panel["prompt"] = "1girl, blank, smile"
+        panel["composition_notes"] = "white background, desk"
+        panel["generation"]["prompt"] = "empty space, 1girl"
+        assert put_manga(client, project_id, manga).status_code == 200
+        revision_before = current_revision(client, project_id)
+
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+
+        assert response.status_code == 200, response.text
+        assert {job["panel_id"] for job in response.json()["result"]["jobs"]} == {panel_id}
+        project = response.json()["project"]
+        cleaned = project["manga_json"]["pages"][0]["panels"][0]
+        assert cleaned["prompt"] == "1girl, smile"
+        assert (
+            cleaned["composition_notes"]
+            == "simple background, visible subject, clear foreground, desk"
+        )
+        assert cleaned["generation"]["prompt"] == "1girl"
+        # prompt清掃で1回、再生成キュー登録で1回revisionが進む。
+        assert project["revision"] == revision_before + 2
+
+
+def test_recommended_regeneration_targets_subject_too_small(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        small_path = export_dir / "small.png"
+        image = PILImage.new("RGB", (128, 128), (255, 255, 255))
+        image.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+        image.save(small_path)
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel_id = manga["pages"][0]["panels"][0]["panel_id"]
+        manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/small.png"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(
+            mutation_url(client, project_id, "generation-jobs/recommended-regeneration")
+        )
+
+        assert response.status_code == 200
+        jobs = response.json()["result"]["jobs"]
+        assert {job["panel_id"] for job in jobs} == {panel_id}
+
+
+def test_blank_vs_recommended_endpoints_target_scope(tmp_path: Path) -> None:
+    """旧 /blank は白紙のみ、新 /recommended-regeneration は白紙・低彩度・小被写体を対象にする。"""
+    from PIL import Image as PILImage
+
+    def _setup(client: TestClient) -> tuple[str, dict[str, str]]:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        # 白紙・低彩度・小被写体をそれぞれ別画像で用意する。
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(export_dir / "blank.png")
+        PILImage.new("RGB", (128, 128), (128, 128, 128)).save(export_dir / "gray.png")
+        small = PILImage.new("RGB", (128, 128), (255, 255, 255))
+        small.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+        small.save(export_dir / "small.png")
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = [panel for page in manga["pages"] for panel in page["panels"]]
+        assert len(panels) >= 3
+        assignment = {
+            "empty_panel_image": panels[0]["panel_id"],
+            "monochrome_panel": panels[1]["panel_id"],
+            "subject_too_small": panels[2]["panel_id"],
+        }
+        for panel, asset in zip(panels[:3], ("blank.png", "gray.png", "small.png"), strict=True):
+            panel["image_asset"] = f"{project_id}/{asset}"
+            # 小被写体・低彩度の判定が抑制されないよう人物コマにする。
+            panel["subject_mode"] = "character_scene"
+        assert put_manga(client, project_id, manga).status_code == 200
+        return project_id, assignment
+
+    with make_client(tmp_path) as client:
+        # 旧 /blank は白紙コマだけを再生成する。
+        blank_project, blank_ids = _setup(client)
+        blank_response = client.post(mutation_url(client, blank_project, "generation-jobs/blank"))
+        assert blank_response.status_code == 200
+        blank_jobs = {job["panel_id"] for job in blank_response.json()["result"]["jobs"]}
+        assert blank_jobs == {blank_ids["empty_panel_image"]}
+
+        # 新 endpoint は推奨3種すべてを再生成対象にする。
+        recommended_project, rec_ids = _setup(client)
+        recommended_response = client.post(
+            mutation_url(client, recommended_project, "generation-jobs/recommended-regeneration")
+        )
+        assert recommended_response.status_code == 200
+        recommended_jobs = {
+            job["panel_id"] for job in recommended_response.json()["result"]["jobs"]
+        }
+        assert recommended_jobs == set(rec_ids.values())

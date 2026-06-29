@@ -56,7 +56,8 @@ ProductionStatusValue = Literal["incomplete", "ready", "complete"]
 # 履歴: 1=初期, 2=縦書き句読点を右上クロップ配置・全角チルダ等の回転対応,
 #       3=波ダッシュの向き反転・三点リーダの実インク中央寄せ・吹き出しのアンチエイリアス
 #       4=frame_points/shape_pointsとパネル単位z-index描画順をシグネチャへ反映
-RENDER_ENGINE_VERSION = 4
+#       5=shape_pointsを互換入力扱いにし、frame_points正本へ移行
+RENDER_ENGINE_VERSION = 5
 
 
 class RenderInputChangedError(Exception):

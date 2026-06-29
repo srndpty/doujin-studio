@@ -11,6 +11,10 @@ from .schema_geometry import has_self_intersection, polygon_area
 Point = tuple[float, float]
 UnitBoxFormat = Literal["xywh", "xyxy"]
 
+# crop（パン・ズーム）の最大倍率。preflightの被写体小判定の自動修正可否と、autofixの拡大上限、
+# GenerationInfo.crop_scaleの上限を同じ値に揃え、「上限到達済みなのに自動修正可」表示を防ぐ。
+MAX_CROP_SCALE = 4.0
+
 
 # 旧balloon値から新しい吹き出し種別への対応表。
 BALLOON_MIGRATION = {"round": "oval", "thought": "cloud", "shout": "burst"}
@@ -257,7 +261,7 @@ class GenerationInfo(BaseModel):
     fit_mode: Literal["cover", "contain"] = "cover"
     crop_anchor: Literal["center", "top", "bottom", "left", "right"] = "center"
     # パン・ズーム方式のcrop。anchorを粗い基準、offsetを微調整として合成する。
-    crop_scale: float = Field(default=1.0, ge=1.0, le=4.0)
+    crop_scale: float = Field(default=1.0, ge=1.0, le=MAX_CROP_SCALE)
     crop_offset_x: float = Field(default=0.0, ge=-1.0, le=1.0)
     crop_offset_y: float = Field(default=0.0, ge=-1.0, le=1.0)
     # 注視点（0..1）。指定時はoffsetより優先してこの点を中心に寄せる。
@@ -420,6 +424,19 @@ class Panel(BaseModel):
         # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
         if self.text_safe_area_format != "xywh":
             object.__setattr__(self, "text_safe_area_format", "xywh")
+        # frame_pointsを正本とし、旧shape_pointsは永続化しない。
+        # - frame_pointsが無くshape_pointsだけある旧データ: bbox相対の頂点をページ座標の
+        #   frame_pointsへ変換する。bboxは縮めない（吹き出し・text_safe_area・cropなどbbox相対の
+        #   子要素が移動しないようにするため）。frame_pointsは別途ページ座標で形状を表す。
+        # - 両方ある入力: frame_pointsを優先し、古いshape_pointsを破棄して描画/検査の二重化を防ぐ。
+        if self.frame_points is None and self.shape_points is not None:
+            x, y, w, h = self.bbox
+            frame_points = [(x + sx * w, y + sy * h) for sx, sy in self.shape_points]
+            object.__setattr__(self, "frame_points", frame_points)
+            object.__setattr__(self, "frame_source", "manual")
+            object.__setattr__(self, "shape_points", None)
+        elif self.frame_points is not None and self.shape_points is not None:
+            object.__setattr__(self, "shape_points", None)
         return self
 
     @field_validator("shape_points")

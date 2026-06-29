@@ -46,6 +46,11 @@ def _fix_prompt_blank_risk(page: Page) -> list[AutofixChange]:
             panel.composition_notes = notes_result.prompt
             applied.extend(notes_result.removed)
             applied.extend(before for before, _after in notes_result.replaced)
+        generation_result = normalize_prompt(panel.generation.prompt)
+        if generation_result.changed:
+            panel.generation.prompt = generation_result.prompt
+            applied.extend(generation_result.removed)
+            applied.extend(before for before, _after in generation_result.replaced)
         if applied:
             unique = list(dict.fromkeys(applied))
             changes.append(
@@ -130,7 +135,10 @@ def autofix_page(page: Page) -> list[AutofixChange]:
     return changes
 
 
-def autofix_manga(manga: MangaProject, page_number: int | None = None) -> list[AutofixChange]:
+def autofix_manga(
+    manga: MangaProject,
+    page_number: int | None = None,
+) -> list[AutofixChange]:
     """fixableな問題を自動修正する。page_number指定時はそのページのみ対象にする。"""
     changes: list[AutofixChange] = []
     for page in manga.pages:

@@ -66,7 +66,7 @@ def test_secondary_impactful_edge_panel_bleeds() -> None:
     assert talk.frame_role == "normal"
 
 
-def test_diagonal_shape_points_panel_is_left_untouched() -> None:
+def test_legacy_diagonal_shape_points_migrates_and_is_left_untouched() -> None:
     diagonal = _panel(
         "p1",
         (0.05, 0.05, 0.9, 0.5),
@@ -79,9 +79,10 @@ def test_diagonal_shape_points_panel_is_left_untouched() -> None:
 
     auto_assign_frames(page, PageLayoutSettings())
 
-    # 斜めコマ(shape_points)はframe_pointsで上書きしない。
-    assert diagonal.frame_points is None
-    assert diagonal.shape_points is not None
+    # 旧shape_pointsはframe_pointsへ昇格し、自動枠で上書きしない。
+    assert diagonal.frame_points is not None
+    assert diagonal.shape_points is None
+    assert diagonal.frame_role == "normal"
 
 
 def test_plain_dialogue_page_gets_no_special_frames() -> None:

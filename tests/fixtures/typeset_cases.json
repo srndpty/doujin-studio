@@ -1,0 +1,766 @@
+[
+  {
+    "name": "horizontal_short_fits",
+    "text": "やあ",
+    "vertical": false,
+    "balloon": "oval",
+    "bubble_w": 300,
+    "bubble_h": 140,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 1,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "や"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "vertical_manual_break",
+    "text": "前半の声\n後半の声",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 240,
+    "bubble_h": 360,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 2,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "前"
+          },
+          {
+            "kind": "cjk",
+            "text": "半"
+          },
+          {
+            "kind": "cjk",
+            "text": "の"
+          },
+          {
+            "kind": "cjk",
+            "text": "声"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "後"
+          },
+          {
+            "kind": "cjk",
+            "text": "半"
+          },
+          {
+            "kind": "cjk",
+            "text": "の"
+          },
+          {
+            "kind": "cjk",
+            "text": "声"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "vertical_long_wraps_overflow",
+    "text": "ああああああああああああああああああああああああああああああ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 220,
+    "bubble_h": 300,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 4,
+    "expect": {
+      "font_size": 26,
+      "line_count": 5,
+      "fits": false,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "vertical_kinsoku_line_start",
+    "text": "あいうえお。かきくけこ、さしすせそ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 260,
+    "bubble_h": 280,
+    "default_size": 30,
+    "min_size": 22,
+    "max_lines": 8,
+    "expect": {
+      "font_size": 27,
+      "line_count": 3,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "い"
+          },
+          {
+            "kind": "cjk",
+            "text": "う"
+          },
+          {
+            "kind": "cjk",
+            "text": "え"
+          },
+          {
+            "kind": "cjk",
+            "text": "お"
+          },
+          {
+            "kind": "cjk",
+            "text": "。"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "か"
+          },
+          {
+            "kind": "cjk",
+            "text": "き"
+          },
+          {
+            "kind": "cjk",
+            "text": "く"
+          },
+          {
+            "kind": "cjk",
+            "text": "け"
+          },
+          {
+            "kind": "cjk",
+            "text": "こ"
+          },
+          {
+            "kind": "cjk",
+            "text": "、"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "さ"
+          },
+          {
+            "kind": "cjk",
+            "text": "し"
+          },
+          {
+            "kind": "cjk",
+            "text": "す"
+          },
+          {
+            "kind": "cjk",
+            "text": "せ"
+          },
+          {
+            "kind": "cjk",
+            "text": "そ"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "vertical_tcy_group",
+    "text": "図AB12を見て",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 220,
+    "bubble_h": 340,
+    "default_size": 34,
+    "min_size": 24,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 1,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "図"
+          },
+          {
+            "kind": "tcy",
+            "text": "AB"
+          },
+          {
+            "kind": "tcy",
+            "text": "12"
+          },
+          {
+            "kind": "cjk",
+            "text": "を"
+          },
+          {
+            "kind": "cjk",
+            "text": "見"
+          },
+          {
+            "kind": "cjk",
+            "text": "て"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "burst_inscribe_small",
+    "text": "うわあああ",
+    "vertical": true,
+    "balloon": "burst",
+    "bubble_w": 320,
+    "bubble_h": 320,
+    "default_size": 40,
+    "min_size": 22,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 40,
+      "line_count": 2,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "う"
+          },
+          {
+            "kind": "cjk",
+            "text": "わ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "cloud_monologue",
+    "text": "ぼそぼそ…ひとり言",
+    "vertical": true,
+    "balloon": "cloud",
+    "bubble_w": 260,
+    "bubble_h": 320,
+    "default_size": 34,
+    "min_size": 24,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 2,
+      "fits": true,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "ぼ"
+          },
+          {
+            "kind": "cjk",
+            "text": "そ"
+          },
+          {
+            "kind": "cjk",
+            "text": "ぼ"
+          },
+          {
+            "kind": "cjk",
+            "text": "そ"
+          },
+          {
+            "kind": "rot",
+            "text": "…"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "ひ"
+          },
+          {
+            "kind": "cjk",
+            "text": "と"
+          },
+          {
+            "kind": "cjk",
+            "text": "り"
+          },
+          {
+            "kind": "cjk",
+            "text": "言"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "name": "overflow_even_at_min",
+    "text": "ああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 160,
+    "bubble_h": 160,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 26,
+      "line_count": 20,
+      "fits": false,
+      "lines": [
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ],
+        [
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          },
+          {
+            "kind": "cjk",
+            "text": "あ"
+          }
+        ]
+      ]
+    }
+  }
+]

@@ -193,6 +193,13 @@ label {
   cursor: default;
 }
 
+.quality-breakdown {
+  display: inline-block;
+  margin-left: 12px;
+  color: #6f675d;
+  font-size: 12px;
+}
+
 /* 保存・出力などの完了を一時的に知らせるトースト。 */
 .toast {
   position: fixed;
@@ -262,6 +269,28 @@ label {
 
 .quality-issue:hover {
   background: #fdeee9;
+}
+
+.quality-issue-action {
+  justify-self: start;
+  border: 1px solid #cfc7b8;
+  border-radius: 999px;
+  background: #fffdfa;
+  padding: 1px 7px;
+  font-size: 11px;
+  color: #5f5a52;
+}
+
+.quality-issue.autofix .quality-issue-action {
+  border-color: #8bb38d;
+  background: #edf7ee;
+  color: #2e6d32;
+}
+
+.quality-issue.regenerate .quality-issue-action {
+  border-color: #8aa8c5;
+  background: #eef6fc;
+  color: #275f8f;
 }
 
 .quality-issue-where {
@@ -1608,16 +1637,19 @@ button.primary {
 
 /* --- ページ編集（react-konva） --- */
 .page-editor {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(300px, 1fr);
   gap: 16px;
-  flex-wrap: wrap;
   padding: 12px;
+  align-items: start;
 }
 .page-editor-canvas {
-  flex: 0 0 auto;
+  position: sticky;
+  top: 76px;
+  align-self: start;
+  z-index: 1;
 }
 .page-editor-controls {
-  flex: 1 1 280px;
   min-width: 260px;
   display: flex;
   flex-direction: column;
@@ -1686,4 +1718,26 @@ button.primary {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.polygon-editor {
+  display: grid;
+  gap: 8px;
+}
+.polygon-error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fbe9e7;
+  color: #b3261e;
+  font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .page-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .page-editor-canvas {
+    position: static;
+  }
 }

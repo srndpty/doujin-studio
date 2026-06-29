@@ -1010,17 +1010,19 @@ def script_to_manga(
                 )
             panel_bbox = layout[index]
             gen_w, gen_h = compute_generation_size(panel_bbox)
-            shape_points = None
+            frame_points = None
             if panel_shape_allowed(role, script_panel.composition_notes):
-                # 明確な演出意図（見せ場role＋動き・衝撃・見せ場の構図メモ）があるコマだけ変形する。
-                # フロントのslant-rightプリセット定数(0.12/0.88)に揃える。ずれると
-                # 編集画面のshapePreset()が右傾斜を認識できず「台形」と表示されてしまう。
-                shape_points = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
+                # 明確な演出意図があるコマだけ、ページ座標polygonを直接持たせる。
+                # shape_pointsは読み込み互換用に残し、新規生成ではframe_pointsを正本にする。
+                x, y, w, h = panel_bbox
+                relative = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
+                frame_points = [(x + sx * w, y + sy * h) for sx, sy in relative]
             panels.append(
                 Panel(
                     panel_id=panel_id,
                     bbox=panel_bbox,
-                    shape_points=shape_points,
+                    frame_points=frame_points,
+                    frame_source="manual" if frame_points is not None else "auto",
                     shot=script_panel.shot or "コマ",
                     subject_mode=subject_mode,
                     role=role,

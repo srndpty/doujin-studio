@@ -2,8 +2,8 @@
 
 画像生成モデル向けのpositive promptは自然文よりbooruタグを優先する。``white``,
 ``blank``, ``empty space`` のような単独指定は被写体のない白紙コマを誘発しやすいため
-除去し、``white background`` のような背景指定は ``simple_background`` へ寄せて意図
-（クリーンな背景）を保ちつつ白飛びを避ける。
+除去し、``white background`` のような背景指定は被写体維持を明示する背景タグへ寄せて
+意図（クリーンな背景）を保ちつつ白飛びを避ける。
 
 除去・置換はカンマ区切りタグ単位の完全一致で行う。``white hair`` や ``white shirt``
 のような複合タグの ``white`` は対象にしない（白紙化を招くのは単独指定のため）。
@@ -35,12 +35,14 @@ BLANK_RISK_TAGS: frozenset[str] = frozenset(
 )
 
 # 曖昧な背景指定 → booruタグへの寄せ替え。被写体を消さず意図（背景指定）を残す。
+SAFE_SIMPLE_BACKGROUND = "simple background, visible subject, clear foreground"
 BOORU_REPLACEMENTS: dict[str, str] = {
-    "white background": "simple_background",
-    "plain background": "simple_background",
-    "blank background": "simple_background",
-    "no background": "simple_background",
-    "solid white background": "simple_background",
+    "white background": SAFE_SIMPLE_BACKGROUND,
+    "empty background": SAFE_SIMPLE_BACKGROUND,
+    "plain background": SAFE_SIMPLE_BACKGROUND,
+    "blank background": SAFE_SIMPLE_BACKGROUND,
+    "no background": SAFE_SIMPLE_BACKGROUND,
+    "solid white background": SAFE_SIMPLE_BACKGROUND,
 }
 
 

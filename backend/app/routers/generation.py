@@ -22,6 +22,7 @@ from ..mutation import (
     mark_page_dirty,
 )
 from ..prompt_composer import compose_panel_prompts
+from ..prompt_normalizer import normalize_prompt
 from ..rendering import RenderInputChangedError, asset_to_id
 from ..schemas import (
     BatchGenerationJobCreate,
@@ -211,33 +212,115 @@ async def create_batch_generation_jobs(
 
 
 @router.post(
+    "/api/projects/{project_id}/generation-jobs/recommended-regeneration",
+    response_model=ProjectMutationResponse[BatchGenerationJobResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+    operation_id="regenerate_recommended_panels",
+)
+async def regenerate_recommended_panels(
+    project_id: str,
+    request: Request,
+    revision: int,
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
+    """preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
+
+    白紙はpromptを整理してから、低彩度・小被写体はseedを変えて別候補を狙う。対象が無ければ404。
+    """
+    return await _queue_recommended_regeneration(
+        project_id,
+        request,
+        revision,
+        {"empty_panel_image", "monochrome_panel", "subject_too_small"},
+    )
+
+
+@router.post(
     "/api/projects/{project_id}/generation-jobs/blank",
     response_model=ProjectMutationResponse[BatchGenerationJobResult],
     responses=PROJECT_MUTATION_ERROR_RESPONSES,
+    operation_id="regenerate_blank_panels",
+    deprecated=True,
 )
 async def regenerate_blank_panels(
     project_id: str,
     request: Request,
     revision: int,
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
-    """preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+    """非推奨。白紙コマ(empty_panel_image)だけを再生成する旧エンドポイント。
 
-    seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+    旧契約のまま白紙のみを対象にし、低彩度・小被写体を含む推奨3種は新エンドポイント
+    ``/generation-jobs/recommended-regeneration`` を使う。互換のため当面残す。
     """
+    return await _queue_recommended_regeneration(
+        project_id, request, revision, {"empty_panel_image"}
+    )
+
+
+async def _queue_recommended_regeneration(
+    project_id: str,
+    request: Request,
+    revision: int,
+    regen_codes: set[str],
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
     settings = request.app.state.settings
-    manga = request.app.state.mutation.require_revision(project_id, revision).manga
-    issues = preflight_module.preflight_project(manga, settings.export_dir)
-    blank_ids = [
-        issue.panel_id for issue in issues if issue.code == "empty_panel_image" and issue.panel_id
-    ]
-    target_ids = list(dict.fromkeys(blank_ids))
+    snapshot = request.app.state.mutation.require_revision(project_id, revision)
+    issues = preflight_module.preflight_project(snapshot.manga, settings.export_dir)
+    target_ids = list(
+        dict.fromkeys(
+            issue.panel_id for issue in issues if issue.code in regen_codes and issue.panel_id
+        )
+    )
     if not target_ids:
-        raise HTTPException(status_code=404, detail="白紙コマが見つかりません")
+        raise HTTPException(status_code=404, detail="再生成推奨コマが見つかりません")
+
+    blank_ids = {
+        issue.panel_id for issue in issues if issue.code == "empty_panel_image" and issue.panel_id
+    }
+
+    def blank_prompts_need_cleanup(manga) -> bool:
+        for page in manga.pages:
+            for panel in page.panels:
+                if panel.panel_id not in blank_ids:
+                    continue
+                for attr in ("prompt", "composition_notes"):
+                    if normalize_prompt(getattr(panel, attr)).changed:
+                        return True
+                if normalize_prompt(panel.generation.prompt).changed:
+                    return True
+        return False
+
+    def clean_blank_prompts(manga):
+        changed_pages: set[int] = set()
+        for page in manga.pages:
+            for panel in page.panels:
+                if panel.panel_id not in blank_ids:
+                    continue
+                changed = False
+                for attr in ("prompt", "composition_notes"):
+                    result = normalize_prompt(getattr(panel, attr))
+                    if result.changed:
+                        setattr(panel, attr, result.prompt)
+                        changed = True
+                gen_result = normalize_prompt(panel.generation.prompt)
+                if gen_result.changed:
+                    panel.generation.prompt = gen_result.prompt
+                    changed = True
+                if changed:
+                    mark_page_dirty(page)
+                    changed_pages.add(page.page)
+        return sorted(changed_pages)
+
+    if blank_ids and blank_prompts_need_cleanup(snapshot.manga):
+        cleaned = request.app.state.mutation.mutate_user(
+            project_id, expected_revision=revision, mutate=clean_blank_prompts
+        )
+        revision = cleaned.project.revision
+
     jobs = request.app.state.generation.start(
         project_id,
         target_ids,
         1,
-        "白紙コマの再生成キューへ登録しました",
+        "再生成推奨コマのキューへ登録しました。再生成後も白紙ならprompt修正が必要です",
         skip_active=True,
         expected_revision=revision,
         randomize_seed=True,

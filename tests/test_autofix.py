@@ -46,6 +46,21 @@ def test_autofix_strips_blank_risk_prompt() -> None:
     assert not remaining
 
 
+def test_autofix_strips_blank_risk_generation_prompt() -> None:
+    panel = Panel(
+        panel_id="p1",
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        shot="medium",
+        characters=["a"],
+    )
+    panel.generation.prompt = "1girl, white background"
+    project = _project(panel)
+    autofix_manga(project)
+    prompt = project.pages[0].panels[0].generation.prompt
+    assert "white background" not in prompt
+    assert "visible subject" in prompt
+
+
 def test_autofix_converts_monologue_cloud_to_caption() -> None:
     panel = Panel(
         panel_id="p1",

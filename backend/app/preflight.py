@@ -713,7 +713,7 @@ def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
     for panel in page.panels:
         hits: list[str] = []
-        for text in (panel.prompt, panel.composition_notes):
+        for text in (panel.prompt, panel.composition_notes, panel.generation.prompt):
             hits.extend(blank_risk_tags(text))
         if hits:
             unique = list(dict.fromkeys(hits))
@@ -727,7 +727,7 @@ def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
                     category="image_quality",
                     suggestion=(
                         "white/blank/empty space等の単独指定を除去し、背景指定はsimple_background"
-                        "等のbooruタグへ寄せてください"
+                        "等に被写体維持指定を足したタグへ寄せてください"
                     ),
                     fixable=True,
                 )
@@ -776,11 +776,54 @@ def _check_silent_panels(page: Page) -> list[PreflightIssue]:
     return []
 
 
+# 軸平行な矩形とみなす座標一致の許容差（ページ正規化座標）。
+_RECT_EPS = 0.005
+
+
+def _approx_two_levels(values: list[float], eps: float = _RECT_EPS) -> list[float] | None:
+    """値が許容差内で2水準に収まればその代表値2つを返す。3水準以上ならNone。"""
+    levels: list[float] = []
+    for value in sorted(values):
+        if not levels or abs(value - levels[-1]) > eps:
+            levels.append(value)
+    return levels if len(levels) == 2 else None
+
+
+def _frame_is_axis_aligned_rect(points: list[tuple[float, float]]) -> bool:
+    """頂点順・巻き方向に依存せず、軸平行な矩形（4隅）かどうかを判定する。
+
+    bboxとの一致ではなく「矩形かどうか」で見るため、裁ち落としでbboxより外へ広がる
+    通常の矩形コマを変形コマと誤判定しない（領域: レイアウト品質）。
+    """
+    if len(points) != 4:
+        return False
+    x_levels = _approx_two_levels([px for px, _py in points])
+    y_levels = _approx_two_levels([py for _px, py in points])
+    if x_levels is None or y_levels is None:
+        return False
+    # 4頂点が2つのx水準・2つのy水準の異なる組み合わせ（=4隅）を1つずつ占めること。
+    corners = set()
+    for px, py in points:
+        xi = 0 if abs(px - x_levels[0]) <= abs(px - x_levels[1]) else 1
+        yi = 0 if abs(py - y_levels[0]) <= abs(py - y_levels[1]) else 1
+        corners.add((xi, yi))
+    return len(corners) == 4
+
+
+def _frame_is_deformed(panel: Panel) -> bool:
+    """コマ枠が軸平行な矩形でない（=演出意図を要する変形コマ）か。"""
+    if not panel.frame_points:
+        return False
+    return not _frame_is_axis_aligned_rect(panel.frame_points)
+
+
 def _check_panel_shapes(page: Page) -> list[PreflightIssue]:
-    """演出意図のない変形コマ(shape_points)を警告する。"""
+    """演出意図のない変形コマ(frame_points/旧shape_points)を警告する。"""
     issues: list[PreflightIssue] = []
     for panel in page.panels:
-        if panel.shape_points and not panel_shape_allowed(panel.role, panel.composition_notes):
+        if (panel.shape_points or _frame_is_deformed(panel)) and not panel_shape_allowed(
+            panel.role, panel.composition_notes
+        ):
             issues.append(
                 PreflightIssue(
                     level="warning",
@@ -939,7 +982,9 @@ def _check_image_metrics(
                     page=page.page,
                     panel_id=panel.panel_id,
                     category="image_quality",
-                    suggestion="被写体を大きく配置する構図・crop・promptへ調整してください",
+                    suggestion=(
+                        "被写体を大きく描いた画像へ再生成するか、構図・promptを調整してください"
+                    ),
                     fixable=False,
                 )
             )

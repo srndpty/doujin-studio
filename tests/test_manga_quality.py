@@ -884,9 +884,10 @@ def test_script_to_manga_shapes_only_motivated_panels() -> None:
     )
     manga = story.script_to_manga(script, base)
     panels = manga.pages[0].panels
-    # 見せ場roleかつ動き・衝撃の意図があるコマだけが変形する。
-    assert panels[0].shape_points is not None
-    assert panels[1].shape_points is None
+    # 見せ場roleかつ動き・衝撃の意図があるコマだけがframe_pointsで変形する。
+    assert panels[0].frame_points is not None
+    assert panels[0].shape_points is None
+    assert panels[1].frame_points is None
 
 
 def test_preflight_flags_unmotivated_shape() -> None:
@@ -897,6 +898,34 @@ def test_preflight_flags_unmotivated_shape() -> None:
     # 動機のある変形は警告しない。
     motivated = _quality_panel(role="action", composition_notes="爆発の勢い", shape_points=slant)
     assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(motivated))
+
+
+def test_preflight_allows_bleed_rectangle_frame(tmp_path) -> None:
+    """bboxより外へ広がる通常の軸平行矩形コマは変形扱いしない（領域1）。"""
+    # bbox=(0.05,0.05,0.9,0.9)に対し、裁ち落としで上端・右端をページ外(-0.05,1.05)へ広げた矩形。
+    bleed_rect = [(-0.05, -0.05), (1.05, -0.05), (1.05, 0.95), (-0.05, 0.95)]
+    panel = _quality_panel(role="dialogue", frame_points=bleed_rect)
+    # 頂点順を回した（巻き方向違い・始点違い）矩形でも誤判定しないこと。
+    rotated = _quality_panel(
+        role="dialogue", frame_points=[bleed_rect[2], bleed_rect[3], bleed_rect[0], bleed_rect[1]]
+    )
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(panel))
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(rotated))
+
+
+def test_panel_normalizes_shape_points_when_frame_points_present() -> None:
+    """frame_pointsとshape_pointsが両方ある旧データはshape_pointsをNoneへ正規化する（領域2）。"""
+    slant = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
+    rect_frame = [(0.05, 0.05), (0.95, 0.05), (0.95, 0.95), (0.05, 0.95)]
+    panel = _quality_panel(role="dialogue", frame_points=rect_frame, shape_points=slant)
+    # frame_pointsが正本。旧shape_pointsは破棄され、矩形のframe_pointsで変形警告も出ない。
+    assert panel.shape_points is None
+    assert panel.frame_points == [(x, y) for x, y in rect_frame]
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(panel))
+    # validate→dump→validateで安定（shape_pointsは復活しない）。
+    reparsed = Panel.model_validate(panel.model_dump())
+    assert reparsed.shape_points is None
+    assert reparsed.frame_points == panel.frame_points
 
 
 def test_preflight_flags_tail_not_pointing_to_speaker() -> None:
@@ -941,7 +970,9 @@ def test_image_metrics_subject_too_small(tmp_path) -> None:
     path = tmp_path / "small.png"
     image.save(path)
     issues = _quality_issues(_image_panel(path))
-    assert any(i.code == "subject_too_small" for i in issues)
+    small = [i for i in issues if i.code == "subject_too_small"]
+    assert small and not small[0].fixable
+    assert "再生成" in small[0].suggestion
     assert not any(i.code == "empty_panel_image" for i in issues)
 
 

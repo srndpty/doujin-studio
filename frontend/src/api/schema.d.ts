@@ -525,6 +525,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/generation-jobs/recommended-regeneration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Recommended Panels
+         * @description preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
+         *
+         *     白紙はpromptを整理してから、低彩度・小被写体はseedを変えて別候補を狙う。対象が無ければ404。
+         */
+        post: operations["regenerate_recommended_panels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/generation-jobs/blank": {
         parameters: {
             query?: never;
@@ -536,11 +558,13 @@ export interface paths {
         put?: never;
         /**
          * Regenerate Blank Panels
-         * @description preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+         * @deprecated
+         * @description 非推奨。白紙コマ(empty_panel_image)だけを再生成する旧エンドポイント。
          *
-         *     seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+         *     旧契約のまま白紙のみを対象にし、低彩度・小被写体を含む推奨3種は新エンドポイント
+         *     ``/generation-jobs/recommended-regeneration`` を使う。互換のため当面残す。
          */
-        post: operations["regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post"];
+        post: operations["regenerate_blank_panels"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3914,7 +3938,49 @@ export interface operations {
             };
         };
     };
-    regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post: {
+    regenerate_recommended_panels: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMutationResponse_BatchGenerationJobResult_"];
+                };
+            };
+            /** @description revision競合、または通常の更新競合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"] | components["schemas"]["ProjectRevisionConflictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_blank_panels: {
         parameters: {
             query: {
                 revision: number;

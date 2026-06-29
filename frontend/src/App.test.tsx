@@ -1539,6 +1539,7 @@ describe("品質ゲートの制作フロー", () => {
     fireEvent.click(await screen.findByText("品質テスト"));
     // 要修正コマ一覧に品質警告が出る。
     const issue = await screen.findByText("被写体が小さすぎます（p02_01）");
+    expect(screen.getByText("再生成推奨")).toBeVisible();
     // 初期はページ1。ページ2のコマp02_01はまだ表示されていない。
     expect(screen.queryByText("p02_01")).toBeNull();
     // 警告クリックでページ2・コマp02_01へ移動する（コマ一覧と選択中コマに現れる）。
