@@ -23,7 +23,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: uv run diff-cover reports/coverage/backend.xml --compare-branch=origin/${{ github.base_ref }} --fail-under=85
       - run: uv run pip-audit
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: backend-coverage
@@ -57,7 +57,7 @@ jobs:
       - run: git diff --exit-code -- frontend/src/api/
       - run: npm run check
         working-directory: frontend
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: frontend-coverage
@@ -82,7 +82,7 @@ jobs:
         env:
           IMAGE_BACKEND: stub
           DATABASE_URL: sqlite:///data/e2e.db
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-failure
