@@ -11,9 +11,11 @@ from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import _panel_box_px, compute_bubble_layout
 from backend.app.rendering import build_production_status
 from backend.app.schemas import (
+    MAX_CROP_SCALE,
     BalloonTail,
     Character,
     Dialogue,
+    GenerationInfo,
     MangaProject,
     Page,
     Panel,
@@ -900,6 +902,34 @@ def test_preflight_flags_unmotivated_shape() -> None:
     assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(motivated))
 
 
+def test_preflight_allows_bleed_rectangle_frame(tmp_path) -> None:
+    """bboxより外へ広がる通常の軸平行矩形コマは変形扱いしない（領域1）。"""
+    # bbox=(0.05,0.05,0.9,0.9)に対し、裁ち落としで上端・右端をページ外(-0.05,1.05)へ広げた矩形。
+    bleed_rect = [(-0.05, -0.05), (1.05, -0.05), (1.05, 0.95), (-0.05, 0.95)]
+    panel = _quality_panel(role="dialogue", frame_points=bleed_rect)
+    # 頂点順を回した（巻き方向違い・始点違い）矩形でも誤判定しないこと。
+    rotated = _quality_panel(
+        role="dialogue", frame_points=[bleed_rect[2], bleed_rect[3], bleed_rect[0], bleed_rect[1]]
+    )
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(panel))
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(rotated))
+
+
+def test_panel_normalizes_shape_points_when_frame_points_present() -> None:
+    """frame_pointsとshape_pointsが両方ある旧データはshape_pointsをNoneへ正規化する（領域2）。"""
+    slant = [(0.12, 0.0), (1.0, 0.0), (0.88, 1.0), (0.0, 1.0)]
+    rect_frame = [(0.05, 0.05), (0.95, 0.05), (0.95, 0.95), (0.05, 0.95)]
+    panel = _quality_panel(role="dialogue", frame_points=rect_frame, shape_points=slant)
+    # frame_pointsが正本。旧shape_pointsは破棄され、矩形のframe_pointsで変形警告も出ない。
+    assert panel.shape_points is None
+    assert panel.frame_points == [(x, y) for x, y in rect_frame]
+    assert not any(i.code == "unmotivated_panel_shape" for i in _quality_issues(panel))
+    # validate→dump→validateで安定（shape_pointsは復活しない）。
+    reparsed = Panel.model_validate(panel.model_dump())
+    assert reparsed.shape_points is None
+    assert reparsed.frame_points == panel.frame_points
+
+
 def test_preflight_flags_tail_not_pointing_to_speaker() -> None:
     far = Dialogue(speaker="mika", text="やあ", on_screen=True, tail=BalloonTail(tip=(0.95, 0.05)))
     panel = _quality_panel(
@@ -944,6 +974,18 @@ def test_image_metrics_subject_too_small(tmp_path) -> None:
     issues = _quality_issues(_image_panel(path))
     assert any(i.code == "subject_too_small" and i.fixable for i in issues)
     assert not any(i.code == "empty_panel_image" for i in issues)
+
+
+def test_subject_too_small_not_fixable_at_crop_limit(tmp_path) -> None:
+    """crop拡大が上限のコマは自動修正不可として手動suggestionへ切り替える（領域6）。"""
+    image = PILImage.new("RGB", (128, 128), (255, 255, 255))
+    image.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+    path = tmp_path / "small_limit.png"
+    image.save(path)
+    panel = _image_panel(path, generation=GenerationInfo(crop_scale=MAX_CROP_SCALE))
+    issues = [i for i in _quality_issues(panel) if i.code == "subject_too_small"]
+    assert issues and all(not i.fixable for i in issues)
+    assert "上限" in issues[0].suggestion
 
 
 def test_image_metrics_monochrome_panel(tmp_path) -> None:

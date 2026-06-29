@@ -1923,11 +1923,11 @@
         }
       }
     },
-    "/api/projects/{project_id}/generation-jobs/blank": {
+    "/api/projects/{project_id}/generation-jobs/recommended-regeneration": {
       "post": {
-        "summary": "Regenerate Blank Panels",
-        "description": "preflightで再生成推奨のコマを再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
-        "operationId": "regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post",
+        "summary": "Regenerate Recommended Panels",
+        "description": "preflightで再生成推奨のコマ（白紙・低彩度）を再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
+        "operationId": "regenerate_recommended_panels",
         "parameters": [
           {
             "name": "project_id",
@@ -1972,7 +1972,75 @@
                       "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
                     }
                   ],
-                  "title": "Response 409 Regenerate Blank Panels Api Projects  Project Id  Generation Jobs Blank Post"
+                  "title": "Response 409 Regenerate Recommended Panels"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/generation-jobs/blank": {
+      "post": {
+        "summary": "Regenerate Blank Panels",
+        "description": "非推奨。``/generation-jobs/recommended-regeneration`` の旧エイリアス。\n\n対象は白紙(empty_panel_image)だけでなく低彩度(monochrome_panel)も含むため、\n名称に意味を合わせた新エンドポイントへ移行する。互換のため当面残す。",
+        "operationId": "regenerate_blank_panels",
+        "deprecated": true,
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMutationResponse_BatchGenerationJobResult_"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "revision競合、または通常の更新競合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectRevisionConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Regenerate Blank Panels"
                 }
               }
             }

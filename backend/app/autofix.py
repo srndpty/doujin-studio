@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from .preflight import TAIL_SPEAKER_MAX_DISTANCE, _speaker_center
 from .prompt_normalizer import normalize_prompt
-from .schemas import MangaProject, Page, PreflightIssue
+from .schemas import MAX_CROP_SCALE, MangaProject, Page, PreflightIssue
 from .story import normalize_sfx_text
 
 
@@ -140,12 +140,13 @@ def _fix_subject_too_small(page: Page, issues: list[PreflightIssue] | None) -> l
         if panel.panel_id not in target_ids:
             continue
         before = panel.generation.crop_scale
-        after = min(4.0, max(1.35, before * 1.25))
+        after = min(MAX_CROP_SCALE, max(1.35, before * 1.25))
         if after <= before:
             continue
+        # crop倍率だけ上げ、利用者が調整した注視点(offset/focal)は維持する。被写体が端に
+        # あるコマでoffsetを0へ戻すと拡大で被写体を画面外へ追い出すため（領域5）。
+        # offset/focalの許容範囲はscaleに依存しない(-1..1 / 0..1)ためclampは不要。
         panel.generation.crop_scale = after
-        panel.generation.crop_offset_x = 0.0
-        panel.generation.crop_offset_y = 0.0
         changes.append(
             AutofixChange(
                 page=page.page,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from backend.app import preflight
 from backend.app.autofix import autofix_manga
 from backend.app.schemas import (
+    MAX_CROP_SCALE,
     BalloonTail,
     Character,
     Dialogue,
@@ -140,5 +141,33 @@ def test_autofix_enlarges_crop_for_subject_too_small_issue() -> None:
     autofix_manga(project, issues=[issue])
     generation = project.pages[0].panels[0].generation
     assert generation.crop_scale > 1.0
-    assert generation.crop_offset_x == 0.0
-    assert generation.crop_offset_y == 0.0
+
+
+def test_autofix_keeps_manual_crop_offset_when_enlarging() -> None:
+    """端に寄せた被写体のoffsetを維持したままcropだけ拡大する（領域5）。"""
+    panel = Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="m")
+    panel.generation.crop_offset_x = 0.4
+    panel.generation.crop_offset_y = -0.3
+    project = _project(panel)
+    issue = PreflightIssue(
+        level="warning", code="subject_too_small", message="小さい", page=1, panel_id="p1"
+    )
+    autofix_manga(project, issues=[issue])
+    generation = project.pages[0].panels[0].generation
+    assert generation.crop_scale > 1.0
+    # offsetは0へ戻さず維持する（被写体を画面外へ追い出さない）。
+    assert generation.crop_offset_x == 0.4
+    assert generation.crop_offset_y == -0.3
+
+
+def test_autofix_noop_for_subject_too_small_at_crop_limit() -> None:
+    """crop上限のコマはautofix対象でも変更されない（領域6と整合）。"""
+    panel = Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="m")
+    panel.generation.crop_scale = MAX_CROP_SCALE
+    project = _project(panel)
+    issue = PreflightIssue(
+        level="warning", code="subject_too_small", message="小さい", page=1, panel_id="p1"
+    )
+    changes = autofix_manga(project, issues=[issue])
+    assert not any(change.code == "subject_too_small" for change in changes)
+    assert project.pages[0].panels[0].generation.crop_scale == MAX_CROP_SCALE

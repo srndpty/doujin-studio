@@ -41,6 +41,21 @@ def test_frame_points_derive_uses_shape_points_in_page_coords() -> None:
     assert flat == pytest.approx([coord for point in expected for coord in point])
 
 
+def test_shape_points_migration_preserves_bbox() -> None:
+    """旧shape_points移行ではbboxを縮めない。bbox相対の子要素（吹き出し・crop・安全領域）
+    のページ座標が移動しないようにするため（領域3）。"""
+    # bbox内側だけを使う多角形（端に触れない）。旧仕様ならbboxがこの外接矩形へ縮む。
+    inner_poly = [(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]
+    panel = _panel(bbox=(0.1, 0.1, 0.6, 0.6), shape_points=inner_poly)
+    # bboxは元のまま。frame_pointsはページ座標へ変換される。
+    assert panel.bbox == (0.1, 0.1, 0.6, 0.6)
+    assert panel.shape_points is None
+    assert panel.frame_points is not None
+    # _panel_box_px（bbox基準）は移行前と同じ領域を指す。
+    box_before = _panel_box_px(_panel(bbox=(0.1, 0.1, 0.6, 0.6)))
+    assert _panel_box_px(panel) == box_before
+
+
 def test_frame_points_canonical_when_set() -> None:
     poly = [(0.0, 0.0), (1.05, 0.0), (1.05, 1.05), (0.0, 1.0)]
     panel = _panel(frame_points=poly)

@@ -193,19 +193,19 @@ export function App() {
     () => [...(productionStatus?.quality_errors ?? []), ...(productionStatus?.quality_warnings ?? [])],
     [productionStatus]
   );
+  // 件数の分類はqualityIssueAction(issue)を唯一の根拠にする。表示ラベルと集計がずれて、
+  // 同一issueが「自動修正」と「再生成推奨」へ二重計上されるのを防ぐ（領域9）。
   const fixableQualityCount = useMemo(
-    () => projectQualityIssues.filter((issue) => issue.fixable).length,
+    () => projectQualityIssues.filter((issue) => qualityIssueAction(issue) === "autofix").length,
     [projectQualityIssues]
   );
   const regenerateQualityCount = useMemo(
-    () =>
-      projectQualityIssues.filter((issue) => ["empty_panel_image", "monochrome_panel"].includes(issue.code))
-        .length,
+    () => projectQualityIssues.filter((issue) => qualityIssueAction(issue) === "regenerate").length,
     [projectQualityIssues]
   );
-  const manualQualityCount = Math.max(
-    0,
-    projectQualityIssues.length - fixableQualityCount - regenerateQualityCount
+  const manualQualityCount = useMemo(
+    () => projectQualityIssues.filter((issue) => qualityIssueAction(issue) === "manual").length,
+    [projectQualityIssues]
   );
   // 「未完成のみ」は未採用コマに加え、品質エラー・警告コマも含める（要修正コマへ素早く戻る）。
   const visiblePanels = useMemo(
@@ -1068,7 +1068,10 @@ export function App() {
     await runTask(async () => {
       const projectId = selected.id;
       const response = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
-        withRevision(`/api/projects/${projectId}/generation-jobs/blank`, selected.revision)
+        withRevision(
+          `/api/projects/${projectId}/generation-jobs/recommended-regeneration`,
+          selected.revision
+        )
       );
       const adopted = await adoptMutationResponse(response);
       if (!adopted.applied || !adopted.project) return;

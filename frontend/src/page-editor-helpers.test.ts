@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bboxFromFramePoints,
+  framePointsError,
   panelFramePoints,
   rectFramePoints,
   transformFramePoints
@@ -55,6 +56,43 @@ describe("ページ編集ヘルパー", () => {
     expect(result[1]).toBeCloseTo(0.1);
     expect(result[2]).toBeCloseTo(1);
     expect(result[3]).toBeCloseTo(0.9);
+  });
+
+  it("不正なコマ枠（自己交差・ゼロ面積・点数・範囲）を検出する", () => {
+    // bboxより外へ広がる通常の4点矩形は妥当（裁ち落とし）。
+    expect(
+      framePointsError([
+        [-0.05, -0.05],
+        [1.05, -0.05],
+        [1.05, 0.95],
+        [-0.05, 0.95]
+      ])
+    ).toBeNull();
+    // 自己交差（面積はゼロでない五芒星順）。
+    expect(
+      framePointsError([
+        [0.5, 0.02],
+        [0.69, 0.9],
+        [0.04, 0.36],
+        [0.96, 0.36],
+        [0.31, 0.9]
+      ])
+    ).toMatch(/自己交差/);
+    // 点数不足。
+    expect(
+      framePointsError([
+        [0, 0],
+        [1, 1]
+      ])
+    ).toMatch(/3〜12/);
+    // 範囲外。
+    expect(
+      framePointsError([
+        [0, 0],
+        [1.5, 0],
+        [1, 1]
+      ])
+    ).toMatch(/-0.05〜1.05/);
   });
 
   it("変形コマの点を裁ち落とし境界内に丸める", () => {

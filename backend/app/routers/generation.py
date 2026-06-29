@@ -212,19 +212,48 @@ async def create_batch_generation_jobs(
 
 
 @router.post(
+    "/api/projects/{project_id}/generation-jobs/recommended-regeneration",
+    response_model=ProjectMutationResponse[BatchGenerationJobResult],
+    responses=PROJECT_MUTATION_ERROR_RESPONSES,
+    operation_id="regenerate_recommended_panels",
+)
+async def regenerate_recommended_panels(
+    project_id: str,
+    request: Request,
+    revision: int,
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
+    """preflightで再生成推奨のコマ（白紙・低彩度）を再生成キューへ積む。
+
+    白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
+    """
+    return await _queue_recommended_regeneration(project_id, request, revision)
+
+
+@router.post(
     "/api/projects/{project_id}/generation-jobs/blank",
     response_model=ProjectMutationResponse[BatchGenerationJobResult],
     responses=PROJECT_MUTATION_ERROR_RESPONSES,
+    operation_id="regenerate_blank_panels",
+    deprecated=True,
 )
 async def regenerate_blank_panels(
     project_id: str,
     request: Request,
     revision: int,
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
-    """preflightで再生成推奨のコマを再生成キューへ積む。
+    """非推奨。``/generation-jobs/recommended-regeneration`` の旧エイリアス。
 
-    白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
+    対象は白紙(empty_panel_image)だけでなく低彩度(monochrome_panel)も含むため、
+    名称に意味を合わせた新エンドポイントへ移行する。互換のため当面残す。
     """
+    return await _queue_recommended_regeneration(project_id, request, revision)
+
+
+async def _queue_recommended_regeneration(
+    project_id: str,
+    request: Request,
+    revision: int,
+) -> ProjectMutationResponse[BatchGenerationJobResult]:
     settings = request.app.state.settings
     snapshot = request.app.state.mutation.require_revision(project_id, revision)
     issues = preflight_module.preflight_project(snapshot.manga, settings.export_dir)

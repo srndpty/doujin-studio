@@ -1723,6 +1723,14 @@ button.primary {
   display: grid;
   gap: 8px;
 }
+.polygon-error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fbe9e7;
+  color: #b3261e;
+  font-size: 12px;
+}
 
 @media (max-width: 980px) {
   .page-editor {

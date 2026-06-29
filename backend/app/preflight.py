@@ -22,7 +22,15 @@ from .renderer import (
     resolve_dialogue_layout,
     sfx_bbox_px,
 )
-from .schemas import Character, Dialogue, MangaProject, Page, Panel, PreflightIssue
+from .schemas import (
+    MAX_CROP_SCALE,
+    Character,
+    Dialogue,
+    MangaProject,
+    Page,
+    Panel,
+    PreflightIssue,
+)
 from .story import normalize_sfx_text, panel_shape_allowed
 
 # 画像メトリクス検査のしきい値。
@@ -776,24 +784,52 @@ def _check_silent_panels(page: Page) -> list[PreflightIssue]:
     return []
 
 
-def _frame_differs_from_bbox(panel: Panel) -> bool:
+# 軸平行な矩形とみなす座標一致の許容差（ページ正規化座標）。
+_RECT_EPS = 0.005
+
+
+def _approx_two_levels(values: list[float], eps: float = _RECT_EPS) -> list[float] | None:
+    """値が許容差内で2水準に収まればその代表値2つを返す。3水準以上ならNone。"""
+    levels: list[float] = []
+    for value in sorted(values):
+        if not levels or abs(value - levels[-1]) > eps:
+            levels.append(value)
+    return levels if len(levels) == 2 else None
+
+
+def _frame_is_axis_aligned_rect(points: list[tuple[float, float]]) -> bool:
+    """頂点順・巻き方向に依存せず、軸平行な矩形（4隅）かどうかを判定する。
+
+    bboxとの一致ではなく「矩形かどうか」で見るため、裁ち落としでbboxより外へ広がる
+    通常の矩形コマを変形コマと誤判定しない（領域: レイアウト品質）。
+    """
+    if len(points) != 4:
+        return False
+    x_levels = _approx_two_levels([px for px, _py in points])
+    y_levels = _approx_two_levels([py for _px, py in points])
+    if x_levels is None or y_levels is None:
+        return False
+    # 4頂点が2つのx水準・2つのy水準の異なる組み合わせ（=4隅）を1つずつ占めること。
+    corners = set()
+    for px, py in points:
+        xi = 0 if abs(px - x_levels[0]) <= abs(px - x_levels[1]) else 1
+        yi = 0 if abs(py - y_levels[0]) <= abs(py - y_levels[1]) else 1
+        corners.add((xi, yi))
+    return len(corners) == 4
+
+
+def _frame_is_deformed(panel: Panel) -> bool:
+    """コマ枠が軸平行な矩形でない（=演出意図を要する変形コマ）か。"""
     if not panel.frame_points:
         return False
-    x, y, w, h = panel.bbox
-    rect = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
-    if len(panel.frame_points) != 4:
-        return True
-    return any(
-        math.hypot(px - rx, py - ry) > 0.005
-        for (px, py), (rx, ry) in zip(panel.frame_points, rect, strict=True)
-    )
+    return not _frame_is_axis_aligned_rect(panel.frame_points)
 
 
 def _check_panel_shapes(page: Page) -> list[PreflightIssue]:
     """演出意図のない変形コマ(frame_points/旧shape_points)を警告する。"""
     issues: list[PreflightIssue] = []
     for panel in page.panels:
-        if (panel.shape_points or _frame_differs_from_bbox(panel)) and not panel_shape_allowed(
+        if (panel.shape_points or _frame_is_deformed(panel)) and not panel_shape_allowed(
             panel.role, panel.composition_notes
         ):
             issues.append(
@@ -946,6 +982,9 @@ def _check_image_metrics(
             and not is_non_character_mode(panel)
             and metrics["subject_bbox_ratio"] < SUBJECT_BBOX_MIN_RATIO
         ):
+            # crop拡大が上限に達していると自動修正は何もできない。その場合は手動対応の
+            # suggestionへ切り替え、fixable=Falseにして「自動修正可」の偽カウントを防ぐ（領域6）。
+            at_crop_limit = panel.generation.crop_scale >= MAX_CROP_SCALE
             issues.append(
                 PreflightIssue(
                     level="warning",
@@ -954,8 +993,13 @@ def _check_image_metrics(
                     page=page.page,
                     panel_id=panel.panel_id,
                     category="image_quality",
-                    suggestion="被写体を大きく配置する構図・crop・promptへ調整してください",
-                    fixable=True,
+                    suggestion=(
+                        "cropは拡大上限です。被写体を大きく描いた画像へ再生成するか、構図・"
+                        "promptを調整してください"
+                        if at_crop_limit
+                        else "被写体を大きく配置する構図・crop・promptへ調整してください"
+                    ),
+                    fixable=not at_crop_limit,
                 )
             )
         if (

@@ -28,6 +28,7 @@ import {
   bboxFromFramePoints,
   clamp01,
   clampFrame,
+  framePointsError,
   panelFramePoints,
   rectFramePoints,
   snap,
@@ -1259,6 +1260,7 @@ function PolygonControls({
   onChange: (points: [number, number][]) => void;
 }) {
   const points = panelFramePoints(panel);
+  const geometryError = framePointsError(points);
   const patchPoint = (pointIndex: number, axis: 0 | 1, value: number) => {
     const next = points.map(([x, y]) => [x, y] as [number, number]);
     next[pointIndex] = [...next[pointIndex]] as [number, number];
@@ -1267,6 +1269,11 @@ function PolygonControls({
   };
   return (
     <div className="polygon-editor">
+      {geometryError ? (
+        <p className="polygon-error" role="alert">
+          コマ枠が不正です: {geometryError}
+        </p>
+      ) : null}
       {points.map(([x, y], index) => (
         <div className="settings-grid" key={`${index}-${x}-${y}`}>
           <strong>頂点 {index + 1}</strong>
