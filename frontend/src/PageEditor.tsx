@@ -1078,9 +1078,9 @@ function PreviewTypesetText({ layout }: { layout: PreviewDialogueLayout }) {
           <Text
             key={`${lineIndex}-${lineText}`}
             x={layout.x}
-            y={startTop + layout.grid.cell * lineIndex}
+            y={startTop + layout.grid.advance * lineIndex}
             width={layout.width}
-            height={layout.grid.cell}
+            height={layout.grid.advance}
             text={lineText}
             fontFamily={fontFamily}
             fontSize={layout.grid.fontSize}
