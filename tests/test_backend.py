@@ -4305,7 +4305,7 @@ def test_polygon_panel_is_clipped_when_rendered(tmp_path: Path) -> None:
             assert image.getpixel((600, 850))[:3] == (230, 232, 235)
 
 
-# --- レビュー対応: AutoImageBackendはworkflow不正をstubで隠さずエラー化する ---
+# --- AutoImageBackendのworkflow設定エラー ---
 
 
 def _auto_panel() -> Panel:
@@ -4349,7 +4349,7 @@ def test_auto_backend_errors_on_invalid_workflow_when_connected(
     assert not (export_dir / "proj").exists()
 
 
-# --- レビュー対応: LLM_MODEL指定時の厳密一致と接続エラー保持 ---
+# --- LLMモデル選択と接続エラー保持 ---
 
 
 def _patch_llm_status(monkeypatch: pytest.MonkeyPatch, *, connected: bool, models: list[str]):
@@ -4414,7 +4414,7 @@ def test_get_llm_status_reports_unloaded_model(monkeypatch: pytest.MonkeyPatch) 
     assert "missing-model" in status.message
 
 
-# --- レビュー対応: 削除はDBゲートを先に閉じ、成果物喪失を避ける ---
+# --- プロジェクト削除のDBゲートと成果物保護 ---
 
 
 def test_delete_project_blocks_subsequent_generation(tmp_path: Path) -> None:
@@ -4474,7 +4474,7 @@ def test_delete_project_aborts_when_fence_creation_fails(
         assert (project_dir / "keep.png").read_bytes() == b"keep"
 
 
-# --- レビュー対応: 自動生成の変形コマはslant-rightプリセット定数に揃える ---
+# --- 自動生成コマのslant-right形状定数 ---
 
 
 def test_script_to_manga_uses_slant_right_preset_constants() -> None:
@@ -4509,7 +4509,7 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
     assert xs == [0.12, 1.0, 0.88, 0.0]
 
 
-# --- 追補レビュー対応 ---
+# --- ComfyUI設定検査と削除worker競合 ---
 
 
 class _DisconnectedComfyUIClient(MockComfyUIClient):
@@ -4669,7 +4669,7 @@ def test_shape_points_rejects_self_intersection() -> None:
         )
 
 
-# --- 第3次レビュー対応 ---
+# --- 削除marker復旧とジョブ永続化 ---
 
 
 def _raise_oserror(*args, **kwargs):
@@ -4755,7 +4755,7 @@ def test_persist_reraises_real_integrity_error_when_project_exists(tmp_path: Pat
         manager.persist(job)
 
 
-# --- 第4次レビュー対応 ---
+# --- 削除sweepの境界チェックと手動cleanup案内 ---
 
 
 def test_sweep_ignores_out_of_root_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

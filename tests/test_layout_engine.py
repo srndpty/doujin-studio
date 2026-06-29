@@ -1,41 +1,21 @@
-"""Phase 2（レイアウトエンジンと読み順・再提案）のテスト。"""
+"""レイアウトエンジンと読み順・再提案のテスト。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from conftest import (
+    create_stub_project as create_generated_project,
+)
+from conftest import (
+    make_stub_client as make_client,
+)
 
 from backend.app import layout_engine, story
-from backend.app.config import Settings
-from backend.app.main import create_app
-from backend.app.schemas import MangaProject, ScriptStage
-
-
-def make_client(tmp_path: Path) -> TestClient:
-    settings = Settings(
-        database_url=f"sqlite:///{tmp_path / 'test.db'}",
-        export_dir=tmp_path / "exports",
-        image_backend="stub",
-    )
-    return TestClient(create_app(settings))
-
-
-def create_generated_project(client: TestClient) -> str:
-    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
-        "project"
-    ]["id"]
-    client.post(
-        f"/api/projects/{project_id}/generate-name?revision=0",
-        json={
-            "work_name": "作品",
-            "character_a": "春香",
-            "character_b": "千早",
-            "situation": "事務所で相談する",
-            "ending_direction": "笑って終わる",
-        },
-    )
-    return project_id
+from backend.app.schemas import (
+    MangaProject,
+    ScriptStage,
+)
 
 
 def test_build_layout_produces_valid_boxes_for_all_families() -> None:

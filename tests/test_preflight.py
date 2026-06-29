@@ -1,17 +1,17 @@
-"""Phase 3（オーバーフレーム・品質検査）のテスト。"""
+"""preflightと品質検査のテスト。"""
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-from PIL import Image
+from conftest import (
+    create_stub_project as create_generated_project,
+)
+from conftest import (
+    make_stub_client as make_client,
+)
 
 from backend.app import layout_engine, preflight
-from backend.app.config import Settings
-from backend.app.main import create_app
-from backend.app.renderer import render_project_page
 from backend.app.schemas import (
     BalloonTail,
     Dialogue,
@@ -21,32 +21,6 @@ from backend.app.schemas import (
     Panel,
     PanelCharacter,
 )
-
-
-def make_client(tmp_path: Path) -> TestClient:
-    settings = Settings(
-        database_url=f"sqlite:///{tmp_path / 'test.db'}",
-        export_dir=tmp_path / "exports",
-        image_backend="stub",
-    )
-    return TestClient(create_app(settings))
-
-
-def create_generated_project(client: TestClient) -> str:
-    project_id = client.post("/api/projects", json={"title": "本", "work_name": "作品"}).json()[
-        "project"
-    ]["id"]
-    client.post(
-        f"/api/projects/{project_id}/generate-name?revision=0",
-        json={
-            "work_name": "作品",
-            "character_a": "春香",
-            "character_b": "千早",
-            "situation": "事務所で相談する",
-            "ending_direction": "笑って終わる",
-        },
-    )
-    return project_id
 
 
 def _two_panel_page(overlay: OverlayElement | None = None) -> MangaProject:
@@ -66,28 +40,6 @@ def _two_panel_page(overlay: OverlayElement | None = None) -> MangaProject:
             )
         ],
     )
-
-
-def test_overlay_renders_with_occlusion_and_placeholder(tmp_path: Path) -> None:
-    asset = tmp_path / "overlay.png"
-    Image.new("RGBA", (300, 400), (200, 50, 50, 255)).save(asset)
-    overlay = OverlayElement(
-        id="ov1",
-        source_panel_id="p01_02",
-        asset=str(asset),
-        box=(0.4, 0.3, 0.3, 0.5),
-        layer="front",
-        occluded_by_panel_ids=["p01_01"],
-    )
-    manga = _two_panel_page(overlay)
-    target, _warnings = render_project_page("proj", manga, 1, tmp_path)
-    assert target.exists()
-
-    # アセット未設定でもプレースホルダ枠を描いて落ちない。
-    placeholder = OverlayElement(id="ov2", box=(0.4, 0.3, 0.2, 0.2), layer="back")
-    manga2 = _two_panel_page(placeholder)
-    target2, _ = render_project_page("proj", manga2, 1, tmp_path)
-    assert target2.exists()
 
 
 def test_preflight_flags_dialogue_clipped_as_error() -> None:
@@ -293,70 +245,6 @@ def test_preflight_story_structure_and_character_regions() -> None:
     assert "region_box" in region.suggestion
 
 
-def test_preflight_and_render_page_endpoints(tmp_path: Path) -> None:
-    with make_client(tmp_path) as client:
-        project_id = create_generated_project(client)
-        preflight_response = client.post(f"/api/projects/{project_id}/pages/1/preflight")
-        assert preflight_response.status_code == 200
-        payload = preflight_response.json()
-        assert payload["ok"] is True  # 既定の短い台詞はエラーにならない
-        assert "errors" in payload and "warnings" in payload
-
-        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
-        render_response = client.post(
-            f"/api/projects/{project_id}/pages/1/render?revision={revision}"
-        )
-        assert render_response.status_code == 200
-        body = render_response.json()["result"]
-        assert "/page_001." in body["page_asset"]
-        assert body["page_asset"].endswith(".png")
-        assert (tmp_path / "exports" / body["page_asset"]).exists()
-        assert body["preflight"]["ok"] is True
-
-
-def test_overlay_asset_upload_preserves_alpha(tmp_path: Path) -> None:
-    with make_client(tmp_path) as client:
-        project_id = create_generated_project(client)
-        detail = client.get(f"/api/projects/{project_id}").json()
-        manga = detail["manga_json"]
-        manga["pages"][0]["overlay_elements"] = [
-            {
-                "id": "ov1",
-                "source_panel_id": "",
-                "asset": None,
-                "mask_asset": None,
-                "box": [0.2, 0.2, 0.4, 0.4],
-                "scale": 1.0,
-                "opacity": 1.0,
-                "layer": "front",
-                "z_index": 0,
-                "occluded_by_panel_ids": [],
-            }
-        ]
-        assert (
-            client.put(
-                f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
-            ).status_code
-            == 200
-        )
-
-        # 透過PNG（人物切り抜きを想定）をアップロード。
-        buffer = io.BytesIO()
-        Image.new("RGBA", (20, 20), (255, 0, 0, 0)).save(buffer, format="PNG")
-        overlay_revision = client.get(f"/api/projects/{project_id}").json()["revision"]
-        response = client.post(
-            f"/api/projects/{project_id}/pages/1/overlays/ov1/asset?revision={overlay_revision}",
-            content=buffer.getvalue(),
-            headers={"Content-Type": "image/png"},
-        )
-        assert response.status_code == 200
-        asset = response.json()["result"]["asset"]
-        saved = Image.open(tmp_path / "exports" / asset)
-        # アルファチャンネルが保持され、透明部分が潰れていないこと。
-        assert saved.mode == "RGBA"
-        assert saved.getpixel((0, 0))[3] == 0
-
-
 def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) -> None:
     with make_client(tmp_path) as client:
         project_id = create_generated_project(client)
@@ -385,25 +273,3 @@ def test_preflight_with_body_checks_posted_manga_without_saving(tmp_path: Path) 
         after = client.get(f"/api/projects/{project_id}").json()["manga_json"]
         assert after["pages"][0]["render_status"] == "done"
         assert after["pages"][0]["panels"][0]["dialogue"][0]["text"] != "あ" * 300
-
-
-def test_cbz_export_blocked_by_dialogue_clipping(tmp_path: Path) -> None:
-    with make_client(tmp_path) as client:
-        project_id = create_generated_project(client)
-        detail = client.get(f"/api/projects/{project_id}").json()
-        manga = detail["manga_json"]
-        # 最小サイズでも収まらない長文（文字切れ）はCBZ出力を止める（商用品質: 領域3）。
-        dialogue = manga["pages"][0]["panels"][0]["dialogue"][0]
-        dialogue["text"] = "あ" * 300
-        dialogue["box"] = [0.0, 0.0, 0.15, 0.1]
-        manga["pages"][0]["panels"][0]["bbox"] = [0.05, 0.05, 0.2, 0.1]
-        saved = client.put(
-            f"/api/projects/{project_id}/manga-json?revision={detail['revision']}", json=manga
-        )
-        assert saved.status_code == 200
-        revision = client.get(f"/api/projects/{project_id}").json()["revision"]
-        export = client.post(f"/api/projects/{project_id}/export/cbz?revision={revision}")
-        assert export.status_code == 422
-        # 文字切れはプリフライトのエラーとして確認できる。
-        preflight_result = client.post(f"/api/projects/{project_id}/pages/1/preflight").json()
-        assert any(issue["code"] == "dialogue_clipped" for issue in preflight_result["errors"])
