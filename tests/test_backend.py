@@ -5340,6 +5340,41 @@ def test_regenerate_blank_panels_targets_only_blank(tmp_path: Path) -> None:
         assert response.json()["project"]["revision"] == revision_before + 1
 
 
+def test_regenerate_blank_panels_cleans_blank_risk_prompts(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(export_dir / "blank.png")
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel = manga["pages"][0]["panels"][0]
+        panel_id = panel["panel_id"]
+        panel["image_asset"] = f"{project_id}/blank.png"
+        panel["prompt"] = "1girl, blank, smile"
+        panel["composition_notes"] = "white background, desk"
+        panel["generation"]["prompt"] = "empty space, 1girl"
+        assert put_manga(client, project_id, manga).status_code == 200
+        revision_before = current_revision(client, project_id)
+
+        response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
+
+        assert response.status_code == 200, response.text
+        assert {job["panel_id"] for job in response.json()["result"]["jobs"]} == {panel_id}
+        project = response.json()["project"]
+        cleaned = project["manga_json"]["pages"][0]["panels"][0]
+        assert cleaned["prompt"] == "1girl, smile"
+        assert (
+            cleaned["composition_notes"]
+            == "simple background, visible subject, clear foreground, desk"
+        )
+        assert cleaned["generation"]["prompt"] == "1girl"
+        # prompt清掃で1回、再生成キュー登録で1回revisionが進む。
+        assert project["revision"] == revision_before + 2
+
+
 def test_recommended_regeneration_targets_subject_too_small(tmp_path: Path) -> None:
     from PIL import Image as PILImage
 
