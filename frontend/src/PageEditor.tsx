@@ -16,6 +16,13 @@ import type { Dialogue, MangaPage, MangaProject, OverlayElement, Panel, Sfx } fr
 import { computeImagePlacement, normalizeBox, overlapsWithGutter } from "./editor-geometry";
 import type { Box } from "./editor-geometry";
 import {
+  BUBBLE_INNER_PAD,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_MIN_FONT_SIZE,
+  SHAPE_INSCRIBE,
+  layoutTextGrid
+} from "./typeset-layout";
+import {
   BACKGROUND_DENSITIES,
   BALLOON_KINDS,
   KIND_DEFAULT_BALLOON,
@@ -197,6 +204,11 @@ export function PageEditor({
   } | null>(null);
   const [reviewCategory, setReviewCategory] = useState<string>("all");
   const [showRegions, setShowRegions] = useState(false);
+  // 写植プレビューの既定サイズはprojectのtypographyから供給し、最終レンダラーと判定を揃える（領域7）。
+  const typeDefaults: TypeDefaults = {
+    defaultSize: manga.typography?.default_font_size ?? DEFAULT_FONT_SIZE,
+    minSize: manga.typography?.min_font_size ?? DEFAULT_MIN_FONT_SIZE
+  };
 
   const runPreflight = async () => {
     try {
@@ -394,6 +406,7 @@ export function PageEditor({
                   key={panel.panel_id}
                   panel={panel}
                   version={assetVersion}
+                  typeDefaults={typeDefaults}
                   readingNumber={readingIndex(panel.panel_id)}
                   selected={selection?.kind === "panel" && selection.panelId === panel.panel_id}
                   registerRef={(node: Konva.Rect | null) => {
@@ -701,6 +714,7 @@ type PanelNodeProps = {
   onMoveCharacterRegion: (characterId: string, box: Box) => void;
   showTail: boolean;
   selectedDialogue: number;
+  typeDefaults: TypeDefaults;
 };
 
 function PanelNode(props: PanelNodeProps) {
@@ -889,6 +903,7 @@ function PanelNode(props: PanelNodeProps) {
           key={index}
           dialogue={dialogue}
           panelBox={[px, py, pw, ph]}
+          typeDefaults={props.typeDefaults}
           onSelect={() => props.onSelectDialogue(index)}
           onMove={(box) => props.onMoveDialogue(index, box)}
           onMoveTail={(tip) => props.onMoveTail(index, tip)}
@@ -911,6 +926,7 @@ function PanelNode(props: PanelNodeProps) {
 function DialogueNode({
   dialogue,
   panelBox,
+  typeDefaults,
   onSelect,
   onMove,
   onMoveTail,
@@ -918,6 +934,7 @@ function DialogueNode({
 }: {
   dialogue: Dialogue;
   panelBox: Box;
+  typeDefaults: TypeDefaults;
   onSelect: () => void;
   onMove: (box: Box) => void;
   onMoveTail: (tip: Point) => void;
@@ -930,7 +947,7 @@ function DialogueNode({
   const bw = box[2] * pw;
   const bh = box[3] * ph;
   const tip = dialogue.tail?.tip ?? [0.5, 0.95];
-  const layout = previewTextLayout(dialogue, bw, bh);
+  const layout = previewTextLayout(dialogue, bw, bh, typeDefaults);
   const displayText = layout.displayText;
   const burstPoints = Array.from({ length: 24 }, (_, index) => {
     const angle = (index / 24) * Math.PI * 2;
@@ -1013,41 +1030,39 @@ function DialogueNode({
   );
 }
 
-const BUBBLE_INNER_PAD = 12;
 const TEXT_FLOOR_SIZE = 18;
-const SHAPE_INSCRIBE: Record<string, [number, number]> = {
-  oval: [1.45, 1.45],
-  burst: [1.95, 1.95],
-  cloud: [1.3, 1.55],
-  caption: [1.04, 1.04],
-  none: [1.02, 1.02]
+// 写植の既定フォントサイズ。projectのtypographyから供給し、無ければバックエンド既定へ退避する。
+type TypeDefaults = { defaultSize: number; minSize: number };
+const DEFAULT_TYPE_DEFAULTS: TypeDefaults = {
+  defaultSize: DEFAULT_FONT_SIZE,
+  minSize: DEFAULT_MIN_FONT_SIZE
 };
 
-function previewTextLayout(dialogue: Dialogue, bubbleW: number, bubbleH: number) {
+function previewTextLayout(
+  dialogue: Dialogue,
+  bubbleW: number,
+  bubbleH: number,
+  typeDefaults: TypeDefaults = DEFAULT_TYPE_DEFAULTS
+) {
+  // 最終レンダラー（renderer.compute_bubble_layout のboxパス）と同じ内接矩形・収まり計算を使う。
+  // 手動改行・禁則・縦中横・行/列数まで揃え、プレビューの文字サイズと出力を一致させる（領域7）。
   const [fx, fy] = SHAPE_INSCRIBE[dialogue.balloon] ?? [1.05, 1.05];
-  const defaultSize = Math.max(dialogue.font_size ?? 34, TEXT_FLOOR_SIZE);
-  const minSize = Math.min(defaultSize, Math.max(dialogue.min_font_size ?? 18, TEXT_FLOOR_SIZE));
+  const defaultSize = Math.max(dialogue.font_size ?? typeDefaults.defaultSize, TEXT_FLOOR_SIZE);
+  const minSize = Math.min(
+    defaultSize,
+    Math.max(dialogue.min_font_size ?? typeDefaults.minSize, TEXT_FLOOR_SIZE)
+  );
   const innerW = Math.max(8, (bubbleW - BUBBLE_INNER_PAD * 2) / fx);
   const innerH = Math.max(8, (bubbleH - BUBBLE_INNER_PAD * 2) / fy);
-  let fontSize = defaultSize;
-  for (let size = defaultSize; size >= minSize; size -= 1) {
-    const cell = size * 1.06;
-    const advance = size * 1.12;
-    const lineCount = dialogue.vertical
-      ? Math.ceil([...dialogue.text].length / Math.max(1, Math.floor(innerH / cell)))
-      : Math.ceil([...dialogue.text].length / Math.max(1, Math.floor(innerW / cell)));
-    const blockW = dialogue.vertical
-      ? lineCount * advance
-      : Math.min([...dialogue.text].length, innerW / cell) * cell;
-    const blockH = dialogue.vertical
-      ? Math.min([...dialogue.text].length, innerH / cell) * cell
-      : lineCount * advance;
-    if (blockW <= innerW + 0.5 && blockH <= innerH + 0.5 && lineCount <= dialogue.max_lines) {
-      fontSize = size;
-      break;
-    }
-    fontSize = size;
-  }
+  const grid = layoutTextGrid(
+    dialogue.text,
+    innerW,
+    innerH,
+    dialogue.vertical ?? true,
+    defaultSize,
+    minSize,
+    dialogue.max_lines ?? null
+  );
   const textW = Math.max(8, innerW);
   const textH = Math.max(8, innerH);
   return {
@@ -1055,7 +1070,8 @@ function previewTextLayout(dialogue: Dialogue, bubbleW: number, bubbleH: number)
     y: (bubbleH - textH) / 2,
     width: textW,
     height: textH,
-    fontSize,
+    fontSize: grid.fontSize,
+    fits: grid.fits,
     displayText: dialogue.vertical ? [...dialogue.text].join("\n") : dialogue.text
   };
 }

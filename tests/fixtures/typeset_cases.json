@@ -1,0 +1,130 @@
+[
+  {
+    "name": "horizontal_short_fits",
+    "text": "やあ",
+    "vertical": false,
+    "balloon": "oval",
+    "bubble_w": 300,
+    "bubble_h": 140,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 1,
+      "fits": true
+    }
+  },
+  {
+    "name": "vertical_manual_break",
+    "text": "前半の声\n後半の声",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 240,
+    "bubble_h": 360,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 2,
+      "fits": true
+    }
+  },
+  {
+    "name": "vertical_long_wraps_overflow",
+    "text": "ああああああああああああああああああああああああああああああ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 220,
+    "bubble_h": 300,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 4,
+    "expect": {
+      "font_size": 26,
+      "line_count": 5,
+      "fits": false
+    }
+  },
+  {
+    "name": "vertical_kinsoku_line_start",
+    "text": "あいうえお。かきくけこ、さしすせそ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 260,
+    "bubble_h": 280,
+    "default_size": 30,
+    "min_size": 22,
+    "max_lines": 8,
+    "expect": {
+      "font_size": 27,
+      "line_count": 3,
+      "fits": true
+    }
+  },
+  {
+    "name": "vertical_tcy_group",
+    "text": "図AB12を見て",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 220,
+    "bubble_h": 340,
+    "default_size": 34,
+    "min_size": 24,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 1,
+      "fits": true
+    }
+  },
+  {
+    "name": "burst_inscribe_small",
+    "text": "うわあああ",
+    "vertical": true,
+    "balloon": "burst",
+    "bubble_w": 320,
+    "bubble_h": 320,
+    "default_size": 40,
+    "min_size": 22,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 40,
+      "line_count": 2,
+      "fits": true
+    }
+  },
+  {
+    "name": "cloud_monologue",
+    "text": "ぼそぼそ…ひとり言",
+    "vertical": true,
+    "balloon": "cloud",
+    "bubble_w": 260,
+    "bubble_h": 320,
+    "default_size": 34,
+    "min_size": 24,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 34,
+      "line_count": 2,
+      "fits": true
+    }
+  },
+  {
+    "name": "overflow_even_at_min",
+    "text": "ああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああ",
+    "vertical": true,
+    "balloon": "oval",
+    "bubble_w": 160,
+    "bubble_h": 160,
+    "default_size": 34,
+    "min_size": 26,
+    "max_lines": 6,
+    "expect": {
+      "font_size": 26,
+      "line_count": 20,
+      "fits": false
+    }
+  }
+]
