@@ -420,6 +420,23 @@ class Panel(BaseModel):
         # text_safe_areaは検証時にxywhへ正規化済み。formatは永続値に持ち越さない。
         if self.text_safe_area_format != "xywh":
             object.__setattr__(self, "text_safe_area_format", "xywh")
+        if self.frame_points is None and self.shape_points is not None:
+            x, y, w, h = self.bbox
+            frame_points = [(x + sx * w, y + sy * h) for sx, sy in self.shape_points]
+            xs = [px for px, _py in frame_points]
+            ys = [py for _px, py in frame_points]
+            x0 = max(0.0, min(xs))
+            y0 = max(0.0, min(ys))
+            x1 = min(1.0, max(xs))
+            y1 = min(1.0, max(ys))
+            object.__setattr__(self, "frame_points", frame_points)
+            object.__setattr__(
+                self,
+                "bbox",
+                (x0, y0, max(0.0001, x1 - x0), max(0.0001, y1 - y0)),
+            )
+            object.__setattr__(self, "frame_source", "manual")
+            object.__setattr__(self, "shape_points", None)
         return self
 
     @field_validator("shape_points")

@@ -630,31 +630,40 @@ def _run_autofix(
     if page_number is not None and not any(p.page == page_number for p in checked.manga.pages):
         raise HTTPException(status_code=404, detail="ページが見つかりません")
 
-    dry_run = checked.manga.model_copy(deep=True)
-    planned = autofix_manga(dry_run, page_number)
-    if not planned:
-        issues = (
-            preflight_module.preflight_page(
-                checked.manga,
-                next(item for item in checked.manga.pages if item.page == page_number),
-                export_dir=export_dir,
-            )
-            if page_number is not None
-            else preflight_module.preflight_project(checked.manga, export_dir)
+    current_issues = (
+        preflight_module.preflight_page(
+            checked.manga,
+            next(item for item in checked.manga.pages if item.page == page_number),
+            export_dir=export_dir,
         )
+        if page_number is not None
+        else preflight_module.preflight_project(checked.manga, export_dir)
+    )
+    dry_run = checked.manga.model_copy(deep=True)
+    planned = autofix_manga(dry_run, page_number, current_issues)
+    if not planned:
         return to_project_mutation_response(
             request,
             project_id,
             PreflightFixResult(
                 fixed_count=0,
                 fixed=[],
-                preflight=_to_preflight_response(project_id, page_number, issues),
+                preflight=_to_preflight_response(project_id, page_number, current_issues),
             ),
             snapshot=checked,
         )
 
     def mutate(manga: MangaProject) -> list[str]:
-        changes = autofix_manga(manga, page_number)
+        issues = (
+            preflight_module.preflight_page(
+                manga,
+                next(item for item in manga.pages if item.page == page_number),
+                export_dir=export_dir,
+            )
+            if page_number is not None
+            else preflight_module.preflight_project(manga, export_dir)
+        )
+        changes = autofix_manga(manga, page_number, issues)
         affected = {change.page for change in changes}
         for page in manga.pages:
             if page.page in affected:

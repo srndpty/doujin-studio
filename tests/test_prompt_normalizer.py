@@ -35,9 +35,13 @@ def test_normalize_keeps_compound_white_tags() -> None:
 
 def test_normalize_steers_white_background_to_booru() -> None:
     result = normalize_prompt("1girl, white background")
-    assert "simple_background" in result.prompt
+    assert "simple background" in result.prompt
+    assert "visible subject" in result.prompt
+    assert "clear foreground" in result.prompt
     assert "white background" not in result.prompt
-    assert result.replaced == [("white background", "simple_background")]
+    assert result.replaced == [
+        ("white background", "simple background, visible subject, clear foreground")
+    ]
 
 
 def test_blank_risk_tags_lists_offenders() -> None:

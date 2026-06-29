@@ -713,7 +713,7 @@ def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
     issues: list[PreflightIssue] = []
     for panel in page.panels:
         hits: list[str] = []
-        for text in (panel.prompt, panel.composition_notes):
+        for text in (panel.prompt, panel.composition_notes, panel.generation.prompt):
             hits.extend(blank_risk_tags(text))
         if hits:
             unique = list(dict.fromkeys(hits))
@@ -727,7 +727,7 @@ def _check_prompt_blank_risk(page: Page) -> list[PreflightIssue]:
                     category="image_quality",
                     suggestion=(
                         "white/blank/empty space等の単独指定を除去し、背景指定はsimple_background"
-                        "等のbooruタグへ寄せてください"
+                        "等に被写体維持指定を足したタグへ寄せてください"
                     ),
                     fixable=True,
                 )
@@ -776,11 +776,26 @@ def _check_silent_panels(page: Page) -> list[PreflightIssue]:
     return []
 
 
+def _frame_differs_from_bbox(panel: Panel) -> bool:
+    if not panel.frame_points:
+        return False
+    x, y, w, h = panel.bbox
+    rect = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    if len(panel.frame_points) != 4:
+        return True
+    return any(
+        math.hypot(px - rx, py - ry) > 0.005
+        for (px, py), (rx, ry) in zip(panel.frame_points, rect, strict=True)
+    )
+
+
 def _check_panel_shapes(page: Page) -> list[PreflightIssue]:
-    """演出意図のない変形コマ(shape_points)を警告する。"""
+    """演出意図のない変形コマ(frame_points/旧shape_points)を警告する。"""
     issues: list[PreflightIssue] = []
     for panel in page.panels:
-        if panel.shape_points and not panel_shape_allowed(panel.role, panel.composition_notes):
+        if (panel.shape_points or _frame_differs_from_bbox(panel)) and not panel_shape_allowed(
+            panel.role, panel.composition_notes
+        ):
             issues.append(
                 PreflightIssue(
                     level="warning",
@@ -940,7 +955,7 @@ def _check_image_metrics(
                     panel_id=panel.panel_id,
                     category="image_quality",
                     suggestion="被写体を大きく配置する構図・crop・promptへ調整してください",
-                    fixable=False,
+                    fixable=True,
                 )
             )
         if (

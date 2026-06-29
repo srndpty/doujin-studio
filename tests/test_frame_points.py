@@ -35,6 +35,8 @@ def test_frame_points_derive_uses_shape_points_in_page_coords() -> None:
     panel = _panel(bbox=(0.2, 0.2, 0.4, 0.4), shape_points=[(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)])
     result = panel_frame_points(panel)
     expected = [(0.2, 0.2), (0.6, 0.2), (0.4, 0.6)]
+    assert panel.shape_points is None
+    assert panel.frame_points is not None
     flat = [coord for point in result for coord in point]
     assert flat == pytest.approx([coord for point in expected for coord in point])
 
@@ -102,7 +104,7 @@ def test_z_index_ordering_and_polygon_masking(tmp_path) -> None:
     assert outside[0] > 200 and outside[1] > 200 and outside[2] > 200
 
 
-def test_shape_points_uses_polygon_mask_without_frame_points(tmp_path) -> None:
+def test_shape_points_migrates_to_frame_points_for_polygon_mask(tmp_path) -> None:
     page = Image.new("RGBA", PAGE_SIZE, (255, 255, 255, 255))
     draw = ImageDraw.Draw(page)
     red = tmp_path / "red.png"
@@ -112,6 +114,8 @@ def test_shape_points_uses_polygon_mask_without_frame_points(tmp_path) -> None:
         shape_points=[(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)],
         image_asset=str(red),
     )
+    assert panel.shape_points is None
+    assert panel.frame_points is not None
 
     draw_panel_art(page, draw, panel, _panel_box_px(panel), export_dir=None)
 

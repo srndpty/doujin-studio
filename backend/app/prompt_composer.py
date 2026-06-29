@@ -13,7 +13,7 @@ INSERT_NEGATIVE_PROMPT = (
 SUBJECT_MODE_POSITIVE = {
     "prop_insert": "close-up of a single object, product shot, no people",
     "hand_insert": "close-up of hands, detailed hands, no face",
-    "background": "scenery, empty background, establishing shot, no people",
+    "background": "scenery, establishing shot, environment focus, no people",
 }
 # character_layout.positionをプロンプトの位置語へ写像する（通常promptでの大まかな配置）。
 POSITION_PHRASE = {

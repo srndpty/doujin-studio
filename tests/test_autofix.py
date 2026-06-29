@@ -12,6 +12,7 @@ from backend.app.schemas import (
     Page,
     Panel,
     PanelCharacter,
+    PreflightIssue,
     Sfx,
 )
 
@@ -44,6 +45,21 @@ def test_autofix_strips_blank_risk_prompt() -> None:
         if issue.code == "prompt_blank_risk"
     ]
     assert not remaining
+
+
+def test_autofix_strips_blank_risk_generation_prompt() -> None:
+    panel = Panel(
+        panel_id="p1",
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        shot="medium",
+        characters=["a"],
+    )
+    panel.generation.prompt = "1girl, white background"
+    project = _project(panel)
+    autofix_manga(project)
+    prompt = project.pages[0].panels[0].generation.prompt
+    assert "white background" not in prompt
+    assert "visible subject" in prompt
 
 
 def test_autofix_converts_monologue_cloud_to_caption() -> None:
@@ -109,3 +125,20 @@ def test_autofix_page_scope_only_targets_requested_page() -> None:
     autofix_manga(project, page_number=2)
     assert "white" in project.pages[0].panels[0].prompt  # 1ページは未修正
     assert "blank" not in project.pages[1].panels[0].prompt  # 2ページは修正
+
+
+def test_autofix_enlarges_crop_for_subject_too_small_issue() -> None:
+    panel = Panel(panel_id="p1", bbox=(0.0, 0.0, 1.0, 1.0), shot="m")
+    project = _project(panel)
+    issue = PreflightIssue(
+        level="warning",
+        code="subject_too_small",
+        message="小さい",
+        page=1,
+        panel_id="p1",
+    )
+    autofix_manga(project, issues=[issue])
+    generation = project.pages[0].panels[0].generation
+    assert generation.crop_scale > 1.0
+    assert generation.crop_offset_x == 0.0
+    assert generation.crop_offset_y == 0.0

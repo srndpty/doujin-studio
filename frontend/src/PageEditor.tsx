@@ -27,8 +27,9 @@ import {
   SFX_STYLES,
   bboxFromFramePoints,
   clamp01,
-  shapePointsForPreset,
-  shapePreset,
+  clampFrame,
+  panelFramePoints,
+  rectFramePoints,
   snap,
   transformFramePoints
 } from "./page-editor-helpers";
@@ -485,27 +486,39 @@ export function PageEditor({
         {selectedPanel && selection?.kind === "panel" && (
           <>
             <fieldset>
-              <legend>コマ形状</legend>
-              <select
-                value={shapePreset(selectedPanel.shape_points)}
-                onChange={(event) =>
+              <legend>コマpolygon</legend>
+              <PolygonControls
+                panel={selectedPanel}
+                onChange={(points) =>
                   mutatePage((target) => {
                     const panel = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
-                    if (panel) {
-                      panel.shape_points = shapePointsForPreset(event.target.value);
-                      // 自動枠(frame_points)は描画でshape_pointsより優先されるため、手動で形状を
-                      // 変えたら解除する。残すとユーザーの形状変更が画面にも保存後にも反映されない。
-                      delete panel.frame_points;
-                    }
+                    if (!panel) return;
+                    panel.frame_points = points;
+                    panel.shape_points = null;
+                    panel.bbox = bboxFromFramePoints(points);
+                    panel.frame_source = "manual";
+                  })
+                }
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  mutatePage((target) => {
+                    const panel = target.panels.find((item) => item.panel_id === selectedPanel.panel_id);
+                    if (!panel) return;
+                    const points = rectFramePoints(panel.bbox);
+                    panel.frame_points = points;
+                    panel.shape_points = null;
+                    panel.bbox = bboxFromFramePoints(points);
+                    panel.frame_source = "manual";
                   })
                 }
               >
-                <option value="rectangle">長方形</option>
-                <option value="slant-right">右傾斜</option>
-                <option value="slant-left">左傾斜</option>
-                <option value="trapezoid">台形</option>
-              </select>
-              <small className="hint">変形コマも外接bboxをドラッグして移動・拡縮できます。</small>
+                外接矩形に戻す
+              </button>
+              <small className="hint">
+                コマ枠はページ座標polygonで保存します。bboxは外接矩形として同期します。
+              </small>
             </fieldset>
             <CropControls
               panel={selectedPanel}
@@ -697,19 +710,19 @@ function PanelNode(props: PanelNodeProps) {
   );
   // コマ枠ポリゴン（ページピクセル）。frame_pointsを正本とし、無ければbbox相対のshape_points、
   // それも無ければ矩形。ページレンダラーと同じ形でキャンバスに描く（写植・形状の見た目を一致させる）。
-  const framePagePoints: number[] | null = panel.frame_points
-    ? panel.frame_points.flatMap(([x, y]) => [x * PAGE_W, y * PAGE_H])
-    : panel.shape_points
-      ? panel.shape_points.flatMap(([x, y]) => [px + x * pw, py + y * ph])
-      : null;
+  const canonicalFramePoints = panelFramePoints(panel);
+  const isRectFrame = !panel.frame_points?.length && !panel.shape_points?.length;
+  const framePagePoints: number[] | null = isRectFrame
+    ? null
+    : canonicalFramePoints.flatMap(([x, y]) => [x * PAGE_W, y * PAGE_H]);
   // 画像のフィット矩形。frame_pointsはページ外（裁ち落とし）へ広がるため、その外接矩形へ合わせる。
   let renderX = px;
   let renderY = py;
   let renderW = pw;
   let renderH = ph;
-  if (panel.frame_points && panel.frame_points.length > 0) {
-    const fxs = panel.frame_points.map(([x]) => x * PAGE_W);
-    const fys = panel.frame_points.map(([, y]) => y * PAGE_H);
+  if (!isRectFrame) {
+    const fxs = canonicalFramePoints.map(([x]) => x * PAGE_W);
+    const fys = canonicalFramePoints.map(([, y]) => y * PAGE_H);
     renderX = Math.min(...fxs);
     renderY = Math.min(...fys);
     renderW = Math.max(...fxs) - renderX;
@@ -916,16 +929,18 @@ function DialogueNode({
   const bw = box[2] * pw;
   const bh = box[3] * ph;
   const tip = dialogue.tail?.tip ?? [0.5, 0.95];
-  const displayText = dialogue.vertical ? [...dialogue.text].join("\n") : dialogue.text;
+  const layout = previewTextLayout(dialogue, bw, bh);
+  const displayText = layout.displayText;
   const burstPoints = Array.from({ length: 24 }, (_, index) => {
     const angle = (index / 24) * Math.PI * 2;
     const radius = index % 2 === 0 ? 0.5 : 0.4;
     return [bw / 2 + Math.cos(angle) * bw * radius, bh / 2 + Math.sin(angle) * bh * radius];
   }).flat();
+  const showDialogueTail =
+    dialogue.balloon !== "caption" && dialogue.on_screen !== false && (dialogue.tail?.enabled ?? true);
   return (
     <Group>
-      {/* tail未指定はレンダラーと同様に既定で表示する。 */}
-      {(dialogue.tail?.enabled ?? true) && (
+      {showDialogueTail && (
         <Line
           points={[bx + bw / 2, by + bh / 2, px + tip[0] * pw, py + tip[1] * ph]}
           stroke="#191919"
@@ -968,13 +983,13 @@ function DialogueNode({
           />
         )}
         <Text
-          x={8}
-          y={8}
-          width={bw - 16}
-          height={bh - 16}
+          x={layout.x}
+          y={layout.y}
+          width={layout.width}
+          height={layout.height}
           text={displayText}
           fontFamily="源暎アンチック, BIZ UDPGothic"
-          fontSize={dialogue.font_size ?? 34}
+          fontSize={layout.fontSize}
           align="center"
           verticalAlign="middle"
           fill="#191919"
@@ -995,6 +1010,53 @@ function DialogueNode({
       )}
     </Group>
   );
+}
+
+const BUBBLE_INNER_PAD = 12;
+const TEXT_FLOOR_SIZE = 18;
+const SHAPE_INSCRIBE: Record<string, [number, number]> = {
+  oval: [1.45, 1.45],
+  burst: [1.95, 1.95],
+  cloud: [1.3, 1.55],
+  caption: [1.04, 1.04],
+  none: [1.02, 1.02]
+};
+
+function previewTextLayout(dialogue: Dialogue, bubbleW: number, bubbleH: number) {
+  const [fx, fy] = SHAPE_INSCRIBE[dialogue.balloon] ?? [1.05, 1.05];
+  const defaultSize = Math.max(dialogue.font_size ?? 34, TEXT_FLOOR_SIZE);
+  const minSize = Math.min(defaultSize, Math.max(dialogue.min_font_size ?? 18, TEXT_FLOOR_SIZE));
+  const innerW = Math.max(8, (bubbleW - BUBBLE_INNER_PAD * 2) / fx);
+  const innerH = Math.max(8, (bubbleH - BUBBLE_INNER_PAD * 2) / fy);
+  let fontSize = defaultSize;
+  for (let size = defaultSize; size >= minSize; size -= 1) {
+    const cell = size * 1.06;
+    const advance = size * 1.12;
+    const lineCount = dialogue.vertical
+      ? Math.ceil([...dialogue.text].length / Math.max(1, Math.floor(innerH / cell)))
+      : Math.ceil([...dialogue.text].length / Math.max(1, Math.floor(innerW / cell)));
+    const blockW = dialogue.vertical
+      ? lineCount * advance
+      : Math.min([...dialogue.text].length, innerW / cell) * cell;
+    const blockH = dialogue.vertical
+      ? Math.min([...dialogue.text].length, innerH / cell) * cell
+      : lineCount * advance;
+    if (blockW <= innerW + 0.5 && blockH <= innerH + 0.5 && lineCount <= dialogue.max_lines) {
+      fontSize = size;
+      break;
+    }
+    fontSize = size;
+  }
+  const textW = Math.max(8, innerW);
+  const textH = Math.max(8, innerH);
+  return {
+    x: (bubbleW - textW) / 2,
+    y: (bubbleH - textH) / 2,
+    width: textW,
+    height: textH,
+    fontSize,
+    displayText: dialogue.vertical ? [...dialogue.text].join("\n") : dialogue.text
+  };
 }
 
 function SfxNode({
@@ -1019,7 +1081,7 @@ function SfxNode({
       fontSize={sfx.font_size ?? 54}
       fill={sfx.color ?? "#191919"}
       stroke={sfx.outline_color ?? "#ffffff"}
-      strokeWidth={1}
+      strokeWidth={sfx.outline_width ?? 4}
       rotation={sfx.rotation ?? 0}
       draggable
       onClick={onSelect}
@@ -1185,6 +1247,53 @@ function OverlayControls({
       <button className="danger" onClick={onDelete}>
         削除
       </button>
+    </div>
+  );
+}
+
+function PolygonControls({
+  panel,
+  onChange
+}: {
+  panel: Panel;
+  onChange: (points: [number, number][]) => void;
+}) {
+  const points = panelFramePoints(panel);
+  const patchPoint = (pointIndex: number, axis: 0 | 1, value: number) => {
+    const next = points.map(([x, y]) => [x, y] as [number, number]);
+    next[pointIndex] = [...next[pointIndex]] as [number, number];
+    next[pointIndex][axis] = snap(clampFrame(value));
+    onChange(next);
+  };
+  return (
+    <div className="polygon-editor">
+      {points.map(([x, y], index) => (
+        <div className="settings-grid" key={`${index}-${x}-${y}`}>
+          <strong>頂点 {index + 1}</strong>
+          <label>
+            x
+            <input
+              type="number"
+              min="-0.05"
+              max="1.05"
+              step="0.01"
+              value={Number(x.toFixed(2))}
+              onChange={(event) => patchPoint(index, 0, Number(event.target.value))}
+            />
+          </label>
+          <label>
+            y
+            <input
+              type="number"
+              min="-0.05"
+              max="1.05"
+              step="0.01"
+              value={Number(y.toFixed(2))}
+              onChange={(event) => patchPoint(index, 1, Number(event.target.value))}
+            />
+          </label>
+        </div>
+      ))}
     </div>
   );
 }

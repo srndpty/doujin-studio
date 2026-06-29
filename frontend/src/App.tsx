@@ -72,6 +72,21 @@ type TaskProgress = {
   indeterminate?: boolean;
 };
 
+type QualityIssue = NonNullable<ProductionStatus["quality_errors"]>[number];
+
+function qualityIssueAction(issue: QualityIssue): "autofix" | "regenerate" | "manual" {
+  if (issue.fixable) return "autofix";
+  if (["empty_panel_image", "monochrome_panel"].includes(issue.code)) return "regenerate";
+  return "manual";
+}
+
+function qualityIssueActionLabel(issue: QualityIssue): string {
+  const action = qualityIssueAction(issue);
+  if (action === "autofix") return "自動修正可";
+  if (action === "regenerate") return "再生成推奨";
+  return "手動対応";
+}
+
 export function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
@@ -174,6 +189,24 @@ export function App() {
     }
     return ids;
   }, [currentPageStatus]);
+  const projectQualityIssues = useMemo(
+    () => [...(productionStatus?.quality_errors ?? []), ...(productionStatus?.quality_warnings ?? [])],
+    [productionStatus]
+  );
+  const fixableQualityCount = useMemo(
+    () => projectQualityIssues.filter((issue) => issue.fixable).length,
+    [projectQualityIssues]
+  );
+  const regenerateQualityCount = useMemo(
+    () =>
+      projectQualityIssues.filter((issue) => ["empty_panel_image", "monochrome_panel"].includes(issue.code))
+        .length,
+    [projectQualityIssues]
+  );
+  const manualQualityCount = Math.max(
+    0,
+    projectQualityIssues.length - fixableQualityCount - regenerateQualityCount
+  );
   // 「未完成のみ」は未採用コマに加え、品質エラー・警告コマも含める（要修正コマへ素早く戻る）。
   const visiblePanels = useMemo(
     () =>
@@ -1041,12 +1074,12 @@ export function App() {
       if (!adopted.applied || !adopted.project) return;
       const jobs = adopted.result.jobs;
       if (jobs.length === 0) {
-        setMessage("白紙コマはありません");
+        setMessage("再生成推奨コマはありません");
         return;
       }
       setActiveJobIds(jobs.map((job) => job.id));
       try {
-        await waitForBatchJobs(jobs, "白紙コマを再生成中");
+        await waitForBatchJobs(jobs, "再生成推奨コマを再生成中");
       } finally {
         setActiveJobIds([]);
         await refreshJobHistory(projectId);
@@ -1059,8 +1092,8 @@ export function App() {
       await renderAllPages(projectId, latest);
       setAssetVersion((value) => value + 1);
       await refreshProductionStatus(projectId);
-      setMessage(`白紙コマ${jobs.length}件を再生成しました`);
-      showToast(`白紙コマ${jobs.length}件を再生成しました`);
+      setMessage(`再生成推奨コマ${jobs.length}件を再生成しました。まだ白紙ならprompt修正が必要です`);
+      showToast(`再生成推奨コマ${jobs.length}件を再生成しました`);
     });
   }
 
@@ -1722,6 +1755,10 @@ export function App() {
                       {(productionStatus.quality_warnings ?? []).length > 0
                         ? ` / 注意 ${(productionStatus.quality_warnings ?? []).length}件`
                         : ""}
+                      <span className="quality-breakdown">
+                        自動修正 {fixableQualityCount}件 / 再生成推奨 {regenerateQualityCount}件 / 手動対応{" "}
+                        {manualQualityCount}件
+                      </span>
                       <button
                         type="button"
                         className="quality-autofix"
@@ -1729,13 +1766,11 @@ export function App() {
                           event.preventDefault();
                           void autofixCurrentProject();
                         }}
-                        disabled={busy}
+                        disabled={busy || fixableQualityCount === 0}
                       >
-                        自動修正
+                        {fixableQualityCount > 0 ? "自動修正" : "手動対応が必要"}
                       </button>
-                      {(productionStatus.quality_errors ?? []).some(
-                        (issue) => issue.code === "empty_panel_image"
-                      ) && (
+                      {regenerateQualityCount > 0 && (
                         <button
                           type="button"
                           className="quality-autofix"
@@ -1745,7 +1780,7 @@ export function App() {
                           }}
                           disabled={busy}
                         >
-                          白紙コマを再生成
+                          再生成推奨コマを再生成
                         </button>
                       )}
                     </summary>
@@ -1757,12 +1792,13 @@ export function App() {
                         <li key={`${issue.code}-${issue.page}-${issue.panel_id ?? "page"}-${index}`}>
                           <button
                             type="button"
-                            className={`quality-issue ${issue.level}`}
+                            className={`quality-issue ${issue.level} ${qualityIssueAction(issue)}`}
                             onClick={() => goToPanel(issue.page, issue.panel_id)}
                           >
                             <span className="quality-issue-where">
                               {issue.page}p{issue.panel_id ? ` / ${issue.panel_id}` : ""}
                             </span>
+                            <span className="quality-issue-action">{qualityIssueActionLabel(issue)}</span>
                             <span className="quality-issue-message">{issue.message}</span>
                             {issue.suggestion ? <small>{issue.suggestion}</small> : null}
                           </button>

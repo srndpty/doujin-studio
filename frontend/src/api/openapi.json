@@ -1926,7 +1926,7 @@
     "/api/projects/{project_id}/generation-jobs/blank": {
       "post": {
         "summary": "Regenerate Blank Panels",
-        "description": "preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。\n\nseedを毎回ランダム化して別の絵を狙う。対象が無ければ404。",
+        "description": "preflightで再生成推奨のコマを再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
         "operationId": "regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post",
         "parameters": [
           {

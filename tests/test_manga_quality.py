@@ -884,9 +884,10 @@ def test_script_to_manga_shapes_only_motivated_panels() -> None:
     )
     manga = story.script_to_manga(script, base)
     panels = manga.pages[0].panels
-    # 見せ場roleかつ動き・衝撃の意図があるコマだけが変形する。
-    assert panels[0].shape_points is not None
-    assert panels[1].shape_points is None
+    # 見せ場roleかつ動き・衝撃の意図があるコマだけがframe_pointsで変形する。
+    assert panels[0].frame_points is not None
+    assert panels[0].shape_points is None
+    assert panels[1].frame_points is None
 
 
 def test_preflight_flags_unmotivated_shape() -> None:
@@ -941,7 +942,7 @@ def test_image_metrics_subject_too_small(tmp_path) -> None:
     path = tmp_path / "small.png"
     image.save(path)
     issues = _quality_issues(_image_panel(path))
-    assert any(i.code == "subject_too_small" for i in issues)
+    assert any(i.code == "subject_too_small" and i.fixable for i in issues)
     assert not any(i.code == "empty_panel_image" for i in issues)
 
 

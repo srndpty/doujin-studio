@@ -42,41 +42,32 @@ export const KIND_DEFAULT_BALLOON: Record<string, string> = {
   shout: "burst"
 };
 
-export function shapePointsForPreset(preset: string): [number, number][] | null {
-  if (preset === "slant-right")
-    return [
-      [0.12, 0],
-      [1, 0],
-      [0.88, 1],
-      [0, 1]
-    ];
-  if (preset === "slant-left")
-    return [
-      [0, 0],
-      [0.88, 0],
-      [1, 1],
-      [0.12, 1]
-    ];
-  if (preset === "trapezoid")
-    return [
-      [0.12, 0],
-      [0.88, 0],
-      [1, 1],
-      [0, 1]
-    ];
-  return null;
-}
-
-export function shapePreset(points: [number, number][] | null | undefined): string {
-  if (!points) return "rectangle";
-  if (points[0]?.[0] === 0.12 && points[1]?.[0] === 1) return "slant-right";
-  if (points[0]?.[0] === 0 && points[1]?.[0] === 0.88) return "slant-left";
-  return "trapezoid";
-}
-
 export const snap = (value: number) => Math.round(value / SNAP) * SNAP;
 export const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 export const clampFrame = (value: number) => Math.max(-0.05, Math.min(1.05, value));
+
+export function rectFramePoints(bbox: Box): [number, number][] {
+  const [x, y, w, h] = bbox;
+  return [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h]
+  ];
+}
+
+export function panelFramePoints(panel: {
+  bbox: Box;
+  frame_points?: [number, number][] | null;
+  shape_points?: [number, number][] | null;
+}): [number, number][] {
+  if (panel.frame_points?.length) return panel.frame_points;
+  const [x, y, w, h] = panel.bbox;
+  if (panel.shape_points?.length) {
+    return panel.shape_points.map(([sx, sy]) => [x + sx * w, y + sy * h]);
+  }
+  return rectFramePoints(panel.bbox);
+}
 
 export function bboxFromFramePoints(points: [number, number][]): Box {
   const xs = points.map(([x]) => clamp01(x));

@@ -4474,10 +4474,10 @@ def test_delete_project_aborts_when_fence_creation_fails(
         assert (project_dir / "keep.png").read_bytes() == b"keep"
 
 
-# --- 自動生成コマのslant-right形状定数 ---
+# --- 自動生成コマのframe_points形状 ---
 
 
-def test_script_to_manga_uses_slant_right_preset_constants() -> None:
+def test_script_to_manga_uses_frame_points_for_motivated_shape() -> None:
     from backend.app import story
     from backend.app.schemas import ScriptStage
 
@@ -4503,10 +4503,10 @@ def test_script_to_manga_uses_slant_right_preset_constants() -> None:
     )
     manga = story.script_to_manga(script, base)
     first = manga.pages[0].panels[0]
-    assert first.shape_points is not None
-    xs = [round(point[0], 2) for point in first.shape_points]
-    # フロントのshapePreset()がslant-rightと認識できる定数であること。
-    assert xs == [0.12, 1.0, 0.88, 0.0]
+    assert first.shape_points is None
+    assert first.frame_points is not None
+    xs = [round(point[0], 2) for point in first.frame_points]
+    assert xs[0] < xs[1] and xs[3] < xs[2]
 
 
 # --- ComfyUI設定検査と削除worker競合 ---

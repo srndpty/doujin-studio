@@ -1,18 +1,47 @@
 import { describe, expect, it } from "vitest";
 import {
   bboxFromFramePoints,
-  shapePointsForPreset,
-  shapePreset,
+  panelFramePoints,
+  rectFramePoints,
   transformFramePoints
 } from "./page-editor-helpers";
 
 describe("ページ編集ヘルパー", () => {
-  it("プリセット形状を相互変換する", () => {
-    const slantRight = shapePointsForPreset("slant-right");
-    expect(slantRight).not.toBeNull();
-    expect(shapePreset(slantRight)).toBe("slant-right");
-    expect(shapePreset(shapePointsForPreset("slant-left"))).toBe("slant-left");
-    expect(shapePreset(null)).toBe("rectangle");
+  it("矩形bboxを4点polygonへ変換する", () => {
+    expect(rectFramePoints([0.1, 0.2, 0.3, 0.4])).toEqual([
+      [0.1, 0.2],
+      [0.4, 0.2],
+      [0.4, 0.6000000000000001],
+      [0.1, 0.6000000000000001]
+    ]);
+  });
+
+  it("frame_pointsを正本にし、旧shape_pointsはbbox相対からページ座標へ移す", () => {
+    expect(
+      panelFramePoints({
+        bbox: [0.2, 0.2, 0.4, 0.4],
+        shape_points: [
+          [0, 0],
+          [1, 0],
+          [0.5, 1]
+        ]
+      })
+    ).toEqual([
+      [0.2, 0.2],
+      [0.6000000000000001, 0.2],
+      [0.4, 0.6000000000000001]
+    ]);
+    expect(
+      panelFramePoints({
+        bbox: [0, 0, 1, 1],
+        frame_points: [
+          [0.1, 0.1],
+          [0.9, 0.1],
+          [0.9, 0.9],
+          [0.1, 0.9]
+        ]
+      })[0]
+    ).toEqual([0.1, 0.1]);
   });
 
   it("frame pointsからページ内bboxを計算する", () => {

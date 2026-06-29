@@ -536,9 +536,9 @@ export interface paths {
         put?: never;
         /**
          * Regenerate Blank Panels
-         * @description preflightで白紙(empty_panel_image)と判定されたコマだけを再生成キューへ積む。
+         * @description preflightで再生成推奨のコマを再生成キューへ積む。
          *
-         *     seedを毎回ランダム化して別の絵を狙う。対象が無ければ404。
+         *     白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
          */
         post: operations["regenerate_blank_panels_api_projects__project_id__generation_jobs_blank_post"];
         delete?: never;
