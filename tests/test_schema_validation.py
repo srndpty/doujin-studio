@@ -5,16 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
 
 from backend.app import story
 from backend.app.schemas import (
     Dialogue,
+)
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
 )
 
 

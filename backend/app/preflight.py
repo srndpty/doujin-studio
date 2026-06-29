@@ -12,7 +12,7 @@ from PIL import Image
 
 from . import layout_engine
 from .assets import resolve_asset_path
-from .preflight_geometry import _bbox_overlaps, _overlap_area, _panel_between, _unit_box_iou
+from .preflight_geometry import bbox_overlaps, overlap_area, panel_between, unit_box_iou
 from .prompt_composer import is_non_character_mode
 from .prompt_normalizer import blank_risk_tags
 from .renderer import (
@@ -137,7 +137,7 @@ def _check_bubble_overlap(manga: MangaProject, page: Page) -> list[PreflightIssu
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
             (pid_a, box_a), (pid_b, box_b) = boxes[i], boxes[j]
-            overlap = _overlap_area(box_a, box_b)
+            overlap = overlap_area(box_a, box_b)
             if overlap <= 0:
                 continue
             area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
@@ -221,7 +221,7 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
             bx0, by0, bw, bh = b
             ax1, ay1 = ax0 + aw, ay0 + ah
             bx1, by1 = bx0 + bw, by0 + bh
-            if _bbox_overlaps(a, b):
+            if bbox_overlaps(a, b):
                 issues.append(
                     PreflightIssue(
                         level="warning",
@@ -240,12 +240,12 @@ def _check_gutters(manga: MangaProject, page: Page) -> list[PreflightIssue]:
                 band = (max(ay0, by0), min(ay1, by1))
                 gap_span = (ax1, bx0) if bx0 >= ax1 else (bx1, ax0)
                 gap = gap_span[1] - gap_span[0]
-                blocked = _panel_between(panels, i, j, gap_span, band, horizontal=True)
+                blocked = panel_between(panels, i, j, gap_span, band, horizontal=True)
             elif x_overlap > _GUTTER_EPS and y_overlap <= _GUTTER_EPS:  # 上下に隣接
                 band = (max(ax0, bx0), min(ax1, bx1))
                 gap_span = (ay1, by0) if by0 >= ay1 else (by1, ay0)
                 gap = gap_span[1] - gap_span[0]
-                blocked = _panel_between(panels, i, j, gap_span, band, horizontal=False)
+                blocked = panel_between(panels, i, j, gap_span, band, horizontal=False)
             # 隣接していない（間にコマがある／斜め）ペアはガター判定から除外する。
             if gap is None or gap < 0 or blocked:
                 continue
@@ -457,7 +457,7 @@ def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssu
             box = sfx_bbox_px(sfx, panel_box)
             sfx_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
             # コマ外はみ出し（擬音面積に対する超過分）。
-            inside = _overlap_area(box, panel_box)
+            inside = overlap_area(box, panel_box)
             if (sfx_area - inside) / sfx_area >= SFX_OUT_OF_BOUNDS_RATIO:
                 issues.append(
                     PreflightIssue(
@@ -470,7 +470,7 @@ def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssu
                 )
             # 吹き出しとの衝突。
             for _pid, bubble in bubble_boxes:
-                overlap = _overlap_area(box, bubble)
+                overlap = overlap_area(box, bubble)
                 if overlap > 0 and overlap / sfx_area >= SFX_BUBBLE_OVERLAP_RATIO:
                     issues.append(
                         PreflightIssue(
@@ -488,7 +488,7 @@ def _check_sfx_collisions(manga: MangaProject, page: Page) -> list[PreflightIssu
         pid_i, text_i, box_i = page_sfx[i]
         for j in range(i + 1, len(page_sfx)):
             pid_j, text_j, box_j = page_sfx[j]
-            overlap = _overlap_area(box_i, box_j)
+            overlap = overlap_area(box_i, box_j)
             if overlap <= 0:
                 continue
             area_i = (box_i[2] - box_i[0]) * (box_i[3] - box_i[1])
@@ -592,7 +592,7 @@ def _check_character_regions(page: Page) -> list[PreflightIssue]:
             assert left_entry.region_box is not None
             for right_entry in entries[left_index + 1 :]:
                 assert right_entry.region_box is not None
-                iou = _unit_box_iou(left_entry.region_box, right_entry.region_box)
+                iou = unit_box_iou(left_entry.region_box, right_entry.region_box)
                 if iou >= 0.5:
                     issues.append(
                         PreflightIssue(
@@ -631,7 +631,7 @@ def _check_overlay_occlusion(page: Page) -> list[PreflightIssue]:
                 continue
             pbox = (bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3])
             if (
-                _overlap_area(
+                overlap_area(
                     tuple(int(v * 1000) for v in obox),  # type: ignore[arg-type]
                     tuple(int(v * 1000) for v in pbox),  # type: ignore[arg-type]
                 )

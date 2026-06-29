@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, withRevision } from "./api/client";
-import type { ProjectMutationResponse } from "./api/use-project-mutation";
+import type { ProjectMutationResponse } from "./api/types";
 
 type StageName = "brief" | "plot" | "pages" | "script";
 type StageStatus = "empty" | "draft" | "approved";

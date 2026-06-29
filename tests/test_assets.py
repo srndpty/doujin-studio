@@ -2,21 +2,6 @@ import io
 from pathlib import Path
 
 import pytest
-from conftest import (
-    create_stub_project as create_generated_project,
-)
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    latest_revision as revision,
-)
-from conftest import (
-    make_png_bytes as png_bytes,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
 from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
@@ -32,6 +17,21 @@ from backend.app.assets import (
 from backend.app.database import ProjectRevisionRecord, now_utc
 from backend.app.prompt_composer import compose_panel_prompts, prepare_panel_for_generation
 from backend.app.schemas import MangaProject
+from tests.helpers import (
+    create_stub_project as create_generated_project,
+)
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    latest_revision as revision,
+)
+from tests.helpers import (
+    make_png_bytes as png_bytes,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
+)
 
 
 @given(st.text(min_size=1, max_size=200))

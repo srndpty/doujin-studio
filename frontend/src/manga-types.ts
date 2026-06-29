@@ -1,5 +1,5 @@
 import type { components } from "./api/schema";
-import type { ProjectMutationResponse as ApiProjectMutationResponse } from "./api/use-project-mutation";
+import type { ProjectMutationResponse as ApiProjectMutationResponse } from "./api/types";
 
 // OpenAPIスキーマを唯一の正とする。座標タプル(bbox/box)を含む型はOpenAPIが
 // 固定長タプルを表現できないため、エディタ/ジオメトリ側の都合で手書きを維持する。

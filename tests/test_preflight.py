@@ -4,13 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import (
-    create_stub_project as create_generated_project,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
-
 from backend.app import layout_engine, preflight
 from backend.app.schemas import (
     BalloonTail,
@@ -20,6 +13,12 @@ from backend.app.schemas import (
     Page,
     Panel,
     PanelCharacter,
+)
+from tests.helpers import (
+    create_stub_project as create_generated_project,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
 )
 
 

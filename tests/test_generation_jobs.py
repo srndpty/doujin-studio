@@ -7,15 +7,6 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
-from conftest import (
-    mutation_url,
-)
 
 import backend.app.generation_service as generation_module
 from backend.app import database, story
@@ -30,6 +21,15 @@ from backend.app.jobs import JobManager
 from backend.app.mutation import (
     PanelNotFoundError,
     ProjectNotFoundError,
+)
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
+)
+from tests.helpers import (
+    mutation_url,
 )
 
 VALID_BRIEF = json.dumps(

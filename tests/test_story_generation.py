@@ -4,15 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
-from conftest import (
-    mutation_url,
-)
 from fastapi.testclient import TestClient
 
 from backend.app import story
@@ -20,6 +11,15 @@ from backend.app.schemas import (
     Character,
     MangaProject,
     ScriptStage,
+)
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
+)
+from tests.helpers import (
+    mutation_url,
 )
 
 

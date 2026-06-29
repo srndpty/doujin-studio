@@ -8,13 +8,16 @@ if TYPE_CHECKING:
 _GUTTER_EPS = 1e-6
 
 
-def _overlap_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+__all__ = ["bbox_overlaps", "overlap_area", "panel_between", "unit_box_iou"]
+
+
+def overlap_area(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     dx = max(0, min(a[2], b[2]) - max(a[0], b[0]))
     dy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
     return dx * dy
 
 
-def _bbox_overlaps(
+def bbox_overlaps(
     a: tuple[float, float, float, float], b: tuple[float, float, float, float]
 ) -> bool:
     ax0, ay0, aw, ah = a
@@ -24,7 +27,7 @@ def _bbox_overlaps(
     return x_overlap > _GUTTER_EPS and y_overlap > _GUTTER_EPS
 
 
-def _panel_between(
+def panel_between(
     panels: list[Panel],
     i: int,
     j: int,
@@ -51,7 +54,7 @@ def _panel_between(
     return False
 
 
-def _unit_box_iou(
+def unit_box_iou(
     left: tuple[float, float, float, float], right: tuple[float, float, float, float]
 ) -> float:
     lx, ly, lw, lh = left
@@ -65,3 +68,9 @@ def _unit_box_iou(
         return 0.0
     union = lw * lh + rw * rh - intersection
     return intersection / union if union > 0 else 0.0
+
+
+_overlap_area = overlap_area
+_bbox_overlaps = bbox_overlaps
+_panel_between = panel_between
+_unit_box_iou = unit_box_iou

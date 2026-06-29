@@ -5,15 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    latest_revision as revision,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
 
 from backend.app.database import (
     ProjectRecord,
@@ -28,6 +19,15 @@ from backend.app.mutation import (
 )
 from backend.app.schemas import (
     MangaProject,
+)
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    latest_revision as revision,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
 )
 
 

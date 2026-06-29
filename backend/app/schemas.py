@@ -6,7 +6,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from .schema_geometry import _has_self_intersection, _polygon_area
+from .schema_geometry import has_self_intersection, polygon_area
 
 Point = tuple[float, float]
 UnitBoxFormat = Literal["xywh", "xyxy"]
@@ -439,9 +439,9 @@ class Panel(BaseModel):
         n = len(value)
         if any(value[i] == value[(i + 1) % n] for i in range(n)):
             raise ValueError("shape_pointsに連続する重複点があります")
-        if _polygon_area(value) < 1e-6:
+        if polygon_area(value) < 1e-6:
             raise ValueError("shape_pointsの面積が小さすぎます")
-        if _has_self_intersection(value):
+        if has_self_intersection(value):
             raise ValueError("shape_pointsが自己交差しています")
         return value
 
@@ -462,9 +462,9 @@ class Panel(BaseModel):
         n = len(value)
         if any(value[i] == value[(i + 1) % n] for i in range(n)):
             raise ValueError("frame_pointsに連続する重複点があります")
-        if _polygon_area(value) < 1e-6:
+        if polygon_area(value) < 1e-6:
             raise ValueError("frame_pointsの面積が小さすぎます")
-        if _has_self_intersection(value):
+        if has_self_intersection(value):
             raise ValueError("frame_pointsが自己交差しています")
         return value
 

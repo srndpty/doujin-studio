@@ -5,16 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import (
-    create_stub_project as create_project,
-)
-from conftest import (
-    make_stub_client as make_client,
-)
-from conftest import (
-    mutation_url,
-)
-
 from backend.app import database, knowledge, story
 from backend.app.config import Settings
 from backend.app.database import (
@@ -22,6 +12,16 @@ from backend.app.database import (
 )
 from backend.app.schemas import (
     Character,
+)
+from backend.app.story_characters import _is_weak_trigger
+from tests.helpers import (
+    create_stub_project as create_project,
+)
+from tests.helpers import (
+    make_stub_client as make_client,
+)
+from tests.helpers import (
+    mutation_url,
 )
 
 
@@ -329,8 +329,8 @@ def test_is_weak_trigger_treats_japanese_only_as_weak() -> None:
         trigger_prompt="jougasaki rika, idolmaster cinderella girls",
     )
     # 日本語名そのまま・表示名一致はいずれも弱trigger（素モデルが解釈できない）。
-    assert story._is_weak_trigger(japanese) is True
-    assert story._is_weak_trigger(booru) is False
+    assert _is_weak_trigger(japanese) is True
+    assert _is_weak_trigger(booru) is False
 
 
 def test_duplicate_character_merge_keeps_existing_profile(tmp_path: Path) -> None:

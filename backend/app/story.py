@@ -33,13 +33,12 @@ from .schemas import (
     Sfx,
 )
 from .story_characters import (
-    _is_weak_trigger,
     build_characters_from_knowledge,
     match_character_id,
     merge_knowledge_characters,
     resolve_character_ids,
 )
-from .story_layout import distribute_rows, grid_layout
+from .story_layout import distribute_rows, grid_layout, select_layout
 from .story_stage import (
     STAGE_ORDER,
     StoryError,
@@ -56,16 +55,45 @@ from .story_stub import generate_stub_stage, stub_character_names
 
 __all__ = [
     "STAGE_ORDER",
+    "KnowledgeContext",
     "StoryError",
-    "_is_weak_trigger",
+    "apply_session",
+    "approve_stage",
+    "build_context",
     "build_characters_from_knowledge",
+    "build_panel_sfx",
+    "build_stage_messages",
+    "classify_subject_mode",
     "create_session",
     "distribute_rows",
     "empty_stages",
+    "format_chunk",
+    "free_comfyui_vram",
+    "generate_llm_stage",
+    "generate_stage",
     "generate_stub_stage",
+    "get_generation_progress",
     "grid_layout",
+    "invalidate_downstream",
+    "load_stages",
+    "match_character_id",
+    "merge_knowledge_characters",
+    "merge_unresolved_warnings",
+    "normalize_manga_sfx",
+    "normalize_sfx_text",
+    "require_previous_ready",
+    "resolve_character_ids",
+    "restore_revision",
+    "review_script",
+    "save_stages",
+    "script_needs_repaneling",
+    "script_to_manga",
+    "select_layout",
     "session_to_response",
+    "stage_instruction_text",
+    "stage_query",
     "stub_character_names",
+    "update_stage",
     "validate_stage_data",
 ]
 

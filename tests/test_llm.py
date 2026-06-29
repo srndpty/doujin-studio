@@ -6,10 +6,6 @@ import asyncio
 import json
 from pathlib import Path
 
-from conftest import (
-    make_stub_client as make_client,
-)
-
 from backend.app import story
 from backend.app.config import Settings
 from backend.app.database import (
@@ -18,6 +14,9 @@ from backend.app.database import (
 )
 from backend.app.database import now_utc as db_now_utc
 from backend.app.llm import LLMError, OpenAICompatibleClient, extract_json_object
+from tests.helpers import (
+    make_stub_client as make_client,
+)
 
 VALID_BRIEF = json.dumps(
     {
