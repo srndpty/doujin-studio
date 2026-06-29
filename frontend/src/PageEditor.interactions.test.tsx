@@ -225,6 +225,27 @@ describe("PageEditor interactions", () => {
     expect(props.onChange).toHaveBeenCalled();
   });
 
+  it("polygon頂点編集ではbboxを子要素基準として維持する", () => {
+    const props = setup();
+    fireEvent.click(screen.getAllByTestId("konva-rect")[0]);
+    const polygon = screen.getByText("コマpolygon").closest("fieldset") as HTMLElement;
+    fireEvent.change(within(polygon).getAllByLabelText("x")[0], { target: { value: "-0.05" } });
+
+    const updated = (props.onChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as MangaProject;
+    const panel = updated.pages[0].panels[0];
+    expect(panel.frame_points?.[0]).toEqual([-0.05, 0.05]);
+    expect(panel.bbox).toEqual([0.05, 0.05, 0.42, 0.4]);
+  });
+
+  it("不正なpolygonになる頂点更新は反映しない", () => {
+    const props = setup();
+    fireEvent.click(screen.getAllByTestId("konva-rect")[0]);
+    const polygon = screen.getByText("コマpolygon").closest("fieldset") as HTMLElement;
+    fireEvent.change(within(polygon).getAllByLabelText("x")[0], { target: { value: "0.47" } });
+
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
   it("親側の選択コマをキャンバス選択へ同期する", async () => {
     setup({ selectedPanelId: "p01_02" });
     await waitFor(() => expect(screen.getByText(/コマ: p01_02/)).toBeVisible());
@@ -298,19 +319,22 @@ describe("PageEditor interactions", () => {
 
   it("吹き出しを選択して種別・縦書き・しっぽを編集する", () => {
     const props = setup();
-    // 縦書きは文字間に改行が入るため正規化して一致させる。
-    fireEvent.click(
-      screen.getByText(
-        (_content, element) =>
-          element?.tagName === "SPAN" && (element.textContent ?? "").replace(/\s+/g, "") === "テスト台詞"
-      )
-    );
+    fireEvent.click(screen.getByText("テ"));
     const balloon = screen.getByText("吹き出し").closest("fieldset") as HTMLElement;
     fireEvent.change(within(balloon).getByLabelText("種別"), { target: { value: "burst" } });
     const checkboxes = within(balloon).getAllByRole("checkbox");
     fireEvent.click(checkboxes[0]); // 縦書き
     fireEvent.click(checkboxes[1]); // しっぽ
     expect(props.onChange).toHaveBeenCalled();
+  });
+
+  it("縦書きプレビューは縦中横トークンを分けて描画する", () => {
+    const manga = sampleManga();
+    manga.pages[0].panels[0].dialogue[0].text = "AB12";
+    setup({ manga });
+    expect(screen.getByText("AB")).toBeVisible();
+    expect(screen.getByText("12")).toBeVisible();
+    expect(screen.queryByText(/A\s*B\s*1\s*2/)).toBeNull();
   });
 
   it("オーバーフレームを追加・編集・アップロード・削除する", async () => {

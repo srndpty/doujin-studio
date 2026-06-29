@@ -5329,9 +5329,38 @@ def test_regenerate_blank_panels_targets_only_blank(tmp_path: Path) -> None:
         blank_panel_id = manga["pages"][0]["panels"][0]["panel_id"]
         manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/blank.png"
         assert put_manga(client, project_id, manga).status_code == 200
+        revision_before = current_revision(client, project_id)
 
         response = client.post(mutation_url(client, project_id, "generation-jobs/blank"))
         assert response.status_code == 200
         jobs = response.json()["result"]["jobs"]
         # 白紙のコマだけが再生成対象になる。
         assert {job["panel_id"] for job in jobs} == {blank_panel_id}
+        # promptに正規化差分が無い場合は、prompt整理用の余分なrevisionを作らない。
+        assert response.json()["project"]["revision"] == revision_before + 1
+
+
+def test_recommended_regeneration_targets_subject_too_small(tmp_path: Path) -> None:
+    from PIL import Image as PILImage
+
+    with make_client(tmp_path) as client:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        small_path = export_dir / "small.png"
+        image = PILImage.new("RGB", (128, 128), (255, 255, 255))
+        image.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+        image.save(small_path)
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panel_id = manga["pages"][0]["panels"][0]["panel_id"]
+        manga["pages"][0]["panels"][0]["image_asset"] = f"{project_id}/small.png"
+        assert put_manga(client, project_id, manga).status_code == 200
+
+        response = client.post(
+            mutation_url(client, project_id, "generation-jobs/recommended-regeneration")
+        )
+
+        assert response.status_code == 200
+        jobs = response.json()["result"]["jobs"]
+        assert {job["panel_id"] for job in jobs} == {panel_id}

@@ -146,10 +146,7 @@ function layoutAtSize(
   const maxCells = lines.reduce((acc, line) => Math.max(acc, line.length), 1);
   const width = vertical ? lineCount * advance : maxCells * cell;
   const height = vertical ? maxCells * cell : lineCount * advance;
-  const fits =
-    width <= areaW + 0.5 &&
-    height <= areaH + 0.5 &&
-    (maxLines === null || lineCount <= maxLines);
+  const fits = width <= areaW + 0.5 && height <= areaH + 0.5 && (maxLines === null || lineCount <= maxLines);
   return { fontSize: size, vertical, lines, lineCount, maxCells, cell, advance, fits, width, height };
 }
 

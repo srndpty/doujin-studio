@@ -76,7 +76,8 @@ type QualityIssue = NonNullable<ProductionStatus["quality_errors"]>[number];
 
 function qualityIssueAction(issue: QualityIssue): "autofix" | "regenerate" | "manual" {
   if (issue.fixable) return "autofix";
-  if (["empty_panel_image", "monochrome_panel"].includes(issue.code)) return "regenerate";
+  if (["empty_panel_image", "monochrome_panel", "subject_too_small"].includes(issue.code))
+    return "regenerate";
   return "manual";
 }
 
@@ -1068,10 +1069,7 @@ export function App() {
     await runTask(async () => {
       const projectId = selected.id;
       const response = await api.post<ProjectMutationResponse<BatchGenerationJobResult>>(
-        withRevision(
-          `/api/projects/${projectId}/generation-jobs/recommended-regeneration`,
-          selected.revision
-        )
+        withRevision(`/api/projects/${projectId}/generation-jobs/recommended-regeneration`, selected.revision)
       );
       const adopted = await adoptMutationResponse(response);
       if (!adopted.applied || !adopted.project) return;

@@ -536,7 +536,7 @@ export interface paths {
         put?: never;
         /**
          * Regenerate Recommended Panels
-         * @description preflightで再生成推奨のコマ（白紙・低彩度）を再生成キューへ積む。
+         * @description preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
          *
          *     白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
          */

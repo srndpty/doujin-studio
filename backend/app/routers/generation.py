@@ -222,7 +222,7 @@ async def regenerate_recommended_panels(
     request: Request,
     revision: int,
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
-    """preflightで再生成推奨のコマ（白紙・低彩度）を再生成キューへ積む。
+    """preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
 
     白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
     """
@@ -257,7 +257,7 @@ async def _queue_recommended_regeneration(
     settings = request.app.state.settings
     snapshot = request.app.state.mutation.require_revision(project_id, revision)
     issues = preflight_module.preflight_project(snapshot.manga, settings.export_dir)
-    regen_codes = {"empty_panel_image", "monochrome_panel"}
+    regen_codes = {"empty_panel_image", "monochrome_panel", "subject_too_small"}
     target_ids = list(
         dict.fromkeys(
             issue.panel_id for issue in issues if issue.code in regen_codes and issue.panel_id
@@ -269,6 +269,18 @@ async def _queue_recommended_regeneration(
     blank_ids = {
         issue.panel_id for issue in issues if issue.code == "empty_panel_image" and issue.panel_id
     }
+
+    def blank_prompts_need_cleanup(manga) -> bool:
+        for page in manga.pages:
+            for panel in page.panels:
+                if panel.panel_id not in blank_ids:
+                    continue
+                for attr in ("prompt", "composition_notes"):
+                    if normalize_prompt(getattr(panel, attr)).changed:
+                        return True
+                if normalize_prompt(panel.generation.prompt).changed:
+                    return True
+        return False
 
     def clean_blank_prompts(manga):
         changed_pages: set[int] = set()
@@ -291,7 +303,7 @@ async def _queue_recommended_regeneration(
                     changed_pages.add(page.page)
         return sorted(changed_pages)
 
-    if blank_ids:
+    if blank_ids and blank_prompts_need_cleanup(snapshot.manga):
         cleaned = request.app.state.mutation.mutate_user(
             project_id, expected_revision=revision, mutate=clean_blank_prompts
         )

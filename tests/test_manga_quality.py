@@ -11,11 +11,9 @@ from backend.app.prompt_composer import compose_panel_prompts
 from backend.app.renderer import _panel_box_px, compute_bubble_layout
 from backend.app.rendering import build_production_status
 from backend.app.schemas import (
-    MAX_CROP_SCALE,
     BalloonTail,
     Character,
     Dialogue,
-    GenerationInfo,
     MangaProject,
     Page,
     Panel,
@@ -972,20 +970,10 @@ def test_image_metrics_subject_too_small(tmp_path) -> None:
     path = tmp_path / "small.png"
     image.save(path)
     issues = _quality_issues(_image_panel(path))
-    assert any(i.code == "subject_too_small" and i.fixable for i in issues)
+    small = [i for i in issues if i.code == "subject_too_small"]
+    assert small and not small[0].fixable
+    assert "再生成" in small[0].suggestion
     assert not any(i.code == "empty_panel_image" for i in issues)
-
-
-def test_subject_too_small_not_fixable_at_crop_limit(tmp_path) -> None:
-    """crop拡大が上限のコマは自動修正不可として手動suggestionへ切り替える（領域6）。"""
-    image = PILImage.new("RGB", (128, 128), (255, 255, 255))
-    image.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
-    path = tmp_path / "small_limit.png"
-    image.save(path)
-    panel = _image_panel(path, generation=GenerationInfo(crop_scale=MAX_CROP_SCALE))
-    issues = [i for i in _quality_issues(panel) if i.code == "subject_too_small"]
-    assert issues and all(not i.fixable for i in issues)
-    assert "上限" in issues[0].suggestion
 
 
 def test_image_metrics_monochrome_panel(tmp_path) -> None:

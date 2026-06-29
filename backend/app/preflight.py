@@ -22,15 +22,7 @@ from .renderer import (
     resolve_dialogue_layout,
     sfx_bbox_px,
 )
-from .schemas import (
-    MAX_CROP_SCALE,
-    Character,
-    Dialogue,
-    MangaProject,
-    Page,
-    Panel,
-    PreflightIssue,
-)
+from .schemas import Character, Dialogue, MangaProject, Page, Panel, PreflightIssue
 from .story import normalize_sfx_text, panel_shape_allowed
 
 # 画像メトリクス検査のしきい値。
@@ -982,9 +974,6 @@ def _check_image_metrics(
             and not is_non_character_mode(panel)
             and metrics["subject_bbox_ratio"] < SUBJECT_BBOX_MIN_RATIO
         ):
-            # crop拡大が上限に達していると自動修正は何もできない。その場合は手動対応の
-            # suggestionへ切り替え、fixable=Falseにして「自動修正可」の偽カウントを防ぐ（領域6）。
-            at_crop_limit = panel.generation.crop_scale >= MAX_CROP_SCALE
             issues.append(
                 PreflightIssue(
                     level="warning",
@@ -994,12 +983,9 @@ def _check_image_metrics(
                     panel_id=panel.panel_id,
                     category="image_quality",
                     suggestion=(
-                        "cropは拡大上限です。被写体を大きく描いた画像へ再生成するか、構図・"
-                        "promptを調整してください"
-                        if at_crop_limit
-                        else "被写体を大きく配置する構図・crop・promptへ調整してください"
+                        "被写体を大きく描いた画像へ再生成するか、構図・promptを調整してください"
                     ),
-                    fixable=not at_crop_limit,
+                    fixable=False,
                 )
             )
         if (

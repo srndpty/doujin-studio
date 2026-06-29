@@ -22,6 +22,7 @@ import {
   SHAPE_INSCRIBE,
   layoutTextGrid
 } from "./typeset-layout";
+import type { GridLayout } from "./typeset-layout";
 import {
   BACKGROUND_DENSITIES,
   BALLOON_KINDS,
@@ -509,7 +510,6 @@ export function PageEditor({
                     if (!panel) return;
                     panel.frame_points = points;
                     panel.shape_points = null;
-                    panel.bbox = bboxFromFramePoints(points);
                     panel.frame_source = "manual";
                   })
                 }
@@ -523,7 +523,6 @@ export function PageEditor({
                     const points = rectFramePoints(panel.bbox);
                     panel.frame_points = points;
                     panel.shape_points = null;
-                    panel.bbox = bboxFromFramePoints(points);
                     panel.frame_source = "manual";
                   })
                 }
@@ -948,7 +947,6 @@ function DialogueNode({
   const bh = box[3] * ph;
   const tip = dialogue.tail?.tip ?? [0.5, 0.95];
   const layout = previewTextLayout(dialogue, bw, bh, typeDefaults);
-  const displayText = layout.displayText;
   const burstPoints = Array.from({ length: 24 }, (_, index) => {
     const angle = (index / 24) * Math.PI * 2;
     const radius = index % 2 === 0 ? 0.5 : 0.4;
@@ -1000,19 +998,7 @@ function DialogueNode({
             strokeWidth={dialogue.balloon === "cloud" ? 6 : 3}
           />
         )}
-        <Text
-          x={layout.x}
-          y={layout.y}
-          width={layout.width}
-          height={layout.height}
-          text={displayText}
-          fontFamily="源暎アンチック, BIZ UDPGothic"
-          fontSize={layout.fontSize}
-          align="center"
-          verticalAlign="middle"
-          fill="#191919"
-          wrap="char"
-        />
+        <PreviewTypesetText layout={layout} />
       </Group>
       {showTail && (
         <Group
@@ -1030,6 +1016,82 @@ function DialogueNode({
   );
 }
 
+function PreviewTypesetText({ layout }: { layout: PreviewDialogueLayout }) {
+  const fontFamily = "源暎アンチック, BIZ UDPGothic";
+  if (layout.grid.vertical) {
+    const startRight = layout.x + layout.width - Math.max(0, (layout.width - layout.grid.width) / 2);
+    return (
+      <Group>
+        {layout.grid.lines.flatMap((line, lineIndex) => {
+          const colCx = startRight - layout.grid.advance * (lineIndex + 0.5);
+          return line.map((token, cellIndex) => {
+            const cellCy = layout.y + layout.grid.cell * (cellIndex + 0.5);
+            const key = `${lineIndex}-${cellIndex}-${token.kind}-${token.text}`;
+            if (token.kind === "tcy") {
+              return (
+                <Text
+                  key={key}
+                  x={colCx - layout.grid.cell / 2}
+                  y={cellCy - layout.grid.cell / 2}
+                  width={layout.grid.cell}
+                  height={layout.grid.cell}
+                  text={token.text}
+                  fontFamily={fontFamily}
+                  fontSize={Math.max(8, layout.grid.fontSize * 0.62)}
+                  align="center"
+                  verticalAlign="middle"
+                  fill="#191919"
+                />
+              );
+            }
+            return (
+              <Text
+                key={key}
+                x={colCx - layout.grid.cell / 2}
+                y={cellCy - layout.grid.cell / 2}
+                width={layout.grid.cell}
+                height={layout.grid.cell}
+                text={token.text}
+                fontFamily={fontFamily}
+                fontSize={layout.grid.fontSize}
+                align="center"
+                verticalAlign="middle"
+                fill="#191919"
+                rotation={token.kind === "rot" ? -90 : 0}
+                offsetX={token.kind === "rot" ? layout.grid.cell / 2 : 0}
+                offsetY={token.kind === "rot" ? layout.grid.cell / 2 : 0}
+              />
+            );
+          });
+        })}
+      </Group>
+    );
+  }
+  const startTop = layout.y + Math.max(0, (layout.height - layout.grid.height) / 2);
+  return (
+    <Group>
+      {layout.grid.lines.map((line, lineIndex) => {
+        const lineText = line.map((token) => token.text).join("");
+        return (
+          <Text
+            key={`${lineIndex}-${lineText}`}
+            x={layout.x}
+            y={startTop + layout.grid.cell * lineIndex}
+            width={layout.width}
+            height={layout.grid.cell}
+            text={lineText}
+            fontFamily={fontFamily}
+            fontSize={layout.grid.fontSize}
+            align="center"
+            verticalAlign="middle"
+            fill="#191919"
+          />
+        );
+      })}
+    </Group>
+  );
+}
+
 const TEXT_FLOOR_SIZE = 18;
 // 写植の既定フォントサイズ。projectのtypographyから供給し、無ければバックエンド既定へ退避する。
 type TypeDefaults = { defaultSize: number; minSize: number };
@@ -1038,12 +1100,22 @@ const DEFAULT_TYPE_DEFAULTS: TypeDefaults = {
   minSize: DEFAULT_MIN_FONT_SIZE
 };
 
+type PreviewDialogueLayout = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  fits: boolean;
+  grid: GridLayout;
+};
+
 function previewTextLayout(
   dialogue: Dialogue,
   bubbleW: number,
   bubbleH: number,
   typeDefaults: TypeDefaults = DEFAULT_TYPE_DEFAULTS
-) {
+): PreviewDialogueLayout {
   // 最終レンダラー（renderer.compute_bubble_layout のboxパス）と同じ内接矩形・収まり計算を使う。
   // 手動改行・禁則・縦中横・行/列数まで揃え、プレビューの文字サイズと出力を一致させる（領域7）。
   const [fx, fy] = SHAPE_INSCRIBE[dialogue.balloon] ?? [1.05, 1.05];
@@ -1072,7 +1144,7 @@ function previewTextLayout(
     height: textH,
     fontSize: grid.fontSize,
     fits: grid.fits,
-    displayText: dialogue.vertical ? [...dialogue.text].join("\n") : dialogue.text
+    grid
   };
 }
 
@@ -1281,6 +1353,7 @@ function PolygonControls({
     const next = points.map(([x, y]) => [x, y] as [number, number]);
     next[pointIndex] = [...next[pointIndex]] as [number, number];
     next[pointIndex][axis] = snap(clampFrame(value));
+    if (framePointsError(next)) return;
     onChange(next);
   };
   return (

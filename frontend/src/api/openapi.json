@@ -1926,7 +1926,7 @@
     "/api/projects/{project_id}/generation-jobs/recommended-regeneration": {
       "post": {
         "summary": "Regenerate Recommended Panels",
-        "description": "preflightで再生成推奨のコマ（白紙・低彩度）を再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
+        "description": "preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
         "operationId": "regenerate_recommended_panels",
         "parameters": [
           {
