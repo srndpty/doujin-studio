@@ -640,7 +640,7 @@ def _run_autofix(
         else preflight_module.preflight_project(checked.manga, export_dir)
     )
     dry_run = checked.manga.model_copy(deep=True)
-    planned = autofix_manga(dry_run, page_number, current_issues)
+    planned = autofix_manga(dry_run, page_number)
     if not planned:
         return to_project_mutation_response(
             request,
@@ -654,16 +654,7 @@ def _run_autofix(
         )
 
     def mutate(manga: MangaProject) -> list[str]:
-        issues = (
-            preflight_module.preflight_page(
-                manga,
-                next(item for item in manga.pages if item.page == page_number),
-                export_dir=export_dir,
-            )
-            if page_number is not None
-            else preflight_module.preflight_project(manga, export_dir)
-        )
-        changes = autofix_manga(manga, page_number, issues)
+        changes = autofix_manga(manga, page_number)
         affected = {change.page for change in changes}
         for page in manga.pages:
             if page.page in affected:

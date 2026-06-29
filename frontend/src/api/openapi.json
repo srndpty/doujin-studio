@@ -1926,7 +1926,7 @@
     "/api/projects/{project_id}/generation-jobs/recommended-regeneration": {
       "post": {
         "summary": "Regenerate Recommended Panels",
-        "description": "preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。",
+        "description": "preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。\n\n白紙はpromptを整理してから、低彩度・小被写体はseedを変えて別候補を狙う。対象が無ければ404。",
         "operationId": "regenerate_recommended_panels",
         "parameters": [
           {
@@ -1993,7 +1993,7 @@
     "/api/projects/{project_id}/generation-jobs/blank": {
       "post": {
         "summary": "Regenerate Blank Panels",
-        "description": "非推奨。``/generation-jobs/recommended-regeneration`` の旧エイリアス。\n\n対象は白紙(empty_panel_image)だけでなく低彩度(monochrome_panel)も含むため、\n名称に意味を合わせた新エンドポイントへ移行する。互換のため当面残す。",
+        "description": "非推奨。白紙コマ(empty_panel_image)だけを再生成する旧エンドポイント。\n\n旧契約のまま白紙のみを対象にし、低彩度・小被写体を含む推奨3種は新エンドポイント\n``/generation-jobs/recommended-regeneration`` を使う。互換のため当面残す。",
         "operationId": "regenerate_blank_panels",
         "deprecated": true,
         "parameters": [

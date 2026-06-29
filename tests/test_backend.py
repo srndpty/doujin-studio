@@ -5364,3 +5364,53 @@ def test_recommended_regeneration_targets_subject_too_small(tmp_path: Path) -> N
         assert response.status_code == 200
         jobs = response.json()["result"]["jobs"]
         assert {job["panel_id"] for job in jobs} == {panel_id}
+
+
+def test_blank_vs_recommended_endpoints_target_scope(tmp_path: Path) -> None:
+    """旧 /blank は白紙のみ、新 /recommended-regeneration は白紙・低彩度・小被写体を対象にする。"""
+    from PIL import Image as PILImage
+
+    def _setup(client: TestClient) -> tuple[str, dict[str, str]]:
+        project_id = create_generated_project(client)
+        export_dir = tmp_path / "exports" / project_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        # 白紙・低彩度・小被写体をそれぞれ別画像で用意する。
+        PILImage.new("RGB", (128, 128), (255, 255, 255)).save(export_dir / "blank.png")
+        PILImage.new("RGB", (128, 128), (128, 128, 128)).save(export_dir / "gray.png")
+        small = PILImage.new("RGB", (128, 128), (255, 255, 255))
+        small.paste(PILImage.new("RGB", (30, 30), (210, 40, 40)), (50, 50))
+        small.save(export_dir / "small.png")
+
+        manga = client.get(f"/api/projects/{project_id}").json()["manga_json"]
+        panels = [panel for page in manga["pages"] for panel in page["panels"]]
+        assert len(panels) >= 3
+        assignment = {
+            "empty_panel_image": panels[0]["panel_id"],
+            "monochrome_panel": panels[1]["panel_id"],
+            "subject_too_small": panels[2]["panel_id"],
+        }
+        for panel, asset in zip(panels[:3], ("blank.png", "gray.png", "small.png"), strict=True):
+            panel["image_asset"] = f"{project_id}/{asset}"
+            # 小被写体・低彩度の判定が抑制されないよう人物コマにする。
+            panel["subject_mode"] = "character_scene"
+        assert put_manga(client, project_id, manga).status_code == 200
+        return project_id, assignment
+
+    with make_client(tmp_path) as client:
+        # 旧 /blank は白紙コマだけを再生成する。
+        blank_project, blank_ids = _setup(client)
+        blank_response = client.post(mutation_url(client, blank_project, "generation-jobs/blank"))
+        assert blank_response.status_code == 200
+        blank_jobs = {job["panel_id"] for job in blank_response.json()["result"]["jobs"]}
+        assert blank_jobs == {blank_ids["empty_panel_image"]}
+
+        # 新 endpoint は推奨3種すべてを再生成対象にする。
+        recommended_project, rec_ids = _setup(client)
+        recommended_response = client.post(
+            mutation_url(client, recommended_project, "generation-jobs/recommended-regeneration")
+        )
+        assert recommended_response.status_code == 200
+        recommended_jobs = {
+            job["panel_id"] for job in recommended_response.json()["result"]["jobs"]
+        }
+        assert recommended_jobs == set(rec_ids.values())

@@ -42,3 +42,6 @@ def test_typeset_fixture_matches_renderer(case: dict) -> None:
     assert layout.font_size == expect["font_size"]
     assert len(layout.columns) == expect["line_count"]
     assert layout.fits == expect["fits"]
+    # 行/列のtoken分割（禁則・手動改行・縦中横の結果）まで一致を要求する（領域5）。
+    actual_lines = [[{"kind": kind, "text": text} for kind, text in col] for col in layout.columns]
+    assert actual_lines == expect["lines"]

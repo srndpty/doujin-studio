@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from .preflight import TAIL_SPEAKER_MAX_DISTANCE, _speaker_center
 from .prompt_normalizer import normalize_prompt
-from .schemas import MangaProject, Page, PreflightIssue
+from .schemas import MangaProject, Page
 from .story import normalize_sfx_text
 
 
@@ -125,7 +125,7 @@ def _fix_balloon_tails(page: Page) -> list[AutofixChange]:
     return changes
 
 
-def autofix_page(page: Page, issues: list[PreflightIssue] | None = None) -> list[AutofixChange]:
+def autofix_page(page: Page) -> list[AutofixChange]:
     """1ページ分のfixableな問題を修正し、適用した修正の説明を返す。"""
     changes: list[AutofixChange] = []
     changes.extend(_fix_prompt_blank_risk(page))
@@ -138,12 +138,11 @@ def autofix_page(page: Page, issues: list[PreflightIssue] | None = None) -> list
 def autofix_manga(
     manga: MangaProject,
     page_number: int | None = None,
-    issues: list[PreflightIssue] | None = None,
 ) -> list[AutofixChange]:
     """fixableな問題を自動修正する。page_number指定時はそのページのみ対象にする。"""
     changes: list[AutofixChange] = []
     for page in manga.pages:
         if page_number is not None and page.page != page_number:
             continue
-        changes.extend(autofix_page(page, issues))
+        changes.extend(autofix_page(page))
     return changes

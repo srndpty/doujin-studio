@@ -224,9 +224,14 @@ async def regenerate_recommended_panels(
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
     """preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
 
-    白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
+    白紙はpromptを整理してから、低彩度・小被写体はseedを変えて別候補を狙う。対象が無ければ404。
     """
-    return await _queue_recommended_regeneration(project_id, request, revision)
+    return await _queue_recommended_regeneration(
+        project_id,
+        request,
+        revision,
+        {"empty_panel_image", "monochrome_panel", "subject_too_small"},
+    )
 
 
 @router.post(
@@ -241,23 +246,25 @@ async def regenerate_blank_panels(
     request: Request,
     revision: int,
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
-    """非推奨。``/generation-jobs/recommended-regeneration`` の旧エイリアス。
+    """非推奨。白紙コマ(empty_panel_image)だけを再生成する旧エンドポイント。
 
-    対象は白紙(empty_panel_image)だけでなく低彩度(monochrome_panel)も含むため、
-    名称に意味を合わせた新エンドポイントへ移行する。互換のため当面残す。
+    旧契約のまま白紙のみを対象にし、低彩度・小被写体を含む推奨3種は新エンドポイント
+    ``/generation-jobs/recommended-regeneration`` を使う。互換のため当面残す。
     """
-    return await _queue_recommended_regeneration(project_id, request, revision)
+    return await _queue_recommended_regeneration(
+        project_id, request, revision, {"empty_panel_image"}
+    )
 
 
 async def _queue_recommended_regeneration(
     project_id: str,
     request: Request,
     revision: int,
+    regen_codes: set[str],
 ) -> ProjectMutationResponse[BatchGenerationJobResult]:
     settings = request.app.state.settings
     snapshot = request.app.state.mutation.require_revision(project_id, revision)
     issues = preflight_module.preflight_project(snapshot.manga, settings.export_dir)
-    regen_codes = {"empty_panel_image", "monochrome_panel", "subject_too_small"}
     target_ids = list(
         dict.fromkeys(
             issue.panel_id for issue in issues if issue.code in regen_codes and issue.panel_id

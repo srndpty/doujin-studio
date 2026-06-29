@@ -20,7 +20,8 @@ import {
   DEFAULT_FONT_SIZE,
   DEFAULT_MIN_FONT_SIZE,
   SHAPE_INSCRIBE,
-  layoutTextGrid
+  layoutTextGrid,
+  verticalCellPlacement
 } from "./typeset-layout";
 import type { GridLayout } from "./typeset-layout";
 import {
@@ -530,7 +531,7 @@ export function PageEditor({
                 外接矩形に戻す
               </button>
               <small className="hint">
-                コマ枠はページ座標polygonで保存します。bboxは外接矩形として同期します。
+                polygonはコマのクリップ形状としてページ座標で保存します。bboxは吹き出し・安全領域などの座標基準として維持します。
               </small>
             </fieldset>
             <CropControls
@@ -1044,11 +1045,12 @@ function PreviewTypesetText({ layout }: { layout: PreviewDialogueLayout }) {
                 />
               );
             }
+            const placement = verticalCellPlacement(token.kind === "rot", colCx, cellCy, layout.grid.cell);
             return (
               <Text
                 key={key}
-                x={colCx - layout.grid.cell / 2}
-                y={cellCy - layout.grid.cell / 2}
+                x={placement.x}
+                y={placement.y}
                 width={layout.grid.cell}
                 height={layout.grid.cell}
                 text={token.text}
@@ -1057,9 +1059,9 @@ function PreviewTypesetText({ layout }: { layout: PreviewDialogueLayout }) {
                 align="center"
                 verticalAlign="middle"
                 fill="#191919"
-                rotation={token.kind === "rot" ? -90 : 0}
-                offsetX={token.kind === "rot" ? layout.grid.cell / 2 : 0}
-                offsetY={token.kind === "rot" ? layout.grid.cell / 2 : 0}
+                rotation={placement.rotation}
+                offsetX={placement.offsetX}
+                offsetY={placement.offsetY}
               />
             );
           });

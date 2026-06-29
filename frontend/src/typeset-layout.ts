@@ -172,3 +172,37 @@ export function layoutTextGrid(
   }
   return chosen ?? layoutAtSize(text, areaW, areaH, vertical, minSize, maxLines);
 }
+
+export type CellPlacement = {
+  x: number;
+  y: number;
+  offsetX: number;
+  offsetY: number;
+  rotation: number;
+};
+
+/**
+ * 縦書きの1セルをKonva Textで描くときの配置を返す。
+ * 回転トークン(rot)はセル中心を軸に-90度回す。Konvaではoffset指定時のx/yが変換原点に
+ * なるため、原点をセル中心(offset=cell/2)に取り、x/yへセル中心座標を渡す。通常トークンは
+ * offsetなしの左上基準。これにより回転トークンも通常トークンと同じセル中心へ揃う（領域2）。
+ */
+export function verticalCellPlacement(
+  isRotated: boolean,
+  colCx: number,
+  cellCy: number,
+  cell: number
+): CellPlacement {
+  if (isRotated) {
+    return { x: colCx, y: cellCy, offsetX: cell / 2, offsetY: cell / 2, rotation: -90 };
+  }
+  return { x: colCx - cell / 2, y: cellCy - cell / 2, offsetX: 0, offsetY: 0, rotation: 0 };
+}
+
+/** verticalCellPlacementが示すセルの視覚中心（配置検証用）。 */
+export function cellPlacementCenter(placement: CellPlacement, cell: number): [number, number] {
+  // offsetが半セルならx/y自体が原点=セル中心。offsetなしなら左上基準なので半セル足す。
+  const cx = placement.offsetX === cell / 2 ? placement.x : placement.x + cell / 2;
+  const cy = placement.offsetY === cell / 2 ? placement.y : placement.y + cell / 2;
+  return [cx, cy];
+}

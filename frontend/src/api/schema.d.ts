@@ -538,7 +538,7 @@ export interface paths {
          * Regenerate Recommended Panels
          * @description preflightで再生成推奨のコマ（白紙・低彩度・小被写体）を再生成キューへ積む。
          *
-         *     白紙はpromptを整理してから、低彩度はseedを変えて別候補を狙う。対象が無ければ404。
+         *     白紙はpromptを整理してから、低彩度・小被写体はseedを変えて別候補を狙う。対象が無ければ404。
          */
         post: operations["regenerate_recommended_panels"];
         delete?: never;
@@ -559,10 +559,10 @@ export interface paths {
         /**
          * Regenerate Blank Panels
          * @deprecated
-         * @description 非推奨。``/generation-jobs/recommended-regeneration`` の旧エイリアス。
+         * @description 非推奨。白紙コマ(empty_panel_image)だけを再生成する旧エンドポイント。
          *
-         *     対象は白紙(empty_panel_image)だけでなく低彩度(monochrome_panel)も含むため、
-         *     名称に意味を合わせた新エンドポイントへ移行する。互換のため当面残す。
+         *     旧契約のまま白紙のみを対象にし、低彩度・小被写体を含む推奨3種は新エンドポイント
+         *     ``/generation-jobs/recommended-regeneration`` を使う。互換のため当面残す。
          */
         post: operations["regenerate_blank_panels"];
         delete?: never;
