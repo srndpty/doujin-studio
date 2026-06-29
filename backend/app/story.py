@@ -5,11 +5,10 @@ import json
 import logging
 import math
 import re
-import uuid
 from dataclasses import dataclass, field
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from . import knowledge, layout_engine
@@ -18,143 +17,85 @@ from .database import KnowledgeChunkRecord, StoryGenerationSessionRecord, now_ut
 from .generator import (
     DEFAULT_COMMON_NEGATIVE_PROMPT,
     DEFAULT_COMMON_POSITIVE_PROMPT,
-    LAYOUTS,
     compute_generation_size,
 )
 from .llm import LLMError, StubLLMClient, extract_json_object
 from .schemas import (
-    BriefCharacter,
-    BriefStage,
-    Character,
-    CharacterArc,
     Dialogue,
     GenerationInfo,
     MangaProject,
     Page,
-    PageOutline,
-    PagesStage,
     Panel,
     PanelCharacter,
-    PlotStage,
     ScriptCharacter,
     ScriptPanel,
     ScriptStage,
     Sfx,
-    StorySessionResponse,
-    StoryStageState,
 )
+from .story_characters import (
+    build_characters_from_knowledge,
+    match_character_id,
+    merge_knowledge_characters,
+    resolve_character_ids,
+)
+from .story_layout import distribute_rows, grid_layout, select_layout
+from .story_stage import (
+    STAGE_ORDER,
+    StoryError,
+    create_session,
+    empty_stages,
+    invalidate_downstream,
+    load_stages,
+    require_previous_ready,
+    save_stages,
+    session_to_response,
+    validate_stage_data,
+)
+from .story_stub import generate_stub_stage, stub_character_names
 
-STAGE_ORDER = ["brief", "plot", "pages", "script"]
-STAGE_MODELS: dict[str, type[BaseModel]] = {
-    "brief": BriefStage,
-    "plot": PlotStage,
-    "pages": PagesStage,
-    "script": ScriptStage,
-}
-
-# コマ数とlayout hintから割り当てる既存レイアウト（bboxはサーバーが決める）。
-PANEL_LAYOUTS: dict[int, dict[str, list[tuple[float, float, float, float]]]] = {
-    1: {"default": [(0.06, 0.05, 0.88, 0.9)]},
-    2: {
-        "default": [(0.06, 0.05, 0.88, 0.43), (0.06, 0.52, 0.88, 0.43)],
-        "horizontal": [(0.06, 0.05, 0.42, 0.9), (0.52, 0.05, 0.42, 0.9)],
-    },
-    3: {
-        "default": LAYOUTS["reaction_3"],
-        "punchline": LAYOUTS["punchline_3"],
-    },
-    4: {
-        "default": LAYOUTS["conversation_4"],
-        "vertical": LAYOUTS["vertical_3_start"],
-    },
-}
-
-
-class StoryError(Exception):
-    """段階生成の前提条件違反などのユーザー向けエラー。"""
-
-    def __init__(self, message: str, status_code: int = 400) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-# --- ステージ状態の入出力 ---
-
-
-def empty_stages() -> dict:
-    return {
-        name: {
-            "status": "empty",
-            "data": None,
-            "knowledge_ids": [],
-            "error": None,
-            "warnings": [],
-            "updated_at": None,
-        }
-        for name in STAGE_ORDER
-    }
-
-
-def load_stages(record: StoryGenerationSessionRecord) -> dict:
-    try:
-        stages = json.loads(record.stages_json) if record.stages_json else {}
-    except json.JSONDecodeError:
-        stages = {}
-    base = empty_stages()
-    for name in STAGE_ORDER:
-        if name in stages and isinstance(stages[name], dict):
-            base[name].update(stages[name])
-    return base
-
-
-def save_stages(session: Session, record: StoryGenerationSessionRecord, stages: dict) -> None:
-    record.stages_json = json.dumps(stages, ensure_ascii=False)
-    record.updated_at = now_utc()
-    session.commit()
-    session.refresh(record)
-
-
-def session_to_response(record: StoryGenerationSessionRecord) -> StorySessionResponse:
-    stages = load_stages(record)
-    return StorySessionResponse(
-        id=record.id,
-        project_id=record.project_id,
-        work_name=record.work_name,
-        target_pages=record.target_pages,
-        instruction=record.instruction,
-        stages={name: StoryStageState.model_validate(stages[name]) for name in STAGE_ORDER},
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
-
-
-def create_session(
-    session: Session,
-    *,
-    project_id: str,
-    work_name: str,
-    target_pages: int,
-    instruction: str,
-    commit: bool = True,
-) -> StoryGenerationSessionRecord:
-    record = StoryGenerationSessionRecord(
-        id=str(uuid.uuid4()),
-        project_id=project_id,
-        work_name=work_name,
-        target_pages=target_pages,
-        instruction=instruction,
-        stages_json=json.dumps(empty_stages(), ensure_ascii=False),
-        created_at=now_utc(),
-        updated_at=now_utc(),
-    )
-    session.add(record)
-    if commit:
-        session.commit()
-        session.refresh(record)
-    else:
-        session.flush()
-    return record
-
+__all__ = [
+    "STAGE_ORDER",
+    "KnowledgeContext",
+    "StoryError",
+    "apply_session",
+    "approve_stage",
+    "build_context",
+    "build_characters_from_knowledge",
+    "build_panel_sfx",
+    "build_stage_messages",
+    "classify_subject_mode",
+    "create_session",
+    "distribute_rows",
+    "empty_stages",
+    "format_chunk",
+    "free_comfyui_vram",
+    "generate_llm_stage",
+    "generate_stage",
+    "generate_stub_stage",
+    "get_generation_progress",
+    "grid_layout",
+    "invalidate_downstream",
+    "load_stages",
+    "match_character_id",
+    "merge_knowledge_characters",
+    "merge_unresolved_warnings",
+    "normalize_manga_sfx",
+    "normalize_sfx_text",
+    "require_previous_ready",
+    "resolve_character_ids",
+    "restore_revision",
+    "review_script",
+    "save_stages",
+    "script_needs_repaneling",
+    "script_to_manga",
+    "select_layout",
+    "session_to_response",
+    "stage_instruction_text",
+    "stage_query",
+    "stub_character_names",
+    "update_stage",
+    "validate_stage_data",
+]
 
 # --- 知識コンテキスト ---
 
@@ -239,51 +180,6 @@ def stage_query(stage: str, record: StoryGenerationSessionRecord, stages: dict) 
 
 
 # --- 段階生成 ---
-
-
-def require_previous_ready(stage: str, stages: dict) -> None:
-    """前段階が生成済み（データあり）であることだけを要求する。
-
-    承認フローは廃止したため、前段階の生成が終われば次段階を生成できる。
-    不満があれば各段階を再生成すればよい。
-    """
-    index = STAGE_ORDER.index(stage)
-    if index == 0:
-        return
-    previous = STAGE_ORDER[index - 1]
-    if stages[previous]["status"] == "empty" or stages[previous]["data"] is None:
-        raise StoryError(f"前段階「{previous}」を生成してから生成してください")
-
-
-def invalidate_downstream(stages: dict, stage: str) -> None:
-    index = STAGE_ORDER.index(stage)
-    for downstream in STAGE_ORDER[index + 1 :]:
-        if stages[downstream]["status"] != "empty":
-            stages[downstream]["data"] = None
-            stages[downstream]["status"] = "empty"
-            stages[downstream]["error"] = None
-            stages[downstream]["warnings"] = []
-
-
-def validate_stage_data(stage: str, data: dict, target_pages: int) -> dict:
-    # LLMがpages/script段階でラッパーを省き配列だけを返すことがあるため吸収する。
-    if stage in {"pages", "script"} and isinstance(data, list):
-        data = {"pages": data}
-    model = STAGE_MODELS[stage]
-    validated = model.model_validate(data)
-    if stage == "pages":
-        assert isinstance(validated, PagesStage)
-        if len(validated.pages) != target_pages:
-            raise ValueError(
-                f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）"
-            )
-    if stage == "script":
-        assert isinstance(validated, ScriptStage)
-        if len(validated.pages) != target_pages:
-            raise ValueError(
-                f"ページ数は{target_pages}にしてください（現在{len(validated.pages)}）"
-            )
-    return validated.model_dump()
 
 
 logger = logging.getLogger(__name__)
@@ -726,324 +622,7 @@ async def generate_llm_stage(
 # --- スタブ生成 ---
 
 
-def stub_character_names(session: Session, work_name: str) -> list[str]:
-    names: list[str] = []
-    if work_name:
-        chunks = (
-            session.query(KnowledgeChunkRecord)
-            .filter(
-                KnowledgeChunkRecord.work_name == work_name,
-                KnowledgeChunkRecord.kind == "character",
-            )
-            .all()
-        )
-        for chunk in chunks:
-            if chunk.title and chunk.title not in names:
-                names.append(chunk.title)
-    return names
-
-
-def generate_stub_stage(
-    session: Session,
-    record: StoryGenerationSessionRecord,
-    stages: dict,
-    stage: str,
-) -> dict:
-    work_name = record.work_name or "本作"
-    target = record.target_pages
-    if stage == "brief":
-        names = stub_character_names(session, record.work_name) or ["主役", "相方"]
-        required = knowledge.get_required_chunks(session, record.work_name)
-        canon = [f"{chunk.title or chunk.kind or '設定'}を守る" for chunk in required] or [
-            "原作の雰囲気を保つ"
-        ]
-        brief = BriefStage(
-            synopsis=(record.instruction or f"{work_name}を舞台にした{target}ページの短編。"),
-            tone="原作準拠で軽妙",
-            characters=[
-                BriefCharacter(name=name, role="主役" if index == 0 else "登場人物")
-                for index, name in enumerate(names[:4])
-            ],
-            canon_conditions=canon,
-        )
-        return brief.model_dump()
-    if stage == "plot":
-        brief = stages["brief"].get("data") or {}
-        synopsis = brief.get("synopsis", f"{work_name}の物語")
-        characters = brief.get("characters", []) or [{"name": "主役", "role": "主役"}]
-        plot = PlotStage(
-            ki=f"導入: {synopsis}",
-            sho="展開: 二人の関係や状況が動き出す。",
-            ten="転換: 予想外の出来事で空気が変わる。",
-            ketsu="結末: 指定の方向で余韻を残して締める。",
-            beats=[f"ビート{index + 1}" for index in range(max(target // 2, 2))],
-            character_arcs=[
-                CharacterArc(name=c.get("name", "主役"), arc="心情が一歩動く") for c in characters
-            ],
-        )
-        return plot.model_dump()
-    if stage == "pages":
-        brief = stages["brief"].get("data") or {}
-        plot = stages["plot"].get("data") or {}
-        names = [c.get("name", "主役") for c in brief.get("characters", [])] or ["主役", "相方"]
-        beats = plot.get("beats", []) or ["導入", "展開", "転換", "結末"]
-        outlines = []
-        for page_number in range(1, target + 1):
-            beat = beats[(page_number - 1) % len(beats)]
-            outlines.append(
-                PageOutline(
-                    page=page_number,
-                    purpose=f"{beat}を描く",
-                    setting="基本の舞台",
-                    characters=names[: 2 if page_number % 2 else 1],
-                    hook=f"{page_number + 1}ページへ引く"
-                    if page_number < target
-                    else "オチで締める",
-                )
-            )
-        return PagesStage(pages=outlines).model_dump()
-    if stage == "script":
-        pages_stage = stages["pages"].get("data") or {}
-        outlines = pages_stage.get("pages", [])
-        script_pages = []
-        for outline in outlines:
-            page_number = int(outline.get("page", 1))
-            characters = outline.get("characters", []) or ["主役"]
-            panel_count = 4 if page_number % 2 == 0 else 3
-            panels = []
-            for panel_index in range(panel_count):
-                speaker = characters[panel_index % len(characters)]
-                panels.append(
-                    {
-                        "shot": "バストアップ" if panel_index % 2 else "ロングショット",
-                        "camera": "正面" if panel_index % 2 else "やや俯瞰",
-                        "location": outline.get("setting", "基本の舞台"),
-                        "visual_prompt": (
-                            f"anime style, {outline.get('purpose', 'scene')}, "
-                            f"{'close up expressive face' if panel_index % 2 else 'establishing shot'}"
-                        ),
-                        "characters": [speaker]
-                        if panel_index == panel_count - 1
-                        else list(characters),
-                        "dialogue": [
-                            {"speaker": speaker, "text": f"{outline.get('purpose', '場面')}…"}
-                        ]
-                        if panel_index != panel_count - 1
-                        else [],
-                        "sfx": ["しーん"]
-                        if panel_index == panel_count - 1 and page_number % 2
-                        else [],
-                    }
-                )
-            script_pages.append({"page": page_number, "panels": panels})
-        return ScriptStage.model_validate({"pages": script_pages}).model_dump()
-    raise StoryError("不正な段階です", status_code=422)
-
-
 # --- Manga JSON変換と適用 ---
-
-
-def distribute_rows(panel_count: int, max_cols: int = 3) -> list[int]:
-    """コマ数を1行あたり最大max_colsで均等な行構成へ分配する。"""
-    panel_count = max(1, panel_count)
-    n_rows = math.ceil(panel_count / max_cols)
-    base, extra = divmod(panel_count, n_rows)
-    # 余りは上の行から1コマずつ足す（読み始めを情報量多めにする）。
-    return [base + (1 if i < extra else 0) for i in range(n_rows)]
-
-
-def grid_layout(
-    panel_count: int, margin: float = 0.04, gap: float = 0.012
-) -> list[tuple[float, float, float, float]]:
-    """任意コマ数を行グリッドのbboxへ自動配置する（1〜4以外のフォールバック）。"""
-    rows = distribute_rows(panel_count)
-    usable_h = 1 - 2 * margin - gap * (len(rows) - 1)
-    row_h = usable_h / len(rows)
-    boxes: list[tuple[float, float, float, float]] = []
-    y = margin
-    for cols in rows:
-        usable_w = 1 - 2 * margin - gap * (cols - 1)
-        col_w = usable_w / cols
-        x = margin
-        for _ in range(cols):
-            boxes.append((round(x, 4), round(y, 4), round(col_w, 4), round(row_h, 4)))
-            x += col_w + gap
-        y += row_h + gap
-    return boxes
-
-
-def select_layout(panel_count: int, hint: str) -> list[tuple[float, float, float, float]]:
-    options = PANEL_LAYOUTS.get(panel_count)
-    if options:
-        if hint and hint in options:
-            return options[hint]
-        return options["default"]
-    # 5コマ以上は動的グリッドで配置する。
-    return grid_layout(panel_count)
-
-
-def match_character_id(name: str, characters: list[Character]) -> str | None:
-    """話者名を表示名・別名・部分一致でキャラIDへ解決する。"""
-    name = (name or "").strip()
-    if not name:
-        return None
-    for character in characters:
-        if name == character.id or name == character.display_name or name in character.aliases:
-            return character.id
-    # 「城ヶ崎美嘉さん」「美嘉」などの表記揺れを部分一致で吸収する。
-    for character in characters:
-        for candidate in (character.display_name, *character.aliases):
-            if candidate and (candidate in name or name in candidate):
-                return character.id
-    return None
-
-
-def resolve_character_ids(names: list[str], manga: MangaProject) -> list[str]:
-    resolved: list[str] = []
-    for name in names:
-        character_id = match_character_id(name, manga.characters)
-        if character_id and character_id not in resolved:
-            resolved.append(character_id)
-    return resolved
-
-
-def _has_ascii_letters(text: str) -> bool:
-    """英字（booruタグの最低条件）を含むか。"""
-    return any("a" <= ch.lower() <= "z" for ch in text)
-
-
-def _is_weak_trigger(character: Character) -> bool:
-    """画像生成トークンとして弱いtriggerかどうか。
-
-    未設定・表示名そのまま・英字を含まない（日本語名のみ）triggerは、素モデルが
-    解釈できず人物が描き分けられないため弱trigger扱いし、知識DBのboooruタグで上書きする。
-    例: 「城ヶ崎莉嘉」→ 弱 → 「jougasaki rika, idolmaster cinderella girls」で補完。
-    """
-    trigger = (character.trigger_prompt or "").strip()
-    if not trigger or trigger == character.display_name.strip():
-        return True
-    return not _has_ascii_letters(trigger)
-
-
-def _merge_duplicate_character(existing: Character, candidate: Character) -> Character:
-    """同名キャラの重複を、ID維持と情報保持を優先して統合する。"""
-    merged = existing.model_copy(deep=True)
-    if _is_weak_trigger(merged) and not _is_weak_trigger(candidate):
-        merged.trigger_prompt = candidate.trigger_prompt
-
-    aliases = list(merged.aliases)
-    for alias in candidate.aliases:
-        if alias not in aliases:
-            aliases.append(alias)
-    merged.aliases = aliases
-
-    if not merged.appearance_prompt:
-        merged.appearance_prompt = candidate.appearance_prompt
-    if not merged.outfit_prompt:
-        merged.outfit_prompt = candidate.outfit_prompt
-    if not merged.negative_prompt:
-        merged.negative_prompt = candidate.negative_prompt
-    if candidate.lora_name and not merged.lora_name:
-        merged.lora_node_id = candidate.lora_node_id
-        merged.lora_name = candidate.lora_name
-    if not merged.speech_style:
-        merged.speech_style = candidate.speech_style
-    return merged
-
-
-def _get_character_chunks_for_profile_merge(
-    session: Session, work_name: str
-) -> list[KnowledgeChunkRecord]:
-    """同名chunkの情報統合専用に、重複を残したcharacter chunkを取得する。"""
-    if not work_name:
-        return []
-    return (
-        session.query(KnowledgeChunkRecord)
-        .filter(
-            KnowledgeChunkRecord.work_name == work_name,
-            KnowledgeChunkRecord.kind == "character",
-        )
-        .order_by(
-            KnowledgeChunkRecord.usage,
-            KnowledgeChunkRecord.source_id,
-            KnowledgeChunkRecord.position,
-        )
-        .all()
-    )
-
-
-def build_characters_from_knowledge(session: Session, work_name: str) -> list[Character]:
-    """知識DBのキャラクター種別チャンクからCharacterプロファイルを生成する。
-
-    同じ人物のチャンクが重複している場合（旧データの残骸など）は、英字triggerを持つ
-    強い方を優先して1人に統合する。これにより、triggerが空の重複チャンクが正しい
-    booruタグを上書きして人物が描けなくなる事故を防ぐ。
-    """
-    by_display: dict[str, Character] = {}
-    order: list[str] = []
-    used_ids: set[str] = set()
-    for index, chunk in enumerate(_get_character_chunks_for_profile_merge(session, work_name)):
-        display_name = (chunk.title or "").strip()
-        if not display_name:
-            continue
-        image = knowledge.parse_chunk_image(chunk)
-        char_id = str(image.get("id") or f"kc_{index + 1}").strip() or f"kc_{index + 1}"
-        aliases = [str(alias).strip() for alias in image.get("aliases", []) if str(alias).strip()]
-        candidate = Character(
-            id=char_id,
-            display_name=display_name,
-            aliases=aliases,
-            trigger_prompt=str(image.get("trigger_prompt", "")).strip() or display_name,
-            appearance_prompt=str(image.get("appearance_prompt", "")).strip(),
-            outfit_prompt=str(image.get("outfit_prompt", "")).strip(),
-            negative_prompt=str(image.get("negative_prompt", "")).strip(),
-            lora_node_id=str(image.get("lora_node_id", "")).strip(),
-            lora_name=str(image.get("lora_name", "")).strip(),
-            speech_style=str(image.get("speech_style", "")).strip(),
-        )
-        existing = by_display.get(display_name)
-        if existing is None:
-            order.append(display_name)
-            by_display[display_name] = candidate
-            continue
-        # 重複時は既存IDと詳細情報を維持し、強いtriggerなど不足分だけ補完する。
-        by_display[display_name] = _merge_duplicate_character(existing, candidate)
-
-    characters: list[Character] = []
-    for display_name in order:
-        character = by_display[display_name]
-        while character.id in used_ids:
-            character.id = f"{character.id}_x"
-        used_ids.add(character.id)
-        characters.append(character)
-    return characters
-
-
-def merge_knowledge_characters(base: MangaProject, knowledge_characters: list[Character]) -> None:
-    """baseにキャラを取り込む。新規は追加し、既存はtriggerが弱ければ画像情報を補完する。"""
-    for known in knowledge_characters:
-        match = next(
-            (c for c in base.characters if match_character_id(known.display_name, [c]) is not None),
-            None,
-        )
-        if match is None:
-            base.characters.append(known)
-            continue
-        # ユーザーが調整済み(=強いtrigger)なら尊重し、未設定のみ補完する。
-        if _is_weak_trigger(match):
-            match.trigger_prompt = known.trigger_prompt
-            match.negative_prompt = match.negative_prompt or known.negative_prompt
-        if not match.appearance_prompt:
-            match.appearance_prompt = known.appearance_prompt
-        if not match.outfit_prompt:
-            match.outfit_prompt = known.outfit_prompt
-        if not match.aliases:
-            match.aliases = known.aliases
-        if known.lora_name and not match.lora_name:
-            match.lora_node_id = known.lora_node_id
-            match.lora_name = known.lora_name
-        if not match.speech_style:
-            match.speech_style = known.speech_style
 
 
 def resolve_location_id(location: str, manga: MangaProject) -> str:

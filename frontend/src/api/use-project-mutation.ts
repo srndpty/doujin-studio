@@ -1,13 +1,6 @@
 import { useCallback } from "react";
 import { ApiError } from "./client";
-
-export type ProjectMutationResponse<Project, Result> = {
-  project: Project;
-  // 応答整形時点のDB最新revision。project.revisionより大きければUIは最新へ再同期する。
-  // backend schemaでは必須。optionalにすると再同期忘れを型で検出できないため必須に揃える。
-  latest_revision: number;
-  result: Result;
-};
+import type { ProjectMutationResponse } from "./types";
 
 type ProjectWithRevision = { id: string; revision: number };
 
