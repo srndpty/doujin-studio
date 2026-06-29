@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, type MangaProject } from "./App";
+import { App } from "./App";
+import type { MangaProject } from "./manga-types";
 
 // PageEditorはreact-konva(Canvas)を使うため、jsdomで描画できるようモック化する。
 vi.mock("react-konva", () => {

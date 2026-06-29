@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useImperativeHandle, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MangaProject } from "./App";
+import type { MangaProject } from "./manga-types";
 import { PageEditor } from "./PageEditor";
 
 type MockNodeProps = {

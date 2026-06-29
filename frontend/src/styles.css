@@ -879,7 +879,7 @@ label {
   }
 }
 
-/* --- Phase 7: タブとパネル --- */
+/* --- ワークスペースタブとパネル --- */
 .workspace-tabs {
   display: flex;
   gap: 8px;
@@ -1606,7 +1606,7 @@ button.primary {
   padding: 14px;
 }
 
-/* --- Phase 2: ページ編集（react-konva） --- */
+/* --- ページ編集（react-konva） --- */
 .page-editor {
   display: flex;
   gap: 16px;
